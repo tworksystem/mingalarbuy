@@ -1,0 +1,69 @@
+# Sensitive Files - NEVER commit these
+# Firebase Service Account Key - Contains private credentials
+serviceAccountKey.json
+serviceAccountKey.local.json
+*.key
+*.pem
+*.p12
+
+# Example files are safe to commit
+!serviceAccountKey.json.example
+
+# WordPress
+.htaccess
+wp-config.php
+wp-config-local.php
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+error_log
+debug.log
+
+# Temporary Files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.cache/
+
+# Dependencies (if any)
+vendor/
+node_modules/
+composer.lock
+package-lock.json
+yarn.lock
+
+# Build Files
+build/
+dist/
+*.min.js
+*.min.css
+
+# Environment Files
+.env
+.env.local
+.env.*.local
+
+# Backup Files
+*.bak
+*.backup
+*.old

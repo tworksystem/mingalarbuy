@@ -1,0 +1,37 @@
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+// Ensure namespaces are set for Android library modules required by AGP 8+
+subprojects { project ->
+    project.plugins.withId('com.android.library') {
+        // Set namespace explicitly for flutter_secure_storage (4.2.1)
+        if (project.name == 'flutter_secure_storage') {
+            project.android.namespace = 'com.it_nomads.fluttersecurestorage'
+        } else {
+            // For other library modules missing a namespace, derive it from AndroidManifest.xml
+            try {
+                if (!project.android.hasProperty('namespace') || project.android.namespace == null) {
+                    def manifestFile = project.file('src/main/AndroidManifest.xml')
+                    if (manifestFile.exists()) {
+                        def manifestContent = manifestFile.text
+                        def namespaceMatch = manifestContent =~ /package=["']([^"']+)["']/
+                        if (namespaceMatch) {
+                            project.android.namespace = namespaceMatch.group(1)
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // Best-effort; skip if structure differs
+            }
+        }
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.layout.buildDirectory
+}

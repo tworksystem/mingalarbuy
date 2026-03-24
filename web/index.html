@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="PlanetMM - All-in-One Network Myanmar">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="PLANETmm">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <!-- Web app manifest -->
+  <link rel="manifest" href="manifest.json">
+
+  <title>PLANETmm</title>
+  
+  <!-- CORS and security headers -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: gap: https://ssl.gstatic.com https://www.gstatic.com https://mingalarbuy.com https://www.mingalarbuy.com https://httpbin.org https://picsum.photos https://via.placeholder.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https: http: wss: ws:;">
+  
+  <!-- Preconnect to external domains for better performance -->
+  <link rel="preconnect" href="https://mingalarbuy.com">
+  <link rel="preconnect" href="https://www.mingalarbuy.com">
+  <link rel="preconnect" href="https://picsum.photos">
+  <link rel="preconnect" href="https://via.placeholder.com">
+  
+  <!-- DNS prefetch for faster loading -->
+  <link rel="dns-prefetch" href="https://mingalarbuy.com">
+  <link rel="dns-prefetch" href="https://www.mingalarbuy.com">
+  <link rel="dns-prefetch" href="https://picsum.photos">
+  <link rel="dns-prefetch" href="https://via.placeholder.com">
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+  
+  <!-- Network connectivity check -->
+  <script>
+    // Check network connectivity
+    function checkConnectivity() {
+      return navigator.onLine;
+    }
+    
+    // Listen for online/offline events
+    window.addEventListener('online', function() {
+      console.log('🌐 Network: Online');
+      if (window.flutter_web) {
+        window.flutter_web.postMessage('network_online');
+      }
+    });
+    
+    window.addEventListener('offline', function() {
+      console.log('🌐 Network: Offline');
+      if (window.flutter_web) {
+        window.flutter_web.postMessage('network_offline');
+      }
+    });
+    
+    // Initial connectivity check
+    console.log('🌐 Initial network status:', checkConnectivity() ? 'Online' : 'Offline');
+  </script>
+</body>
+</html>

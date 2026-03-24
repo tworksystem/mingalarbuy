@@ -1,0 +1,343 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/in_app_notification.dart';
+import '../utils/logger.dart';
+
+/// Professional in-app notification service
+/// Manages notification storage, retrieval, and persistence
+class InAppNotificationService {
+  static final InAppNotificationService _instance =
+      InAppNotificationService._internal();
+  factory InAppNotificationService() => _instance;
+  InAppNotificationService._internal();
+
+  static const String _notificationsKey = 'in_app_notifications';
+  static const int _maxNotifications = 100; // Limit stored notifications
+
+  /// Save notification to storage
+  Future<void> saveNotification(InAppNotification notification) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final notifications = await getNotifications();
+
+      // Add new notification at the beginning
+      notifications.insert(0, notification);
+
+      // Limit to max notifications
+      if (notifications.length > _maxNotifications) {
+        notifications.removeRange(_maxNotifications, notifications.length);
+      }
+
+      // Save to storage
+      final notificationsJson = json.encode(
+        notifications.map((n) => n.toJson()).toList(),
+      );
+      await prefs.setString(_notificationsKey, notificationsJson);
+
+      Logger.info('Notification saved: ${notification.id}',
+          tag: 'InAppNotification');
+    } catch (e, stackTrace) {
+      Logger.error('Error saving notification: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
+
+  /// Get all notifications
+  Future<List<InAppNotification>> getNotifications() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final notificationsJson = prefs.getString(_notificationsKey);
+
+      if (notificationsJson != null) {
+        final List<dynamic> notificationsData = json.decode(notificationsJson);
+        return notificationsData
+            .map((json) => InAppNotification.fromJson(json as Map<String, dynamic>))
+            .toList();
+      }
+
+      return [];
+    } catch (e, stackTrace) {
+      Logger.error('Error getting notifications: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+      return [];
+    }
+  }
+
+  /// Get unread notifications count
+  Future<int> getUnreadCount() async {
+    try {
+      final notifications = await getNotifications();
+      return notifications.where((n) => !n.isRead).length;
+    } catch (e) {
+      Logger.error('Error getting unread count: $e',
+          tag: 'InAppNotification', error: e);
+      return 0;
+    }
+  }
+
+  /// Mark notification as read
+  Future<void> markAsRead(String notificationId) async {
+    try {
+      final notifications = await getNotifications();
+      final index = notifications.indexWhere((n) => n.id == notificationId);
+
+      if (index != -1) {
+        notifications[index] = notifications[index].copyWith(isRead: true);
+        await _saveNotifications(notifications);
+        Logger.info('Notification marked as read: $notificationId',
+            tag: 'InAppNotification');
+      }
+    } catch (e, stackTrace) {
+      Logger.error('Error marking notification as read: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
+
+  /// Mark all notifications as read
+  Future<void> markAllAsRead() async {
+    try {
+      final notifications = await getNotifications();
+      final updatedNotifications = notifications
+          .map((n) => n.copyWith(isRead: true))
+          .toList();
+      await _saveNotifications(updatedNotifications);
+      Logger.info('All notifications marked as read',
+          tag: 'InAppNotification');
+    } catch (e, stackTrace) {
+      Logger.error('Error marking all notifications as read: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
+
+  /// Delete notification
+  Future<void> deleteNotification(String notificationId) async {
+    try {
+      final notifications = await getNotifications();
+      notifications.removeWhere((n) => n.id == notificationId);
+      await _saveNotifications(notifications);
+      Logger.info('Notification deleted: $notificationId',
+          tag: 'InAppNotification');
+    } catch (e, stackTrace) {
+      Logger.error('Error deleting notification: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
+
+  /// Delete all notifications
+  Future<void> deleteAllNotifications() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_notificationsKey);
+      Logger.info('All notifications deleted', tag: 'InAppNotification');
+    } catch (e, stackTrace) {
+      Logger.error('Error deleting all notifications: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
+
+  /// Create notification from order update
+  /// Returns true if notification was created, false if duplicate was found
+  Future<bool> createOrderNotification({
+    required String orderId,
+    required String status,
+    required String total,
+    String? currency,
+  }) async {
+    // Check for duplicate notifications (same order ID and status within last 5 minutes)
+    final existingNotifications = await getNotifications();
+    final now = DateTime.now();
+    final fiveMinutesAgo = now.subtract(Duration(minutes: 5));
+    
+    final duplicateExists = existingNotifications.any((n) {
+      if (n.type != NotificationType.order) return false;
+      final nOrderId = n.data?['orderId']?.toString();
+      final nStatus = n.data?['status']?.toString();
+      
+      // Check if same order ID and status, and created within last 5 minutes
+      return nOrderId == orderId.toString() &&
+             nStatus == status.toString() &&
+             n.createdAt.isAfter(fiveMinutesAgo);
+    });
+    
+    if (duplicateExists) {
+      Logger.info('Duplicate notification prevented for order: $orderId, status: $status',
+          tag: 'InAppNotificationService');
+      return false;
+    }
+    
+    // Normalize currency to Kyats (Ks). If backend sends a different symbol,
+    // we still present it as Ks to match the local UX.
+    final displayCurrency = 'Ks';
+
+    final notification = InAppNotification(
+      id: 'order_${orderId}_${DateTime.now().millisecondsSinceEpoch}',
+      title: 'Order #$orderId $status',
+      body: 'Your order total is $displayCurrency $total',
+      type: NotificationType.order,
+      createdAt: DateTime.now(),
+      isRead: false, // New notifications are unread
+      data: {
+        'orderId': orderId,
+        'status': status,
+        'total': total,
+        'currency': displayCurrency,
+      },
+      actionUrl: '/order/$orderId',
+    );
+
+    await saveNotification(notification);
+    
+    Logger.info('Order notification created and saved: $orderId',
+        tag: 'InAppNotificationService');
+    return true;
+  }
+
+  /// Create promotion notification
+  Future<void> createPromotionNotification({
+    required String title,
+    required String body,
+    String? imageUrl,
+    String? actionUrl,
+  }) async {
+    final notification = InAppNotification(
+      id: 'promo_${DateTime.now().millisecondsSinceEpoch}',
+      title: title,
+      body: body,
+      type: NotificationType.promotion,
+      createdAt: DateTime.now(),
+      imageUrl: imageUrl,
+      actionUrl: actionUrl,
+    );
+
+    await saveNotification(notification);
+  }
+
+  /// Create shipping notification
+  Future<void> createShippingNotification({
+    required String orderId,
+    required String trackingNumber,
+    String? carrier,
+  }) async {
+    final notification = InAppNotification(
+      id: 'shipping_${orderId}_${DateTime.now().millisecondsSinceEpoch}',
+      title: 'Order #$orderId Shipped',
+      body: carrier != null
+          ? 'Your order has been shipped via $carrier. Tracking: $trackingNumber'
+          : 'Your order has been shipped. Tracking: $trackingNumber',
+      type: NotificationType.shipping,
+      createdAt: DateTime.now(),
+      data: {
+        'orderId': orderId,
+        'trackingNumber': trackingNumber,
+        'carrier': carrier,
+      },
+      actionUrl: '/order/$orderId',
+    );
+
+    await saveNotification(notification);
+  }
+
+  /// Create point notification
+  /// Returns true if notification was created, false if duplicate was found
+  Future<bool> createPointNotification({
+    required String type,
+    required String title,
+    required String body,
+    String? transactionId,
+    String? requestId,
+    String? points,
+    String? currentBalance,
+    Map<String, dynamic>? additionalData,
+  }) async {
+    // Check for duplicate notifications (same type and transaction/request ID within last 5 minutes)
+    final existingNotifications = await getNotifications();
+    final now = DateTime.now();
+    final fiveMinutesAgo = now.subtract(Duration(minutes: 5));
+    
+    final duplicateExists = existingNotifications.any((n) {
+      if (n.type != NotificationType.points) return false;
+      final nType = n.data?['notificationType']?.toString();
+      final nTransactionId = n.data?['transactionId']?.toString();
+      final nRequestId = n.data?['requestId']?.toString();
+      
+      // Check if same type and same transaction/request ID, and created within last 5 minutes
+      if (nType != type) return false;
+      
+      if (transactionId != null && nTransactionId == transactionId) {
+        return n.createdAt.isAfter(fiveMinutesAgo);
+      }
+      
+      if (requestId != null && nRequestId == requestId) {
+        return n.createdAt.isAfter(fiveMinutesAgo);
+      }
+      
+      return false;
+    });
+    
+    if (duplicateExists) {
+      Logger.info('Duplicate point notification prevented for type: $type, transactionId: $transactionId, requestId: $requestId',
+          tag: 'InAppNotificationService');
+      return false;
+    }
+    
+    // Build notification data
+    final notificationData = <String, dynamic>{
+      'notificationType': type,
+      if (transactionId != null) 'transactionId': transactionId,
+      if (requestId != null) 'requestId': requestId,
+      if (points != null) 'points': points,
+      if (currentBalance != null) 'currentBalance': currentBalance,
+      if (additionalData != null) ...additionalData,
+    };
+    
+    // Determine action URL based on notification type
+    String? actionUrl;
+    switch (type) {
+      case 'points_earned':
+      case 'points_approved':
+      case 'points_redeemed':
+      case 'points_adjusted':
+      case 'engagement_points':
+        actionUrl = '/points/history';
+        break;
+      case 'exchange_approved':
+      case 'exchange_rejected':
+        actionUrl = '/points/exchange'; // Navigate to exchange history if available
+        break;
+      default:
+        actionUrl = '/points/history'; // Default to point history
+    }
+    
+    final notification = InAppNotification(
+      id: 'points_${type}_${transactionId ?? requestId ?? DateTime.now().millisecondsSinceEpoch}',
+      title: title,
+      body: body,
+      type: NotificationType.points,
+      createdAt: DateTime.now(),
+      isRead: false, // New notifications are unread
+      data: notificationData,
+      actionUrl: actionUrl,
+    );
+
+    await saveNotification(notification);
+    
+    Logger.info('Point notification created and saved: type=$type, transactionId=$transactionId, requestId=$requestId',
+        tag: 'InAppNotificationService');
+    return true;
+  }
+
+  /// Save notifications to storage
+  Future<void> _saveNotifications(List<InAppNotification> notifications) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final notificationsJson = json.encode(
+        notifications.map((n) => n.toJson()).toList(),
+      );
+      await prefs.setString(_notificationsKey, notificationsJson);
+    } catch (e, stackTrace) {
+      Logger.error('Error saving notifications: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
+}
+
