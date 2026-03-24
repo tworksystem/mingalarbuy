@@ -17,6 +17,14 @@
 
 # Dart/Flutter related files
 .dart_tool/
+assets/
+ios/
+android/
+macos/
+windows/
+linux/
+promotional/
+docs/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
