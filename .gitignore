@@ -741,6 +741,9 @@ wp-content/plugins/*/.svn/
 !**/google-services.json.example
 !**/GoogleService-Info.plist.example
 
+# Local duplicate / scratch plugin tree (not part of deployable monorepo)
+wp-content/twork-rewards-system-winner-work/
+
 # ==============================================================================
 # END OF .gitignore
 # ==============================================================================
