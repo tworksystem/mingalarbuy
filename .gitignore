@@ -18,6 +18,9 @@
 # Dart/Flutter related files
 .dart_tool/
 assets/
+# Track WP plugin admin assets (root assets/ rule would otherwise ignore this tree)
+!wp-content/plugins/twork-rewards-system/assets/
+!wp-content/plugins/twork-rewards-system/assets/**
 ios/
 android/
 macos/
