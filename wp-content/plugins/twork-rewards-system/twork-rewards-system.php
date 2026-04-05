@@ -19493,6 +19493,31 @@ class TWork_Rewards_System
                                         <span class="description"><?php esc_html_e('How long to show the result before next vote (0–60)', 'twork-rewards'); ?></span>
                                     </div>
                                     <p class="description" style="margin-top: 8px;"><?php esc_html_e('Custom timer: type any valid integer. Poll auto-closes after poll duration, shows result, then resets.', 'twork-rewards'); ?></p>
+                                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #ccc;">
+                                        <label for="auto_run_override_index" style="font-weight: 600; color: #d63638;">
+                                            <span class="dashicons dashicons-admin-network" style="vertical-align: middle;"></span>
+                                            <?php esc_html_e('Live Override (Admin Intervention):', 'twork-rewards'); ?>
+                                        </label>
+                                        <select name="auto_run_override_index" id="auto_run_override_index" style="margin-left: 8px; border-color: #d63638;">
+                                            <?php
+                                            $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+                                            ?>
+                                            <option value="-1" <?php selected($override_index, -1); ?>><?php esc_html_e('Normal (Pure Random / Equal Chance)', 'twork-rewards'); ?></option>
+                                            <?php
+                                            $poll_opts = isset($quiz_data['options']) ? $quiz_data['options'] : array();
+                                            foreach ($poll_opts as $idx => $opt) :
+                                                $label = is_array($opt) && isset($opt['text']) ? trim($opt['text']) : trim((string) $opt);
+                                                $label = $label !== '' ? $label : 'Option ' . ($idx + 1);
+                                                ?>
+                                                <option value="<?php echo esc_attr((string) $idx); ?>" <?php selected($override_index, $idx); ?>>
+                                                    <?php echo esc_html('FORCE WINNER: ' . $label); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <p class="description" style="margin-top: 8px;">
+                                            <?php esc_html_e('Change this to force a specific option to win the running Auto-Poll. Change back to "Normal" to let the system calculate automatically.', 'twork-rewards'); ?>
+                                        </p>
+                                    </div>
                                 </div>
                                 <p class="description" style="margin-top: 8px;"><?php esc_html_e('Auto Run: Starts when active, countdown before close, shows result, then auto-reset. Manual: Admin resolves when ready.', 'twork-rewards'); ?></p>
                             </td>
@@ -20372,6 +20397,10 @@ class TWork_Rewards_System
                         $quiz_data_array['poll_voting_start_time'] = $now;
                         $quiz_data_array['poll_voting_end_time'] = date('Y-m-d H:i:s', $end_ts);
                     }
+                }
+                // Save Live Override Setting (persists whenever poll mode is Auto Run, any status).
+                if ($poll_mode === 'auto_run') {
+                    $quiz_data_array['auto_run_override_index'] = isset($_POST['auto_run_override_index']) ? intval($_POST['auto_run_override_index']) : -1;
                 }
             }
             

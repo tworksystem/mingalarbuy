@@ -330,40 +330,33 @@ class TWork_Poll_Auto_Run {
         $is_auto_run = ($poll_mode === 'AUTO_RUN');
 
         // Determine winning index:
-        // - AUTO_RUN: compute per-session winner from current session votes only,
-        //   ignoring any previously stored correct_index in quiz_data so that
-        //   each session can have a different winning option.
+        // - AUTO_RUN: optional transient lock, else admin override (auto_run_override_index),
+        //   else pure random (equal chance per option, vote counts ignored); ignores correct_index.
         // - Other modes: honour explicit correct_index when present, otherwise
         //   fall back to vote-based winner (and persist for future calls).
         $winning_index = 0;
 
         if ($is_auto_run) {
-            // AUTO_RUN: winner is the option(s) with the highest vote count
-            // for THIS session only. If multiple tie, pick one at random.
-            $max_votes = 0;
-            $candidates = array();
-            foreach ($vote_counts as $idx => $count) {
-                if ($count > $max_votes) {
-                    $max_votes = $count;
-                    $candidates = ($count > 0) ? array($idx) : array();
-                } elseif ($count > 0 && $count === $max_votes) {
-                    $candidates[] = $idx;
-                }
-            }
-
-            if (!empty($candidates)) {
-                // Use wp_rand for better randomness and testability.
-                $random_key = wp_rand(0, count($candidates) - 1);
-                $winning_index = $candidates[$random_key];
+            $transient_key = 'twork_auto_run_winner_' . (int) $poll_id . '_' . md5((string) $session_id);
+            $saved_winner = get_transient($transient_key);
+            if ($saved_winner !== false) {
+                $winning_index = (int) $saved_winner;
             } else {
-                // No votes in this session:
-                // - If there are options configured, pick a random one
-                //   so that AUTO_RUN cycles are not always biased to index 0.
-                // - If no options, fall back to 0 (safe default).
-                if ($num_options > 0) {
-                    $winning_index = wp_rand(0, $num_options - 1);
+                $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+
+                // 1. CHECK IF ADMIN TRIGGERED A LIVE OVERRIDE
+                if ($override_index >= 0 && $override_index < $num_options) {
+                    $winning_index = $override_index;
                 } else {
-                    $winning_index = 0;
+                    // 2. PURE RANDOM BEHAVIOR (True Probability)
+                    // Ignore vote counts. Give every option an equal chance to win.
+                    if ($num_options > 0) {
+                        $hash = md5($poll_id . '_' . $session_id . '_true_random');
+                        $hash_num = hexdec(substr($hash, 0, 8));
+                        $winning_index = $hash_num % $num_options;
+                    } else {
+                        $winning_index = 0; // Fallback if no options exist
+                    }
                 }
             }
         } else {
