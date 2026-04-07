@@ -931,8 +931,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                                     ElevatedButton.icon(
                                       onPressed: () =>
                                           _loadPoints(forceRefresh: true),
-                                      icon:
-                                          const Icon(Icons.refresh, size: 18),
+                                      icon: const Icon(Icons.refresh, size: 18),
                                       label: const Text('Refresh'),
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: mediumYellow,
