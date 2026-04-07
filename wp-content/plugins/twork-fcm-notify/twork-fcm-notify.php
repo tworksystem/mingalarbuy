@@ -249,6 +249,11 @@ function twork_get_access_token_from_sa() {
 }
 
 function twork_send_fcm($token, $title, $body, $data = []) {
+    // Silent Update: admin saves (e.g. Engagement Hub) can suppress all FCM sends for this request.
+    if (isset($_POST['twork_skip_fcm_notify']) && (string) wp_unslash($_POST['twork_skip_fcm_notify']) === '1') {
+        return false;
+    }
+
     // Validate configuration
     if (!defined('TWORK_FCM_PROJECT_ID') || TWORK_FCM_PROJECT_ID === 'YOUR_FIREBASE_PROJECT_ID') {
         error_log('[T-Work FCM] Error: TWORK_FCM_PROJECT_ID not set');

@@ -32,7 +32,7 @@ class TWork_Poll_Auto_Run {
         register_rest_route('twork/v1', '/poll/state/(?P<poll_id>\d+)', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array(__CLASS__, 'rest_poll_state'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array(TWork_Rewards_System::get_instance(), 'rest_permission_user_or_admin'),
             'args' => array(
                 'poll_id' => array(
                     'required' => true,
@@ -46,7 +46,7 @@ class TWork_Poll_Auto_Run {
         register_rest_route('twork/v1', '/poll/results/(?P<poll_id>\d+)/(?P<session_id>[a-zA-Z0-9_-]+)', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array(__CLASS__, 'rest_poll_results_by_session'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array(TWork_Rewards_System::get_instance(), 'rest_permission_user_or_admin'),
             'args' => array(
                 'poll_id' => array(
                     'required' => true,
@@ -89,14 +89,14 @@ class TWork_Poll_Auto_Run {
             $poll_id
         ), ARRAY_A);
 
-        if (!$item) {
+        if (!$item || !is_array($item)) {
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'Poll not found',
             ), 404);
         }
 
-        $quiz_data = json_decode($item['quiz_data'], true);
+        $quiz_data = json_decode($item['quiz_data'] ?? '', true);
         if (!is_array($quiz_data)) {
             return new WP_REST_Response(array(
                 'success' => false,
@@ -104,7 +104,7 @@ class TWork_Poll_Auto_Run {
             ), 500);
         }
 
-        $mode = strtoupper($quiz_data['poll_mode'] ?? 'MANUAL');
+        $mode = strtoupper((string) ($quiz_data['poll_mode'] ?? 'MANUAL'));
         $poll_duration_min = max(1, (int) ($quiz_data['poll_duration'] ?? 15));
         $result_duration_min = max(0, (int) ($quiz_data['result_display_duration'] ?? 1));
 
@@ -113,10 +113,12 @@ class TWork_Poll_Auto_Run {
 
         $poll_base_cost = isset($quiz_data['poll_base_cost']) ? max(0, (int) $quiz_data['poll_base_cost']) : 0;
         $reward_multiplier = isset($quiz_data['reward_multiplier']) ? max(0, (float) $quiz_data['reward_multiplier']) : 4;
-        $require_confirmation = !isset($quiz_data['require_confirmation']) || $quiz_data['require_confirmation'] === true
-            || $quiz_data['require_confirmation'] === 1 || $quiz_data['require_confirmation'] === '1';
-        $allow_user_amount = !isset($quiz_data['allow_user_amount']) || $quiz_data['allow_user_amount'] === true
-            || $quiz_data['allow_user_amount'] === 1 || $quiz_data['allow_user_amount'] === '1';
+        $req_conf = $quiz_data['require_confirmation'] ?? null;
+        $require_confirmation = $req_conf === null || $req_conf === true
+            || $req_conf === 1 || $req_conf === '1';
+        $allow_amt = $quiz_data['allow_user_amount'] ?? null;
+        $allow_user_amount = $allow_amt === null || $allow_amt === true
+            || $allow_amt === 1 || $allow_amt === '1';
 
         $bet_amount_step = 1000;
         if (isset($quiz_data['bet_amount_step'])) {
@@ -221,10 +223,17 @@ class TWork_Poll_Auto_Run {
     private static function normalize_option($opt)
     {
         if (is_array($opt)) {
+            $media_url_raw = $opt['media_url'] ?? null;
+            $media_type_raw = $opt['media_type'] ?? null;
+
             return array(
                 'text' => isset($opt['text']) ? (string) $opt['text'] : (isset($opt[0]) ? (string) $opt[0] : ''),
-                'media_url' => !empty($opt['media_url']) ? esc_url_raw($opt['media_url']) : null,
-                'media_type' => !empty($opt['media_type']) ? sanitize_key($opt['media_type']) : null,
+                'media_url' => ($media_url_raw !== null && $media_url_raw !== '' && is_string($media_url_raw))
+                    ? esc_url_raw($media_url_raw)
+                    : null,
+                'media_type' => ($media_type_raw !== null && $media_type_raw !== '' && (is_string($media_type_raw) || is_numeric($media_type_raw)))
+                    ? sanitize_key((string) $media_type_raw)
+                    : null,
             );
         }
         return array(
@@ -245,8 +254,11 @@ class TWork_Poll_Auto_Run {
      */
     private static function resolve_bet_amount_for_winner($row, $winning_index)
     {
+        if (!is_array($row)) {
+            $row = array();
+        }
         $fallback = max(1, (int) ($row['bet_amount'] ?? 1));
-        $raw = isset($row['bet_amount_per_option']) ? $row['bet_amount_per_option'] : null;
+        $raw = $row['bet_amount_per_option'] ?? null;
         if ($raw === '' || $raw === null) {
             return $fallback;
         }
@@ -289,15 +301,22 @@ class TWork_Poll_Auto_Run {
             $poll_id
         ), ARRAY_A);
 
-        if (!$item) {
+        if (!$item || !is_array($item)) {
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'Poll not found',
             ), 404);
         }
 
-        $quiz_data = json_decode($item['quiz_data'], true);
+        $quiz_data = json_decode($item['quiz_data'] ?? '', true);
+        if (!is_array($quiz_data)) {
+            $quiz_data = array();
+        }
+
         $raw_options = $quiz_data['options'] ?? array();
+        if (!is_array($raw_options)) {
+            $raw_options = array();
+        }
         $num_options = count($raw_options);
 
         $vote_counts = array();
@@ -305,14 +324,21 @@ class TWork_Poll_Auto_Run {
             $vote_counts[$i] = 0;
         }
 
+        // SELECT * avoids undefined keys on older schemas missing bet_amount / bet_amount_per_option columns.
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT user_id, interaction_value, bet_amount, bet_amount_per_option FROM $table_interactions WHERE item_id = %d AND session_id = %s",
+            "SELECT * FROM $table_interactions WHERE item_id = %d AND session_id = %s",
             $poll_id,
             $session_id
         ), ARRAY_A);
+        if (!is_array($rows)) {
+            $rows = array();
+        }
 
         foreach ($rows as $row) {
-            $value = trim($row['interaction_value'] ?? '');
+            if (!is_array($row)) {
+                continue;
+            }
+            $value = trim((string) ($row['interaction_value'] ?? ''));
             if ($value === '') {
                 continue;
             }
@@ -329,34 +355,45 @@ class TWork_Poll_Auto_Run {
         $poll_mode = strtoupper((string) ($quiz_data['poll_mode'] ?? ''));
         $is_auto_run = ($poll_mode === 'AUTO_RUN');
 
+        $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
+
         // Determine winning index:
-        // - AUTO_RUN: optional transient lock, else admin override (auto_run_override_index),
-        //   else pure random (equal chance per option, vote counts ignored); ignores correct_index.
+        // - AUTO_RUN: optional transient lock; else DB correct_index (from process_auto_run_poll) or
+        //   admin override only — never random_int here (cron resolves random winners).
         // - Other modes: honour explicit correct_index when present, otherwise
         //   fall back to vote-based winner (and persist for future calls).
         $winning_index = 0;
 
         if ($is_auto_run) {
+            $force_winner_raw = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+            $force_winner_effective = ($force_winner_raw < 0) ? 'random' : (string) $force_winner_raw;
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log(sprintf(
+                    '[twork poll-auto-run] poll_id=%d pre-resolution force_winner(auto_run_override_index)=%s raw=%d correct_index=%d',
+                    (int) $poll_id,
+                    $force_winner_effective,
+                    $force_winner_raw,
+                    $correct_index
+                ));
+            }
+
             $transient_key = 'twork_auto_run_winner_' . (int) $poll_id . '_' . md5((string) $session_id);
             $saved_winner = get_transient($transient_key);
             if ($saved_winner !== false) {
                 $winning_index = (int) $saved_winner;
             } else {
-                $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
-
-                // 1. CHECK IF ADMIN TRIGGERED A LIVE OVERRIDE
-                if ($override_index >= 0 && $override_index < $num_options) {
-                    $winning_index = $override_index;
-                } else {
-                    // 2. PURE RANDOM BEHAVIOR (True Probability)
-                    // Ignore vote counts. Give every option an equal chance to win.
-                    if ($num_options > 0) {
-                        $hash = md5($poll_id . '_' . $session_id . '_true_random');
-                        $hash_num = hexdec(substr($hash, 0, 8));
-                        $winning_index = $hash_num % $num_options;
+                if ($correct_index < 0) {
+                    $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+                    if ($override_index >= 0 && $override_index < $num_options) {
+                        $correct_index = $override_index;
                     } else {
-                        $winning_index = 0; // Fallback if no options exist
+                        $correct_index = -1; // Keep it as -1. Wait for cron job to resolve it!
                     }
+                }
+                if ($correct_index >= 0 && $correct_index < $num_options) {
+                    $winning_index = $correct_index;
+                } else {
+                    $winning_index = -1;
                 }
             }
         } else {
@@ -411,16 +448,19 @@ class TWork_Poll_Auto_Run {
         $effective_base = class_exists('TWork_Poll_PNP') ? TWork_Poll_PNP::get_effective_reward_base($quiz_data) : 0;
         $reward_multiplier = isset($quiz_data['reward_multiplier']) ? max(0, (float) $quiz_data['reward_multiplier']) : 4;
         $bet_amount_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
-        $allow_user_amount = !isset($quiz_data['allow_user_amount']) || $quiz_data['allow_user_amount'] === true
-            || $quiz_data['allow_user_amount'] === 1 || $quiz_data['allow_user_amount'] === '1';
+        $allow_amt_res = $quiz_data['allow_user_amount'] ?? null;
+        $allow_user_amount = $allow_amt_res === null || $allow_amt_res === true
+            || $allow_amt_res === 1 || $allow_amt_res === '1';
         $reward_amount = ($effective_base > 0 && $reward_multiplier > 0) ? (int) round($effective_base * $reward_multiplier) : 0;
-        $item_title = $item['title'] ?? 'Poll #' . $poll_id;
+        $item_title = isset($item['title']) && (string) $item['title'] !== ''
+            ? (string) $item['title']
+            : ('Poll #' . $poll_id);
 
         $user_won = false;
         $points_earned = 0;
         $current_balance = 0;
 
-        if ($is_auto_run && $reward_amount > 0 && class_exists('TWork_Rewards_System')) {
+        if ($is_auto_run && $reward_amount > 0 && $winning_index >= 0 && class_exists('TWork_Rewards_System')) {
             $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
             $already_distributed = $wpdb->get_var($wpdb->prepare(
                 "SELECT rewards_distributed FROM $table_rewards WHERE poll_id = %d AND session_id = %s",
@@ -430,7 +470,10 @@ class TWork_Poll_Auto_Run {
             if ($already_distributed === null || (int) $already_distributed !== 1) {
                     $rewards = TWork_Rewards_System::get_instance();
                 foreach ($rows as $row) {
-                    $value = trim($row['interaction_value'] ?? '');
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $value = trim((string) ($row['interaction_value'] ?? ''));
                     if ($value === '') {
                         continue;
                     }
@@ -483,8 +526,13 @@ class TWork_Poll_Auto_Run {
             } elseif ($requesting_user_id > 0) {
                 // Award already done (by main plugin); still return user_won for client popup + sync
                 foreach ($rows as $row) {
-                    if ((int) ($row['user_id'] ?? 0) !== $requesting_user_id) continue;
-                    $value = trim($row['interaction_value'] ?? '');
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    if ((int) ($row['user_id'] ?? 0) !== $requesting_user_id) {
+                        continue;
+                    }
+                    $value = trim((string) ($row['interaction_value'] ?? ''));
                     if ($value === '') continue;
                         foreach (array_map('trim', explode(',', $value)) as $part) {
                         if ($part !== '' && is_numeric($part) && (int) $part === $winning_index) {
@@ -513,7 +561,10 @@ class TWork_Poll_Auto_Run {
             if (($use_rewards_system || $use_pnp_fallback) &&
                 ($already_distributed === null || (int) $already_distributed !== 1)) {
                 foreach ($rows as $row) {
-                    $value = trim($row['interaction_value'] ?? '');
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $value = trim((string) ($row['interaction_value'] ?? ''));
                     if ($value === '') continue;
                     $voted_winning = false;
                     foreach (array_map('trim', explode(',', $value)) as $part) {
@@ -557,10 +608,13 @@ class TWork_Poll_Auto_Run {
             // Manual/schedule: award path never set user_won for JSON — client needs it for winner popup.
             if ( $requesting_user_id > 0 && $reward_amount > 0 && ! $user_won ) {
                 foreach ( $rows as $row ) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
                     if ( (int) ( $row['user_id'] ?? 0 ) !== $requesting_user_id ) {
                         continue;
                     }
-                    $value = trim( $row['interaction_value'] ?? '' );
+                    $value = trim( (string) ( $row['interaction_value'] ?? '' ) );
                     if ( $value === '' ) {
                         continue;
                     }
@@ -585,6 +639,7 @@ class TWork_Poll_Auto_Run {
         $response_data = array(
             'session_id' => $session_id,
             'winning_option' => $winning_option,
+            'winning_index' => (int) $winning_index,
         );
         if ($requesting_user_id > 0) {
             $response_data['user_won'] = $user_won;

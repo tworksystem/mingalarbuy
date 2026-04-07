@@ -24,11 +24,8 @@ class TWork_Rewards_System
     private const OPTION_LUCKYBOX_ENABLED = 'twork_rewards_luckybox_enabled';
     private const OPTION_LUCKYBOX_BANNER = 'twork_rewards_luckybox_banner';
     private const USER_META_LUCKYBOX_ENABLED = 'twork_luckybox_enabled';
-
     // Vote System Settings Constants
     private const OPTION_VOTE_ENABLED = 'twork_rewards_vote_enabled';
-
-
     // User Page Settings Constants
     private const OPTION_USER_PAGE_PER_PAGE = 'twork_rewards_user_page_per_page';
     private const OPTION_USER_PAGE_DEFAULT_SORT = 'twork_rewards_user_page_default_sort';
@@ -61,7 +58,6 @@ class TWork_Rewards_System
     private const OPTION_USER_PAGE_SHOW_QUICK_ACTIONS = 'twork_rewards_user_page_show_quick_actions';
     private const OPTION_USER_PAGE_DEFAULT_VIEW = 'twork_rewards_user_page_default_view';
     private const OPTION_USER_PAGE_ENABLE_ADVANCED_FILTERS = 'twork_rewards_user_page_enable_advanced_filters';
-    private const OPTION_USER_PAGE_SHOW_USER_TIER = 'twork_rewards_user_page_show_user_tier';
     private const OPTION_USER_PAGE_SHOW_REGISTRATION_DATE = 'twork_rewards_user_page_show_registration_date';
     private const OPTION_USER_PAGE_SHOW_TOTAL_TRANSACTIONS = 'twork_rewards_user_page_show_total_transactions';
     private const OPTION_USER_PAGE_ENABLE_REAL_TIME_UPDATES = 'twork_rewards_user_page_enable_real_time_updates';
@@ -111,24 +107,10 @@ class TWork_Rewards_System
         add_action('admin_post_twork_rewards_save_settings', array($this, 'handle_settings_save'));
         add_action('admin_post_twork_rewards_update_transaction', array($this, 'handle_transaction_update'));
         add_action('admin_post_twork_rewards_update_user_luckybox', array($this, 'handle_user_luckybox_update'));
-        add_action('admin_post_twork_rewards_save_code', array($this, 'handle_code_save'));
-        add_action('admin_post_twork_rewards_delete_code', array($this, 'handle_code_delete'));
         add_action('admin_post_twork_rewards_handle_exchange', array($this, 'handle_exchange_action'));
         add_action('admin_post_twork_rewards_save_exchange', array($this, 'handle_exchange_save'));
         add_action('admin_post_twork_rewards_bulk_exchange_action', array($this, 'handle_bulk_exchange_action'));
         add_action('admin_post_twork_rewards_test_notification', array($this, 'handle_test_notification'));
-
-        // PROFESSIONAL FEATURE: Point Tiers System handlers
-        add_action('admin_post_twork_rewards_save_tier', array($this, 'handle_tier_save'));
-        add_action('admin_post_twork_rewards_delete_tier', array($this, 'handle_tier_delete'));
-        add_action('admin_post_twork_rewards_assign_user_tier', array($this, 'handle_user_tier_assign'));
-        add_action('admin_post_twork_rewards_recalculate_tiers', array($this, 'handle_recalculate_tiers'));
-        add_action('admin_post_twork_rewards_initialize_tiers', array($this, 'handle_initialize_tiers'));
-        add_action('admin_post_twork_rewards_bulk_tier_action', array($this, 'handle_bulk_tier_action'));
-        add_action('admin_post_twork_rewards_bulk_user_tier_action', array($this, 'handle_bulk_user_tier_action'));
-        add_action('admin_post_twork_rewards_export_tiers', array($this, 'handle_export_tiers'));
-        add_action('admin_post_twork_rewards_export_user_tiers', array($this, 'handle_export_user_tiers'));
-        add_action('admin_post_twork_rewards_export_tier_history', array($this, 'handle_export_tier_history'));
 
 
         // Transaction delete handlers
@@ -141,6 +123,7 @@ class TWork_Rewards_System
         add_action('admin_post_twork_rewards_save_engagement_item', array($this, 'handle_engagement_item_save'));
         add_action('admin_post_twork_rewards_resolve_poll', array($this, 'handle_resolve_poll'));
         add_action('wp_ajax_twork_rewards_engagement_interaction_counts', array($this, 'ajax_engagement_interaction_counts'));
+        add_action('wp_ajax_twork_rewards_get_poll_results_data', array($this, 'ajax_get_poll_results_data'));
         add_action('admin_post_twork_rewards_delete_engagement_item', array($this, 'handle_engagement_item_delete'));
         add_action('admin_post_twork_rewards_save_engagement_settings', array($this, 'handle_engagement_settings_save'));
         add_action('admin_post_twork_rewards_save_page_content', array($this, 'handle_page_content_save'));
@@ -264,7 +247,7 @@ class TWork_Rewards_System
         // OPTIMIZED: Only run migrations once per day or when forced via option
         // This prevents expensive database queries on every page load
         $migration_version = get_option('twork_rewards_migration_version', '0');
-        $current_version = '1.0.7';  // Increment when schema changes (added point tiers system)
+        $current_version = '1.0.8';  // 1.0.8: composite indexes (user_id,status), (item_id,user_id); sync_user_points cache fix
 
         // CRITICAL: Always load Poll PNP and Auto-Run (required for award_poll_winner_points).
         // Previously loaded only during migrations — caused points not to be awarded when
@@ -280,10 +263,10 @@ class TWork_Rewards_System
         }
 
         if ($migration_version !== $current_version) {
+            // dbDelta all plugin tables (picks up new KEY definitions on existing installs).
+            $this->create_tables();
             // Run migrations on init to ensure columns exist (handles cases where table was created before migration was added)
             $this->run_migrations();
-            // Also run code migrations to ensure codes table exists
-            $this->run_code_migrations();
 
             // PROFESSIONAL FIX: Run exchange migrations for admin action tracking
             $this->run_exchange_migrations();
@@ -293,16 +276,12 @@ class TWork_Rewards_System
             $this->create_engagement_tables();
             // Ensure usage tracking table exists
             $this->create_usage_tracking_table();
-            // PROFESSIONAL FEATURE: Ensure point tiers tables exist
-            $this->create_point_tiers_tables();
             // Mark migrations as complete
             update_option('twork_rewards_migration_version', $current_version);
         } else {
             // Even if migrations are up to date, run exchange migrations (idempotent)
             // This ensures columns exist even if migration was missed
             $this->run_exchange_migrations();
-            // PROFESSIONAL FEATURE: Always ensure tier tables exist (idempotent)
-            $this->create_point_tiers_tables();
         }
 
         // CRITICAL: Always run engagement migrations (idempotent - safe to run multiple times)
@@ -325,20 +304,12 @@ class TWork_Rewards_System
         // Ensure usage tracking table exists
         $this->create_usage_tracking_table();
 
-        // PROFESSIONAL FEATURE: Ensure point tiers tables exist
-        $this->create_point_tiers_tables();
     }
 
     private function table_name()
     {
         global $wpdb;
         return $wpdb->prefix . 'twork_reward_transactions';
-    }
-
-    private function codes_table_name()
-    {
-        global $wpdb;
-        return $wpdb->prefix . 'twork_reward_codes';
     }
 
     private function exchange_requests_table_name()
@@ -371,34 +342,6 @@ class TWork_Rewards_System
         return $wpdb->prefix . 'twork_about_us_content';
     }
 
-    /**
-     * PROFESSIONAL FEATURE: Point Tiers System
-     * Get table name for point tiers configuration
-     */
-    private function point_tiers_table_name()
-    {
-        global $wpdb;
-        return $wpdb->prefix . 'twork_point_tiers';
-    }
-
-    /**
-     * Get table name for user tier assignments
-     */
-    private function user_tiers_table_name()
-    {
-        global $wpdb;
-        return $wpdb->prefix . 'twork_user_tiers';
-    }
-
-    /**
-     * Get table name for tier history
-     */
-    private function tier_history_table_name()
-    {
-        global $wpdb;
-        return $wpdb->prefix . 'twork_tier_history';
-    }
-
 
     private function create_tables()
     {
@@ -427,14 +370,12 @@ class TWork_Rewards_System
             KEY idx_created_by (created_by),
             KEY idx_approved_by (approved_by),
             KEY idx_updated_by (updated_by),
+            KEY idx_user_status (user_id, status),
             UNIQUE KEY uniq_user_order (user_id, order_id)
         ) $charset_collate;";
 
         require_once (ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
-
-        // Create code prefixes table
-        $this->create_codes_table();
 
         // Create exchange requests table
         $this->create_exchange_requests_table();
@@ -454,47 +395,14 @@ class TWork_Rewards_System
         // Create About Us content table
         $this->create_about_us_table();
 
-        // PROFESSIONAL FEATURE: Create Point Tiers System tables
-        $this->create_point_tiers_tables();
 
         // CRITICAL: Create point transactions table (single source of truth for balance).
         // Required for poll winner awards, engagement points, exchanges. Without this,
         // sync_user_points falls back to meta-only and balance can be inconsistent.
         $this->create_point_transactions_table();
 
-        // Migrate existing codes to add max_uses and current_uses columns if they don't exist
-        $this->run_code_migrations();
-
         // PROFESSIONAL FIX: Run exchange table migrations for admin action tracking
         $this->run_exchange_migrations();
-    }
-
-    /**
-     * Create the codes table if it doesn't exist
-     */
-    private function create_codes_table()
-    {
-        global $wpdb;
-        $charset_collate = $wpdb->get_charset_collate();
-        $codes_table = $this->codes_table_name();
-
-        $codes_sql = "CREATE TABLE IF NOT EXISTS $codes_table (
-            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-            code_prefix varchar(255) NOT NULL,
-            points_value varchar(255) DEFAULT NULL,
-            description text DEFAULT NULL,
-            max_uses int(11) DEFAULT NULL,
-            current_uses int(11) DEFAULT 0,
-            is_active tinyint(1) DEFAULT 1,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime NULL DEFAULT NULL,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_code_prefix (code_prefix),
-            KEY idx_is_active (is_active)
-        ) $charset_collate;";
-
-        require_once (ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($codes_sql);
     }
 
     /**
@@ -583,7 +491,8 @@ class TWork_Rewards_System
             PRIMARY KEY (id),
             UNIQUE KEY user_item_unique (user_id, item_id),
             KEY idx_user_id (user_id),
-            KEY idx_item_id (item_id)
+            KEY idx_item_id (item_id),
+            KEY idx_item_user (item_id, user_id)
         ) $charset_collate;";
 
         require_once (ABSPATH . 'wp-admin/includes/upgrade.php');
@@ -687,14 +596,14 @@ class TWork_Rewards_System
         if (!$session_migration_done) {
             $table_interactions = $wpdb->prefix . 'twork_user_interactions';
             if ($wpdb->get_var("SHOW TABLES LIKE '$table_interactions'") === $table_interactions) {
-                $session_col = $wpdb->get_results("SHOW COLUMNS FROM `" . esc_sql($table_interactions) . "` LIKE 'session_id'");
+                $session_col = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table_interactions) . "` LIKE 'session_id'");
                 if (empty($session_col)) {
-                    $wpdb->query("ALTER TABLE `" . esc_sql($table_interactions) . "` ADD COLUMN `session_id` varchar(50) NOT NULL DEFAULT '' AFTER `item_id`");
+                    $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . "` ADD COLUMN `session_id` varchar(50) NOT NULL DEFAULT '' AFTER `item_id`");
                 }
-                $wpdb->query("ALTER TABLE `" . esc_sql($table_interactions) . "` DROP INDEX IF EXISTS user_item_unique");
-                $idx_exists = $wpdb->get_results("SHOW INDEX FROM `" . esc_sql($table_interactions) . "` WHERE Key_name = 'user_item_session_unique'");
+                $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . '` DROP INDEX IF EXISTS user_item_unique');
+                $idx_exists = $wpdb->get_results('SHOW INDEX FROM `' . esc_sql($table_interactions) . "` WHERE Key_name = 'user_item_session_unique'");
                 if (empty($idx_exists)) {
-                    $wpdb->query("ALTER TABLE `" . esc_sql($table_interactions) . "` ADD UNIQUE KEY user_item_session_unique (user_id, item_id, session_id)");
+                    $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . '` ADD UNIQUE KEY user_item_session_unique (user_id, item_id, session_id)');
                 }
                 update_option('twork_rewards_poll_session_migration_done', true);
             }
@@ -705,9 +614,9 @@ class TWork_Rewards_System
         if (!$bet_amount_migration_done) {
             $table_interactions = $wpdb->prefix . 'twork_user_interactions';
             if ($wpdb->get_var("SHOW TABLES LIKE '$table_interactions'") === $table_interactions) {
-                $bet_col = $wpdb->get_results("SHOW COLUMNS FROM `" . esc_sql($table_interactions) . "` LIKE 'bet_amount'");
+                $bet_col = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table_interactions) . "` LIKE 'bet_amount'");
                 if (empty($bet_col)) {
-                    $wpdb->query("ALTER TABLE `" . esc_sql($table_interactions) . "` ADD COLUMN `bet_amount` int(11) NOT NULL DEFAULT 1 AFTER `interaction_value`");
+                    $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . '` ADD COLUMN `bet_amount` int(11) NOT NULL DEFAULT 1 AFTER `interaction_value`');
                 }
                 update_option('twork_rewards_poll_bet_amount_migration_done', true);
             }
@@ -718,9 +627,9 @@ class TWork_Rewards_System
         if (!$per_option_migration_done) {
             $table_interactions = $wpdb->prefix . 'twork_user_interactions';
             if ($wpdb->get_var("SHOW TABLES LIKE '$table_interactions'") === $table_interactions) {
-                $per_opt_col = $wpdb->get_results("SHOW COLUMNS FROM `" . esc_sql($table_interactions) . "` LIKE 'bet_amount_per_option'");
+                $per_opt_col = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table_interactions) . "` LIKE 'bet_amount_per_option'");
                 if (empty($per_opt_col)) {
-                    $wpdb->query("ALTER TABLE `" . esc_sql($table_interactions) . "` ADD COLUMN `bet_amount_per_option` text DEFAULT NULL AFTER `bet_amount`");
+                    $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . '` ADD COLUMN `bet_amount_per_option` text DEFAULT NULL AFTER `bet_amount`');
                 }
                 update_option('twork_rewards_poll_bet_amount_per_option_migration_done', true);
             }
@@ -1016,103 +925,6 @@ class TWork_Rewards_System
         }
     }
 
-    /**
-     * PROFESSIONAL FEATURE: Create Point Tiers System tables
-     * Creates three tables:
-     * 1. twork_point_tiers - Tier configurations (Bronze, Silver, Gold)
-     * 2. twork_user_tiers - User tier assignments
-     * 3. twork_tier_history - Tier change history for audit trail
-     *
-     * @since 1.0.0
-     */
-    private function create_point_tiers_tables()
-    {
-        global $wpdb;
-        $charset_collate = $wpdb->get_charset_collate();
-
-        // Table 1: Tier configurations
-        $tiers_table = $this->point_tiers_table_name();
-        $tiers_sql = "CREATE TABLE IF NOT EXISTS $tiers_table (
-            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-            tier_name varchar(50) NOT NULL,
-            tier_slug varchar(50) NOT NULL,
-            tier_level int(11) NOT NULL DEFAULT 0,
-            min_points int(11) NOT NULL DEFAULT 0,
-            max_points int(11) DEFAULT NULL,
-            earning_multiplier decimal(5,2) DEFAULT 1.00,
-            badge_icon varchar(255) DEFAULT NULL,
-            badge_color varchar(50) DEFAULT '#666666',
-            description text DEFAULT NULL,
-            benefits longtext DEFAULT NULL,
-            is_active tinyint(1) DEFAULT 1,
-            display_order int(11) DEFAULT 0,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_tier_slug (tier_slug),
-            KEY idx_tier_level (tier_level),
-            KEY idx_is_active (is_active),
-            KEY idx_display_order (display_order)
-        ) $charset_collate;";
-
-        // Table 2: User tier assignments
-        $user_tiers_table = $this->user_tiers_table_name();
-        $user_tiers_sql = "CREATE TABLE IF NOT EXISTS $user_tiers_table (
-            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id bigint(20) UNSIGNED NOT NULL,
-            tier_id bigint(20) UNSIGNED NOT NULL,
-            assigned_at datetime DEFAULT CURRENT_TIMESTAMP,
-            assigned_by bigint(20) UNSIGNED NULL DEFAULT NULL,
-            assignment_type varchar(20) DEFAULT 'automatic',
-            points_at_assignment int(11) DEFAULT 0,
-            is_active tinyint(1) DEFAULT 1,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_user_tier (user_id, tier_id),
-            KEY idx_user_id (user_id),
-            KEY idx_tier_id (tier_id),
-            KEY idx_is_active (is_active),
-            KEY idx_assigned_at (assigned_at)
-        ) $charset_collate;";
-
-        // Table 3: Tier history (audit trail)
-        $tier_history_table = $this->tier_history_table_name();
-        $tier_history_sql = "CREATE TABLE IF NOT EXISTS $tier_history_table (
-            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id bigint(20) UNSIGNED NOT NULL,
-            old_tier_id bigint(20) UNSIGNED NULL DEFAULT NULL,
-            new_tier_id bigint(20) UNSIGNED NOT NULL,
-            change_type varchar(20) DEFAULT 'upgrade',
-            points_at_change int(11) DEFAULT 0,
-            changed_by bigint(20) UNSIGNED NULL DEFAULT NULL,
-            change_reason text DEFAULT NULL,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY idx_user_id (user_id),
-            KEY idx_old_tier_id (old_tier_id),
-            KEY idx_new_tier_id (new_tier_id),
-            KEY idx_change_type (change_type),
-            KEY idx_created_at (created_at)
-        ) $charset_collate;";
-
-        require_once (ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($tiers_sql);
-        dbDelta($user_tiers_sql);
-        dbDelta($tier_history_sql);
-
-        // Initialize default tiers if table is empty
-        $this->initialize_default_tiers();
-
-        // PROFESSIONAL: Log table creation
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            if ($wpdb->last_error) {
-                error_log('T-Work Rewards: Point Tiers tables creation error: ' . $wpdb->last_error);
-            } else {
-                error_log('T-Work Rewards: Point Tiers tables created successfully');
-            }
-        }
-    }
 
     /**
      * Create point transactions table (single source of truth for balance).
@@ -1142,6 +954,7 @@ class TWork_Rewards_System
             KEY idx_type (type),
             KEY idx_order_id (order_id),
             KEY idx_status (status),
+            KEY idx_user_status (user_id, status),
             KEY idx_created_at (created_at),
             KEY idx_expires_at (expires_at)
         ) $charset_collate;";
@@ -1152,141 +965,6 @@ class TWork_Rewards_System
         if (defined('WP_DEBUG') && WP_DEBUG && $wpdb->last_error) {
             error_log('T-Work Rewards: Point transactions table creation error: ' . $wpdb->last_error);
         }
-    }
-
-    /**
-     * Initialize default tiers (Bronze, Silver, Gold)
-     * Only inserts if tiers don't exist
-     */
-    private function initialize_default_tiers()
-    {
-        global $wpdb;
-        $tiers_table = $this->point_tiers_table_name();
-
-        // PROFESSIONAL OPTIMIZATION: Check if table exists first using SHOW TABLES LIKE (more compatible, faster)
-        $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-        $table_exists = ($table_check === $tiers_table);
-
-        if (!$table_exists) {
-            // Table doesn't exist, create it first (only once)
-            $this->create_point_tiers_tables();
-            // Re-check after creation (single check)
-            $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-            $table_exists = ($table_check === $tiers_table);
-            if (!$table_exists) {
-                if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Failed to create tiers table for initialization');
-                }
-                return false;
-            }
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Check option first to avoid unnecessary query
-        $tiers_initialized = get_option('twork_rewards_tiers_initialized', false);
-        if ($tiers_initialized) {
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Tiers already initialized (option check), skipping');
-            }
-            return true;  // Already initialized
-        }
-
-        // Check if tiers already exist (only if option not set)
-        $existing_count = $wpdb->get_var("SELECT COUNT(*) FROM $tiers_table");
-        if ($existing_count > 0) {
-            // Mark as initialized to avoid future checks
-            update_option('twork_rewards_tiers_initialized', true);
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Tiers already exist, marking as initialized');
-            }
-            return true;  // Tiers already exist
-        }
-
-        $default_tiers = array(
-            array(
-                'tier_name' => 'Bronze',
-                'tier_slug' => 'bronze',
-                'tier_level' => 1,
-                'min_points' => 0,
-                'max_points' => 999,
-                'earning_multiplier' => 1.0,
-                'badge_icon' => 'bronze-medal',
-                'badge_color' => '#CD7F32',
-                'description' => 'Bronze tier members earn standard points on all purchases and activities.',
-                'benefits' => json_encode(array(
-                    'Standard earning rate',
-                    'Access to basic rewards',
-                    'Regular customer support'
-                )),
-                'is_active' => 1,
-                'display_order' => 1,
-            ),
-            array(
-                'tier_name' => 'Silver',
-                'tier_slug' => 'silver',
-                'tier_level' => 2,
-                'min_points' => 1000,
-                'max_points' => 4999,
-                'earning_multiplier' => 1.25,
-                'badge_icon' => 'silver-medal',
-                'badge_color' => '#C0C0C0',
-                'description' => 'Silver tier members earn 25% bonus points on all purchases and activities.',
-                'benefits' => json_encode(array(
-                    '25% bonus earning rate',
-                    'Access to exclusive rewards',
-                    'Priority customer support',
-                    'Special promotions'
-                )),
-                'is_active' => 1,
-                'display_order' => 2,
-            ),
-            array(
-                'tier_name' => 'Gold',
-                'tier_slug' => 'gold',
-                'tier_level' => 3,
-                'min_points' => 5000,
-                'max_points' => NULL,
-                'earning_multiplier' => 1.5,
-                'badge_icon' => 'gold-medal',
-                'badge_color' => '#FFD700',
-                'description' => 'Gold tier members earn 50% bonus points on all purchases and activities.',
-                'benefits' => json_encode(array(
-                    '50% bonus earning rate',
-                    'Access to premium rewards',
-                    'VIP customer support',
-                    'Exclusive promotions',
-                    'Early access to new features'
-                )),
-                'is_active' => 1,
-                'display_order' => 3,
-            ),
-        );
-
-        // PROFESSIONAL OPTIMIZATION: Use bulk insert for better performance
-        $inserted_count = 0;
-        foreach ($default_tiers as $tier) {
-            $result = $wpdb->insert($tiers_table, $tier);
-            if ($result !== false) {
-                $inserted_count++;
-            } else {
-                if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Failed to insert tier: ' . $tier['tier_name'] . ' - ' . $wpdb->last_error);
-                }
-            }
-        }
-
-        // Mark as initialized only if successful
-        if ($inserted_count > 0) {
-            update_option('twork_rewards_tiers_initialized', true);
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log(sprintf('T-Work Rewards: Default tiers initialized successfully. Inserted %d tiers (Bronze, Silver, Gold)', $inserted_count));
-            }
-        } else {
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Failed to initialize default tiers. Check database permissions.');
-            }
-        }
-
-        return $inserted_count > 0;
     }
 
 
@@ -1399,52 +1077,6 @@ class TWork_Rewards_System
         if (!$table_exists) {
             // Table doesn't exist, create it
             $this->create_exchange_requests_table();
-        }
-    }
-
-    /**
-     * Run migrations for code prefixes table
-     * OPTIMIZED: Uses faster column checks
-     */
-    private function run_code_migrations()
-    {
-        global $wpdb;
-        $codes_table = $this->codes_table_name();
-
-        // OPTIMIZED: Check if table exists using a faster method
-        $table_exists = $wpdb->get_var($wpdb->prepare(
-            'SHOW TABLES LIKE %s',
-            $codes_table
-        ));
-
-        if (!$table_exists) {
-            // Table doesn't exist, create it
-            $this->create_codes_table();
-            return;
-        }
-
-        // OPTIMIZED: Get all columns in one query instead of multiple SHOW COLUMNS queries
-        $existing_columns = $wpdb->get_col("DESCRIBE $codes_table");
-        $columns_lower = array_map('strtolower', $existing_columns);
-
-        // Check if max_uses column exists
-        if (!in_array('max_uses', $columns_lower)) {
-            $result = $wpdb->query("ALTER TABLE $codes_table ADD COLUMN max_uses int(11) DEFAULT NULL AFTER description");
-            if ($result !== false) {
-                error_log('T-Work Rewards: Added missing max_uses column to ' . $codes_table);
-            } else {
-                error_log('T-Work Rewards: Failed to add max_uses column. Error: ' . $wpdb->last_error);
-            }
-        }
-
-        // Check if current_uses column exists
-        if (!in_array('current_uses', $columns_lower)) {
-            $result = $wpdb->query("ALTER TABLE $codes_table ADD COLUMN current_uses int(11) DEFAULT 0 AFTER max_uses");
-            if ($result !== false) {
-                error_log('T-Work Rewards: Added missing current_uses column to ' . $codes_table);
-            } else {
-                error_log('T-Work Rewards: Failed to add current_uses column. Error: ' . $wpdb->last_error);
-            }
         }
     }
 
@@ -1715,15 +1347,6 @@ class TWork_Rewards_System
 
         add_submenu_page(
             $parent_slug,
-            __('Code Prefixes', 'twork-rewards'),
-            __('Code Prefixes', 'twork-rewards'),
-            $capability,
-            'twork-rewards-codes',
-            array($this, 'render_codes_page')
-        );
-
-        add_submenu_page(
-            $parent_slug,
             __('Usage Analytics', 'twork-rewards'),
             __('Usage Analytics', 'twork-rewards'),
             $capability,
@@ -1739,8 +1362,6 @@ class TWork_Rewards_System
             'twork-rewards-exchange-requests',
             array($this, 'render_exchange_requests_page')
         );
-
-
 
         add_submenu_page(
             $parent_slug,
@@ -1769,14 +1390,6 @@ class TWork_Rewards_System
             array($this, 'render_about_us_page')
         );
 
-        add_submenu_page(
-            $parent_slug,
-            __('Point Tiers', 'twork-rewards'),
-            __('Point Tiers', 'twork-rewards'),
-            $capability,
-            'twork-rewards-point-tiers',
-            array($this, 'render_point_tiers_page')
-        );
 
         add_submenu_page(
             $parent_slug,
@@ -1818,2241 +1431,7 @@ class TWork_Rewards_System
         );
     }
 
-    /**
-     * PROFESSIONAL FEATURE: Point Tiers Management Page
-     * Admin UI for managing point tiers (Bronze, Silver, Gold)
-     */
-    public function render_point_tiers_page()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
 
-        global $wpdb;
-        $tiers_table = $this->point_tiers_table_name();
-        $user_tiers_table = $this->user_tiers_table_name();
-
-        // PROFESSIONAL OPTIMIZATION: Check table existence once and cache result
-        // Use SHOW TABLES LIKE instead of information_schema for better compatibility
-        $tiers_table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-        $tiers_table_exists = ($tiers_table_check === $tiers_table);
-
-        if (!$tiers_table_exists) {
-            // Tables don't exist, create them (only once)
-            $this->create_point_tiers_tables();
-            // Re-check after creation (single check)
-            $tiers_table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-            $tiers_table_exists = ($tiers_table_check === $tiers_table);
-        }
-
-        // Get all tiers (single query, no redundant checks)
-        // PROFESSIONAL FIX: By default show only active tiers, but allow viewing inactive via filter
-        $tiers = array();
-        if ($tiers_table_exists) {
-            // Check if user wants to see inactive tiers
-            $show_inactive = isset($_GET['show_inactive']) && $_GET['show_inactive'] === '1';
-
-            if ($show_inactive) {
-                // Show all tiers (active and inactive)
-                $tiers = $wpdb->get_results(
-                    "SELECT * FROM $tiers_table ORDER BY tier_level ASC",
-                    ARRAY_A
-                );
-            } else {
-                // Default: Show only active tiers
-                $tiers = $wpdb->get_results(
-                    "SELECT * FROM $tiers_table WHERE is_active = 1 ORDER BY tier_level ASC",
-                    ARRAY_A
-                );
-            }
-
-            // PROFESSIONAL OPTIMIZATION: Only initialize if tiers are empty AND not already initialized
-            // Check option to prevent repeated initialization attempts
-            $tiers_initialized = get_option('twork_rewards_tiers_initialized', false);
-            if (empty($tiers) && !$tiers_initialized) {
-                $initialized = $this->initialize_default_tiers();
-                if ($initialized) {
-                    update_option('twork_rewards_tiers_initialized', true);
-                    // Re-fetch tiers after initialization (only active)
-                    $tiers = $wpdb->get_results(
-                        "SELECT * FROM $tiers_table WHERE is_active = 1 ORDER BY tier_level ASC",
-                        ARRAY_A
-                    );
-                }
-            }
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Get tier statistics in single query (batch operation)
-        $tier_stats = array();
-        if (!empty($tiers) && $tiers_table_exists) {
-            // Check if user_tiers_table exists (single check)
-            $user_tiers_table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $user_tiers_table));
-            if ($user_tiers_table_check === $user_tiers_table) {
-                // OPTIMIZED: Get all tier counts in single query instead of loop
-                $tier_ids = array_map(function ($tier) {
-                    return $tier['id'];
-                }, $tiers);
-                if (!empty($tier_ids)) {
-                    $tier_ids_placeholders = implode(',', array_fill(0, count($tier_ids), '%d'));
-                    $stats_query = $wpdb->prepare(
-                        "SELECT tier_id, COUNT(DISTINCT user_id) as user_count 
-                         FROM $user_tiers_table 
-                         WHERE tier_id IN ($tier_ids_placeholders) AND is_active = 1 
-                         GROUP BY tier_id",
-                        ...$tier_ids
-                    );
-                    $stats_results = $wpdb->get_results($stats_query, ARRAY_A);
-                    foreach ($stats_results as $stat) {
-                        $tier_stats[$stat['tier_id']] = (int) $stat['user_count'];
-                    }
-                }
-                // Initialize missing tier stats to 0
-                foreach ($tiers as $tier) {
-                    if (!isset($tier_stats[$tier['id']])) {
-                        $tier_stats[$tier['id']] = 0;
-                    }
-                }
-            }
-        }
-
-        // Handle tab navigation
-        $tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'tiers';
-        $tier_id = isset($_GET['tier_id']) ? absint($_GET['tier_id']) : 0;
-        $action = isset($_GET['action']) ? sanitize_text_field($_GET['action']) : '';
-
-        // Get tier data for edit
-        $tier_data = null;
-        if (($action === 'edit' || $action === 'duplicate') && $tier_id > 0 && $tiers_table_exists) {
-            $tier_data = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM $tiers_table WHERE id = %d",
-                $tier_id
-            ), ARRAY_A);
-
-            if (!$tier_data) {
-                $action = '';  // Reset action if tier not found
-                $tier_id = 0;
-            }
-        }
-
-        // Show success/error messages
-        if (isset($_GET['updated']) && $_GET['updated']) {
-            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Tier saved successfully.', 'twork-rewards') . '</p></div>';
-        }
-        if (isset($_GET['deleted']) && $_GET['deleted']) {
-            echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Tier deleted successfully.', 'twork-rewards') . '</p></div>';
-        }
-        if (isset($_GET['recalculated'])) {
-            $count = absint($_GET['recalculated']);
-            echo '<div class="notice notice-success is-dismissible"><p>' . sprintf(esc_html__('Successfully recalculated tiers for %d users.', 'twork-rewards'), $count) . '</p></div>';
-        }
-
-        ?>
-        <div class="wrap">
-            <h1>
-                <?php
-                if ($action === 'edit') {
-                    esc_html_e('Edit Point Tier', 'twork-rewards');
-                } elseif ($action === 'add') {
-                    esc_html_e('Add New Point Tier', 'twork-rewards');
-                } elseif ($action === 'duplicate') {
-                    esc_html_e('Duplicate Point Tier', 'twork-rewards');
-                } else {
-                    esc_html_e('Point Tiers Management', 'twork-rewards');
-                }
-                ?>
-            </h1>
-            
-            <?php if ($action === 'edit' || $action === 'add' || $action === 'duplicate'): ?>
-                <!-- Edit/Add Form -->
-                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers'), admin_url('admin.php'))); ?>" 
-                   class="button" style="margin-bottom: 20px;">
-                    ← <?php esc_html_e('Back to Tiers List', 'twork-rewards'); ?>
-                </a>
-                
-                <div class="twork-engagement-card" style="max-width: 800px;">
-                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="tier-form">
-                        <?php wp_nonce_field('twork_rewards_save_tier'); ?>
-                        <input type="hidden" name="action" value="twork_rewards_save_tier" />
-                        <?php if ($tier_data && $action === 'edit'): ?>
-                            <input type="hidden" name="tier_id" value="<?php echo esc_attr($tier_data['id']); ?>" />
-                        <?php elseif ($tier_data && $action === 'duplicate'): ?>
-                            <!-- Duplicate mode: Clear tier_id to create new tier, but modify name/slug -->
-                            <input type="hidden" name="tier_id" value="0" />
-                            <div class="notice notice-info" style="margin-bottom: 20px;">
-                                <p><?php esc_html_e('You are duplicating this tier. Please modify the tier name and level to create a new tier.', 'twork-rewards'); ?></p>
-                            </div>
-                        <?php endif; ?>
-                        
-                        <table class="form-table">
-                            <tr>
-                                <th scope="row">
-                                    <label for="tier_name"><?php esc_html_e('Tier Name', 'twork-rewards'); ?> <span style="color: red;">*</span></label>
-                                </th>
-                                <td>
-                                    <input type="text" 
-                                           id="tier_name" 
-                                           name="tier_name" 
-                                           value="<?php echo ($tier_data && $action === 'duplicate') ? esc_attr($tier_data['tier_name'] . ' (Copy)') : ($tier_data ? esc_attr($tier_data['tier_name']) : ''); ?>" 
-                                           class="regular-text" 
-                                           required />
-                                    <p class="description"><?php esc_html_e('Display name for this tier (e.g., Bronze, Silver, Gold).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="tier_slug"><?php esc_html_e('Tier Slug', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="text" 
-                                           id="tier_slug" 
-                                           name="tier_slug" 
-                                           value="<?php echo ($tier_data && $action === 'duplicate') ? esc_attr($tier_data['tier_slug'] . '-copy') : ($tier_data ? esc_attr($tier_data['tier_slug']) : ''); ?>" 
-                                           class="regular-text" />
-                                    <p class="description"><?php esc_html_e('URL-friendly identifier (auto-generated from name if empty).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="tier_level"><?php esc_html_e('Tier Level', 'twork-rewards'); ?> <span style="color: red;">*</span></label>
-                                </th>
-                                <td>
-                                    <input type="number" 
-                                           id="tier_level" 
-                                           name="tier_level" 
-                                           value="<?php echo $tier_data ? esc_attr($tier_data['tier_level']) : ''; ?>" 
-                                           class="small-text" 
-                                           min="1" 
-                                           step="1" 
-                                           required />
-                                    <p class="description"><?php esc_html_e('Numeric level (1 = lowest, higher = better). Used for sorting and comparison.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="min_points"><?php esc_html_e('Minimum Points', 'twork-rewards'); ?> <span style="color: red;">*</span></label>
-                                </th>
-                                <td>
-                                    <input type="number" 
-                                           id="min_points" 
-                                           name="min_points" 
-                                           value="<?php echo $tier_data ? esc_attr($tier_data['min_points']) : '0'; ?>" 
-                                           class="regular-text" 
-                                           min="0" 
-                                           step="1" 
-                                           required />
-                                    <p class="description"><?php esc_html_e('Minimum points required to reach this tier.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="max_points"><?php esc_html_e('Maximum Points', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="number" 
-                                           id="max_points" 
-                                           name="max_points" 
-                                           value="<?php echo $tier_data && $tier_data['max_points'] ? esc_attr($tier_data['max_points']) : ''; ?>" 
-                                           class="regular-text" 
-                                           min="0" 
-                                           step="1" />
-                                    <p class="description"><?php esc_html_e('Maximum points for this tier (leave empty for unlimited/highest tier).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="earning_multiplier"><?php esc_html_e('Earning Multiplier', 'twork-rewards'); ?> <span style="color: red;">*</span></label>
-                                </th>
-                                <td>
-                                    <input type="number" 
-                                           id="earning_multiplier" 
-                                           name="earning_multiplier" 
-                                           value="<?php echo $tier_data ? esc_attr($tier_data['earning_multiplier']) : '1.00'; ?>" 
-                                           class="small-text" 
-                                           min="0.01" 
-                                           max="10.00" 
-                                           step="0.01" 
-                                           required />
-                                    <p class="description"><?php esc_html_e('Points earning multiplier (e.g., 1.25 = 25% bonus, 1.50 = 50% bonus).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="badge_color"><?php esc_html_e('Badge Color', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="color" 
-                                           id="badge_color" 
-                                           name="badge_color" 
-                                           value="<?php echo $tier_data ? esc_attr($tier_data['badge_color']) : '#666666'; ?>" 
-                                           style="width: 100px; height: 35px;" />
-                                    <p class="description"><?php esc_html_e('Color for tier badge/icon display.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="badge_icon"><?php esc_html_e('Badge Icon', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="text" 
-                                           id="badge_icon" 
-                                           name="badge_icon" 
-                                           value="<?php echo $tier_data ? esc_attr($tier_data['badge_icon']) : ''; ?>" 
-                                           class="regular-text" 
-                                           placeholder="e.g., bronze-medal, star, crown" />
-                                    <p class="description"><?php esc_html_e('Icon identifier for tier badge (optional).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="description"><?php esc_html_e('Description', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <textarea id="description" 
-                                              name="description" 
-                                              rows="3" 
-                                              class="large-text"><?php echo $tier_data ? esc_textarea($tier_data['description']) : ''; ?></textarea>
-                                    <p class="description"><?php esc_html_e('Brief description of this tier.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="benefits"><?php esc_html_e('Benefits', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <?php
-                                    $benefits_text = '';
-                                    if ($tier_data && !empty($tier_data['benefits'])) {
-                                        $benefits_array = json_decode($tier_data['benefits'], true);
-                                        if (is_array($benefits_array)) {
-                                            $benefits_text = implode("\n", $benefits_array);
-                                        }
-                                    }
-                                    ?>
-                                    <textarea id="benefits" 
-                                              name="benefits" 
-                                              rows="5" 
-                                              class="large-text" 
-                                              placeholder="<?php esc_attr_e('Enter one benefit per line', 'twork-rewards'); ?>"><?php echo esc_textarea($benefits_text); ?></textarea>
-                                    <p class="description"><?php esc_html_e('List of benefits for this tier (one per line).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="display_order"><?php esc_html_e('Display Order', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="number" 
-                                           id="display_order" 
-                                           name="display_order" 
-                                           value="<?php echo $tier_data ? esc_attr($tier_data['display_order']) : '0'; ?>" 
-                                           class="small-text" 
-                                           min="0" 
-                                           step="1" />
-                                    <p class="description"><?php esc_html_e('Display order (lower numbers appear first).', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <label for="is_active"><?php esc_html_e('Status', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <label>
-                                        <input type="checkbox" 
-                                               id="is_active" 
-                                               name="is_active" 
-                                               value="1" 
-                                               <?php checked($tier_data ? $tier_data['is_active'] : 1, 1); ?> />
-                                        <?php esc_html_e('Active', 'twork-rewards'); ?>
-                                    </label>
-                                    <p class="description"><?php esc_html_e('Inactive tiers will not be assigned to users.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                        </table>
-                        
-                        <p class="submit">
-                            <button type="submit" class="button button-primary button-large">
-                                <?php echo $tier_data && $action === 'edit' ? esc_html__('Update Tier', 'twork-rewards') : esc_html__('Create Tier', 'twork-rewards'); ?>
-                            </button>
-                            <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers'), admin_url('admin.php'))); ?>" 
-                               class="button button-secondary button-large">
-                                <?php esc_html_e('Cancel', 'twork-rewards'); ?>
-                            </a>
-                        </p>
-                    </form>
-                    
-                    <script type="text/javascript">
-                    jQuery(document).ready(function($) {
-                        // Auto-generate slug from tier name
-                        $('#tier_name').on('blur', function() {
-                            var slugField = $('#tier_slug');
-                            if (!slugField.val() || slugField.data('auto-generated')) {
-                                var slug = $(this).val().toLowerCase()
-                                    .replace(/[^a-z0-9]+/g, '-')
-                                    .replace(/^-+|-+$/g, '');
-                                slugField.val(slug);
-                                slugField.data('auto-generated', true);
-                            }
-                        });
-                        
-                        // Clear auto-generated flag when user manually edits slug
-                        $('#tier_slug').on('input', function() {
-                            $(this).data('auto-generated', false);
-                        });
-                        
-                        // Form validation
-                        $('#tier-form').on('submit', function(e) {
-                            var tierName = $('#tier_name').val().trim();
-                            var tierLevel = parseInt($('#tier_level').val());
-                            var minPoints = parseInt($('#min_points').val());
-                            var maxPoints = $('#max_points').val() ? parseInt($('#max_points').val()) : null;
-                            var multiplier = parseFloat($('#earning_multiplier').val());
-                            
-                            if (!tierName) {
-                                alert('<?php echo esc_js(__('Tier name is required.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            if (tierLevel <= 0) {
-                                alert('<?php echo esc_js(__('Tier level must be greater than 0.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            if (multiplier <= 0 || multiplier > 10) {
-                                alert('<?php echo esc_js(__('Earning multiplier must be between 0.01 and 10.00.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            if (maxPoints !== null && maxPoints <= minPoints) {
-                                alert('<?php echo esc_js(__('Maximum points must be greater than minimum points.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                        });
-                    });
-                    </script>
-                </div>
-            <?php else: ?>
-                <!-- Tiers List View -->
-                <nav class="nav-tab-wrapper">
-                    <a href="<?php echo esc_url(add_query_arg('tab', 'tiers', admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                       class="nav-tab <?php echo $tab === 'tiers' ? 'nav-tab-active' : ''; ?>">
-                        <?php esc_html_e('Tiers Configuration', 'twork-rewards'); ?>
-                    </a>
-                    <a href="<?php echo esc_url(add_query_arg('tab', 'users', admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                       class="nav-tab <?php echo $tab === 'users' ? 'nav-tab-active' : ''; ?>">
-                        <?php esc_html_e('User Assignments', 'twork-rewards'); ?>
-                    </a>
-                    <a href="<?php echo esc_url(add_query_arg('tab', 'history', admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                       class="nav-tab <?php echo $tab === 'history' ? 'nav-tab-active' : ''; ?>">
-                        <?php esc_html_e('Tier History', 'twork-rewards'); ?>
-                    </a>
-                </nav>
-                
-                <?php if ($tab === 'tiers'): ?>
-                <!-- Tiers Configuration Tab -->
-                <div class="tab-content" style="margin-top: 20px;">
-                    <h2><?php esc_html_e('Point Tiers Configuration', 'twork-rewards'); ?></h2>
-                    <p class="description">
-                        <?php esc_html_e('Configure point tiers (Bronze, Silver, Gold) with different earning multipliers and benefits.', 'twork-rewards'); ?>
-                    </p>
-                    
-                    <?php
-                    // PROFESSIONAL FEATURE: Statistics Dashboard
-                    $total_tiers = count($tiers);
-                    $active_tiers = 0;
-                    $inactive_tiers = 0;
-                    $total_users_in_tiers = 0;
-                    $avg_multiplier = 0;
-
-                    if (!empty($tiers)) {
-                        foreach ($tiers as $tier) {
-                            if ($tier['is_active']) {
-                                $active_tiers++;
-                            } else {
-                                $inactive_tiers++;
-                            }
-                            $total_users_in_tiers += isset($tier_stats[$tier['id']]) ? $tier_stats[$tier['id']] : 0;
-                            $avg_multiplier += (float) $tier['earning_multiplier'];
-                        }
-                        $avg_multiplier = $total_tiers > 0 ? ($avg_multiplier / $total_tiers) : 0;
-                    }
-                    ?>
-                    
-                    <!-- Statistics Dashboard -->
-                    <div class="twork-stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px;">
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #2271b1; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Total Tiers', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #2271b1;"><?php echo esc_html(number_format($total_tiers)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #46b450; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Active Tiers', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #46b450;"><?php echo esc_html(number_format($active_tiers)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #d63638; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Inactive Tiers', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #d63638;"><?php echo esc_html(number_format($inactive_tiers)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #f0ad4e; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Total Users', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #f0ad4e;"><?php echo esc_html(number_format($total_users_in_tiers)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #667eea; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Avg Multiplier', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #667eea;"><?php echo esc_html(number_format($avg_multiplier, 2)); ?>x</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Search and Filter Bar -->
-                    <div style="background: white; padding: 15px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-                        <form method="get" action="" style="display: flex; gap: 10px; align-items: center; flex: 1; min-width: 300px;">
-                            <input type="hidden" name="page" value="twork-rewards-point-tiers" />
-                            <input type="hidden" name="tab" value="tiers" />
-                            <input type="search" 
-                                   name="s" 
-                                   value="<?php echo isset($_GET['s']) ? esc_attr($_GET['s']) : ''; ?>" 
-                                   placeholder="<?php esc_attr_e('Search tiers by name...', 'twork-rewards'); ?>" 
-                                   style="flex: 1; min-width: 200px; padding: 6px 10px;" />
-                            <select name="status_filter" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('All Status', 'twork-rewards'); ?></option>
-                                <option value="active" <?php selected(isset($_GET['status_filter']) ? $_GET['status_filter'] : 'active', 'active'); ?>><?php esc_html_e('Active', 'twork-rewards'); ?></option>
-                                <option value="inactive" <?php selected(isset($_GET['status_filter']) ? $_GET['status_filter'] : '', 'inactive'); ?>><?php esc_html_e('Inactive', 'twork-rewards'); ?></option>
-                            </select>
-                            <label style="display: flex; align-items: center; gap: 5px; padding: 6px 10px; background: #f0f0f1; border-radius: 3px;">
-                                <input type="checkbox" name="show_inactive" value="1" <?php checked(isset($_GET['show_inactive']) && $_GET['show_inactive'] === '1', true); ?> />
-                                <?php esc_html_e('Show Inactive', 'twork-rewards'); ?>
-                            </label>
-                            <select name="sort_by" style="padding: 6px 10px;">
-                                <option value="level" <?php selected(isset($_GET['sort_by']) ? $_GET['sort_by'] : 'level', 'level'); ?>><?php esc_html_e('Sort by Level', 'twork-rewards'); ?></option>
-                                <option value="name" <?php selected(isset($_GET['sort_by']) ? $_GET['sort_by'] : '', 'name'); ?>><?php esc_html_e('Sort by Name', 'twork-rewards'); ?></option>
-                                <option value="users" <?php selected(isset($_GET['sort_by']) ? $_GET['sort_by'] : '', 'users'); ?>><?php esc_html_e('Sort by Users', 'twork-rewards'); ?></option>
-                                <option value="multiplier" <?php selected(isset($_GET['sort_by']) ? $_GET['sort_by'] : '', 'multiplier'); ?>><?php esc_html_e('Sort by Multiplier', 'twork-rewards'); ?></option>
-                            </select>
-                            <button type="submit" class="button"><?php esc_html_e('Filter', 'twork-rewards'); ?></button>
-                            <?php if (isset($_GET['s']) || isset($_GET['status_filter']) || isset($_GET['sort_by'])): ?>
-                                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers'), admin_url('admin.php'))); ?>" 
-                                   class="button"><?php esc_html_e('Clear', 'twork-rewards'); ?></a>
-                            <?php endif; ?>
-                        </form>
-                        <div style="display: flex; gap: 10px;">
-                            <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'action' => 'export'), admin_url('admin.php'))); ?>" 
-                               class="button button-secondary">
-                                <span class="dashicons dashicons-download" style="vertical-align: middle;"></span>
-                                <?php esc_html_e('Export', 'twork-rewards'); ?>
-                            </a>
-                        </div>
-                    </div>
-                    
-                    <?php
-                    // PROFESSIONAL FEATURE: Handle export action
-                    if (isset($_GET['action']) && $_GET['action'] === 'export' && $tab === 'tiers') {
-                        $this->handle_export_tiers();
-                        exit;
-                    }
-
-                    // PROFESSIONAL FEATURE: Apply filters and sorting
-                    $filtered_tiers = $tiers;
-                    $search_term = isset($_GET['s']) ? sanitize_text_field($_GET['s']) : '';
-                    $status_filter = isset($_GET['status_filter']) ? sanitize_text_field($_GET['status_filter']) : '';
-                    $sort_by = isset($_GET['sort_by']) ? sanitize_text_field($_GET['sort_by']) : 'level';
-
-                    // Apply search filter
-                    if (!empty($search_term)) {
-                        $filtered_tiers = array_filter($filtered_tiers, function ($tier) use ($search_term) {
-                            return stripos($tier['tier_name'], $search_term) !== false ||
-                                stripos($tier['description'], $search_term) !== false;
-                        });
-                    }
-
-                    // Apply status filter
-                    if (!empty($status_filter)) {
-                        $filtered_tiers = array_filter($filtered_tiers, function ($tier) use ($status_filter) {
-                            if ($status_filter === 'active') {
-                                return (bool) $tier['is_active'];
-                            } else {
-                                return !(bool) $tier['is_active'];
-                            }
-                        });
-                    }
-
-                    // Apply sorting
-                    if ($sort_by === 'name') {
-                        usort($filtered_tiers, function ($a, $b) {
-                            return strcmp($a['tier_name'], $b['tier_name']);
-                        });
-                    } elseif ($sort_by === 'users') {
-                        usort($filtered_tiers, function ($a, $b) use ($tier_stats) {
-                            $a_users = isset($tier_stats[$a['id']]) ? $tier_stats[$a['id']] : 0;
-                            $b_users = isset($tier_stats[$b['id']]) ? $tier_stats[$b['id']] : 0;
-                            return $b_users - $a_users;  // Descending
-                        });
-                    } elseif ($sort_by === 'multiplier') {
-                        usort($filtered_tiers, function ($a, $b) {
-                            return (float) $b['earning_multiplier'] <=> (float) $a['earning_multiplier'];  // Descending
-                        });
-                    }
-                    // Default is by level (already sorted in query)
-                    ?>
-                    
-                    <!-- Bulk Actions -->
-                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="bulk-tiers-form">
-                        <?php wp_nonce_field('twork_rewards_bulk_tier_action'); ?>
-                        <input type="hidden" name="action" value="twork_rewards_bulk_tier_action" />
-                        <div style="background: white; padding: 10px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; gap: 10px; align-items: center;">
-                            <select name="bulk_action" id="bulk-action-select" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('Bulk Actions', 'twork-rewards'); ?></option>
-                                <option value="activate"><?php esc_html_e('Activate', 'twork-rewards'); ?></option>
-                                <option value="deactivate"><?php esc_html_e('Deactivate', 'twork-rewards'); ?></option>
-                                <option value="delete"><?php esc_html_e('Delete', 'twork-rewards'); ?></option>
-                            </select>
-                            <button type="submit" class="button" id="bulk-apply-btn"><?php esc_html_e('Apply', 'twork-rewards'); ?></button>
-                            <span style="margin-left: 10px; color: #666; font-size: 13px;">
-                                <?php printf(esc_html__('Showing %d of %d tiers', 'twork-rewards'), count($filtered_tiers), count($tiers)); ?>
-                            </span>
-                        </div>
-                    
-                    <table class="wp-list-table widefat fixed striped">
-                        <thead>
-                            <tr>
-                                <th scope="col" class="manage-column column-cb check-column" style="width: 40px;">
-                                    <input type="checkbox" id="cb-select-all-tiers" />
-                                </th>
-                                <th><?php esc_html_e('Tier Name', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Level', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Points Range', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Multiplier', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Users', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Status', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Actions', 'twork-rewards'); ?></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($filtered_tiers)): ?>
-                                <tr>
-                                    <td colspan="8" style="text-align: center; padding: 20px;">
-                                        <?php esc_html_e('No tiers found matching your criteria.', 'twork-rewards'); ?>
-                                    </td>
-                                </tr>
-                            <?php else: ?>
-                                <?php
-                                foreach ($filtered_tiers as $tier):
-                                    $user_count = isset($tier_stats[$tier['id']]) ? $tier_stats[$tier['id']] : 0;
-                                    $benefits = !empty($tier['benefits']) ? json_decode($tier['benefits'], true) : array();
-                                    ?>
-                                    <tr>
-                                        <th scope="row" class="check-column">
-                                            <input type="checkbox" name="tier_ids[]" value="<?php echo esc_attr($tier['id']); ?>" class="tier-checkbox" />
-                                        </th>
-                                        <td>
-                                            <strong><?php echo esc_html($tier['tier_name']); ?></strong>
-                                            <?php if (!empty($tier['badge_color'])): ?>
-                                                <span style="display: inline-block; width: 20px; height: 20px; background: <?php echo esc_attr($tier['badge_color']); ?>; border-radius: 50%; margin-left: 10px; vertical-align: middle;"></span>
-                                            <?php endif; ?>
-                                            <br>
-                                            <small style="color: #666;"><?php echo esc_html($tier['description']); ?></small>
-                                        </td>
-                                        <td><?php echo esc_html($tier['tier_level']); ?></td>
-                                        <td>
-                                            <?php
-                                            echo esc_html(number_format($tier['min_points']));
-                                            echo ' - ';
-                                            echo $tier['max_points'] ? esc_html(number_format($tier['max_points'])) : esc_html__('∞', 'twork-rewards');
-                                            ?>
-                                        </td>
-                                        <td>
-                                            <strong style="color: #2271b1;">
-                                                <?php echo esc_html(number_format((float) $tier['earning_multiplier'], 2)); ?>x
-                                            </strong>
-                                            <br>
-                                            <small style="color: #666;">
-                                                <?php echo esc_html(number_format((((float) $tier['earning_multiplier'] - 1) * 100), 0)); ?>% bonus
-                                            </small>
-                                        </td>
-                                        <td>
-                                            <strong><?php echo esc_html(number_format($user_count)); ?></strong>
-                                            <?php esc_html_e('users', 'twork-rewards'); ?>
-                                        </td>
-                                        <td>
-                                            <?php if ($tier['is_active']): ?>
-                                                <span style="color: #46b450;"><?php esc_html_e('Active', 'twork-rewards'); ?></span>
-                                            <?php else: ?>
-                                                <span style="color: #d63638;"><?php esc_html_e('Inactive', 'twork-rewards'); ?></span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <a href="<?php echo esc_url(add_query_arg(array('tab' => 'tiers', 'tier_id' => $tier['id'], 'action' => 'edit'), admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                                               class="button button-small">
-                                                <?php esc_html_e('Edit', 'twork-rewards'); ?>
-                                            </a>
-                                            <a href="<?php echo esc_url(add_query_arg(array('tab' => 'tiers', 'tier_id' => $tier['id'], 'action' => 'duplicate'), admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                                               class="button button-small">
-                                                <?php esc_html_e('Duplicate', 'twork-rewards'); ?>
-                                            </a>
-                                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=twork_rewards_delete_tier&tier_id=' . $tier['id'] . '&_wpnonce=' . wp_create_nonce('twork_rewards_delete_tier'))); ?>" 
-                                               class="button button-small button-link-delete"
-                                               onclick="return confirm('<?php esc_attr_e('Are you sure you want to deactivate this tier?', 'twork-rewards'); ?>');">
-                                                <?php esc_html_e('Delete', 'twork-rewards'); ?>
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                    </form>
-                    
-                    <!-- Action Buttons -->
-                    <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                        <?php if (empty($tiers)): ?>
-                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=twork_rewards_initialize_tiers&_wpnonce=' . wp_create_nonce('twork_rewards_initialize_tiers'))); ?>" 
-                               class="button button-primary">
-                                <span class="dashicons dashicons-admin-generic" style="vertical-align: middle;"></span>
-                                <?php esc_html_e('Initialize Default Tiers', 'twork-rewards'); ?>
-                            </a>
-                        <?php else: ?>
-                            <a href="<?php echo esc_url(add_query_arg(array('tab' => 'tiers', 'action' => 'add'), admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                               class="button button-primary">
-                                <span class="dashicons dashicons-plus-alt" style="vertical-align: middle;"></span>
-                                <?php esc_html_e('Add New Tier', 'twork-rewards'); ?>
-                            </a>
-                        <?php endif; ?>
-                        <a href="<?php echo esc_url(admin_url('admin-post.php?action=twork_rewards_recalculate_tiers&_wpnonce=' . wp_create_nonce('twork_rewards_recalculate_tiers'))); ?>" 
-                           class="button button-secondary"
-                           onclick="return confirm('<?php esc_attr_e('This will recalculate and reassign tiers for all users based on their current points. Continue?', 'twork-rewards'); ?>');">
-                            <span class="dashicons dashicons-update" style="vertical-align: middle;"></span>
-                            <?php esc_html_e('Recalculate All User Tiers', 'twork-rewards'); ?>
-                        </a>
-                        <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'action' => 'export'), admin_url('admin.php'))); ?>" 
-                           class="button button-secondary">
-                            <span class="dashicons dashicons-download" style="vertical-align: middle;"></span>
-                            <?php esc_html_e('Export CSV', 'twork-rewards'); ?>
-                        </a>
-                        <button type="button" class="button button-secondary" onclick="window.print();">
-                            <span class="dashicons dashicons-printer" style="vertical-align: middle;"></span>
-                            <?php esc_html_e('Print', 'twork-rewards'); ?>
-                        </button>
-                    </div>
-                    
-                    <script type="text/javascript">
-                    jQuery(document).ready(function($) {
-                        // Select all checkbox
-                        $('#cb-select-all-tiers').on('change', function() {
-                            $('.tier-checkbox').prop('checked', $(this).prop('checked'));
-                        });
-                        
-                        // Update select all when individual checkboxes change
-                        $('.tier-checkbox').on('change', function() {
-                            var total = $('.tier-checkbox').length;
-                            var checked = $('.tier-checkbox:checked').length;
-                            $('#cb-select-all-tiers').prop('checked', total === checked);
-                        });
-                        
-                        // Bulk form validation and submission
-                        $('#bulk-tiers-form').on('submit', function(e) {
-                            var bulkAction = $('#bulk-action-select').val();
-                            var checked = $('.tier-checkbox:checked').length;
-                            
-                            if (!bulkAction) {
-                                alert('<?php echo esc_js(__('Please select a bulk action.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            if (checked === 0) {
-                                alert('<?php echo esc_js(__('Please select at least one tier.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            // Remove any existing hidden inputs for tier_ids
-                            $('#bulk-tiers-form input[name="tier_ids[]"]').remove();
-                            
-                            // Add selected tier IDs as hidden inputs to form
-                            $('.tier-checkbox:checked').each(function() {
-                                var tierId = $(this).val();
-                                $('<input>').attr({
-                                    type: 'hidden',
-                                    name: 'tier_ids[]',
-                                    value: tierId
-                                }).appendTo('#bulk-tiers-form');
-                            });
-                            
-                            // Confirm before submitting
-                            var actionText = $('#bulk-action-select option:selected').text();
-                            if (!confirm('<?php echo esc_js(__('Are you sure you want to', 'twork-rewards')); ?> ' + actionText.toLowerCase() + ' <?php echo esc_js(__('the selected tiers?', 'twork-rewards')); ?>')) {
-                                e.preventDefault();
-                                return false;
-                            }
-                        });
-                    });
-                    </script>
-                    
-                    <?php if (isset($_GET['initialized'])): ?>
-                        <div class="notice notice-success is-dismissible" style="margin-top: 15px;">
-                            <p><?php esc_html_e('✅ Default tiers initialized successfully!', 'twork-rewards'); ?></p>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            <?php elseif ($tab === 'users'): ?>
-                <!-- User Assignments Tab -->
-                <div class="tab-content" style="margin-top: 20px;">
-                    <h2><?php esc_html_e('User Tier Assignments', 'twork-rewards'); ?></h2>
-                    <p class="description">
-                        <?php esc_html_e('View and manage tier assignments for users.', 'twork-rewards'); ?>
-                    </p>
-                    
-                    <?php
-                    // PROFESSIONAL FEATURE: Handle export action
-                    if (isset($_GET['action']) && $_GET['action'] === 'export' && $tab === 'users') {
-                        $this->handle_export_user_tiers();
-                        exit;
-                    }
-
-                    // Get filter parameters
-                    $user_search = isset($_GET['user_search']) ? sanitize_text_field($_GET['user_search']) : '';
-                    $tier_filter = isset($_GET['tier_filter']) ? absint($_GET['tier_filter']) : 0;
-                    $assignment_type_filter = isset($_GET['assignment_type_filter']) ? sanitize_text_field($_GET['assignment_type_filter']) : '';
-                    $sort_by = isset($_GET['sort_by']) ? sanitize_text_field($_GET['sort_by']) : 'tier_level';
-                    $per_page = isset($_GET['per_page']) ? absint($_GET['per_page']) : 50;
-                    $paged = isset($_GET['paged']) ? absint($_GET['paged']) : 1;
-                    $offset = ($paged - 1) * $per_page;
-
-                    // Build query
-                    $where_clauses = array('ut.is_active = 1');
-                    $query_params = array();
-
-                    if (!empty($user_search)) {
-                        $where_clauses[] = '(u.display_name LIKE %s OR u.user_email LIKE %s)';
-                        $search_term = '%' . $wpdb->esc_like($user_search) . '%';
-                        $query_params[] = $search_term;
-                        $query_params[] = $search_term;
-                    }
-
-                    if ($tier_filter > 0) {
-                        $where_clauses[] = 'ut.tier_id = %d';
-                        $query_params[] = $tier_filter;
-                    }
-
-                    if (!empty($assignment_type_filter)) {
-                        $where_clauses[] = 'ut.assignment_type = %s';
-                        $query_params[] = $assignment_type_filter;
-                    }
-
-                    $where_sql = implode(' AND ', $where_clauses);
-
-                    // Get sort order
-                    $order_by = 't.tier_level DESC, ut.assigned_at DESC';
-                    if ($sort_by === 'name') {
-                        $order_by = 'u.display_name ASC';
-                    } elseif ($sort_by === 'tier') {
-                        $order_by = 't.tier_level DESC, u.display_name ASC';
-                    } elseif ($sort_by === 'assigned') {
-                        $order_by = 'ut.assigned_at DESC';
-                    } elseif ($sort_by === 'points') {
-                        $order_by = 'ut.points_at_assignment DESC';
-                    }
-
-                    // Get total count for pagination
-                    $count_query = "SELECT COUNT(DISTINCT ut.id) 
-                                    FROM $user_tiers_table ut
-                                    INNER JOIN $tiers_table t ON ut.tier_id = t.id
-                                    INNER JOIN {$wpdb->users} u ON ut.user_id = u.ID
-                                    WHERE $where_sql";
-
-                    $total_items = 0;
-                    if (!empty($query_params)) {
-                        $total_items = $wpdb->get_var($wpdb->prepare($count_query, $query_params));
-                    } else {
-                        $total_items = $wpdb->get_var($count_query);
-                    }
-                    $total_pages = ceil($total_items / $per_page);
-
-                    // Get users with tier assignments (only if tables exist)
-                    $users_with_tiers = array();
-                    $user_tiers_table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $user_tiers_table));
-                    if ($user_tiers_table_check === $user_tiers_table && $tiers_table_exists) {
-                        $data_query = "SELECT ut.*, t.tier_name, t.tier_slug, t.tier_level, t.earning_multiplier,
-                                              t.badge_color, t.badge_icon,
-                                              u.display_name, u.user_email
-                                       FROM $user_tiers_table ut
-                                       INNER JOIN $tiers_table t ON ut.tier_id = t.id
-                                       INNER JOIN {$wpdb->users} u ON ut.user_id = u.ID
-                                       WHERE $where_sql
-                                       ORDER BY $order_by
-                                       LIMIT %d OFFSET %d";
-
-                        $query_params[] = $per_page;
-                        $query_params[] = $offset;
-
-                        if (!empty($query_params)) {
-                            $users_with_tiers = $wpdb->get_results($wpdb->prepare($data_query, $query_params), ARRAY_A);
-                        } else {
-                            $users_with_tiers = $wpdb->get_results($wpdb->prepare($data_query, $per_page, $offset), ARRAY_A);
-                        }
-                    }
-
-                    // Get all tiers for filter dropdown
-                    $all_tiers_for_filter = array();
-                    if ($tiers_table_exists) {
-                        $all_tiers_for_filter = $wpdb->get_results(
-                            "SELECT id, tier_name, tier_level FROM $tiers_table WHERE is_active = 1 ORDER BY tier_level ASC",
-                            ARRAY_A
-                        );
-                    }
-                    ?>
-                    
-                    <!-- Statistics Dashboard -->
-                    <?php
-                    $stats_query = "SELECT 
-                        COUNT(DISTINCT ut.user_id) as total_users,
-                        COUNT(DISTINCT CASE WHEN ut.assignment_type = 'automatic' THEN ut.user_id END) as auto_users,
-                        COUNT(DISTINCT CASE WHEN ut.assignment_type = 'manual' THEN ut.user_id END) as manual_users,
-                        AVG(t.earning_multiplier) as avg_multiplier
-                        FROM $user_tiers_table ut
-                        INNER JOIN $tiers_table t ON ut.tier_id = t.id
-                        WHERE ut.is_active = 1";
-                    $stats = $wpdb->get_row($stats_query, ARRAY_A);
-                    ?>
-                    <div class="twork-stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px;">
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #2271b1; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Total Users', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #2271b1;"><?php echo esc_html(number_format($stats ? (int) $stats['total_users'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #46b450; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Auto Assigned', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #46b450;"><?php echo esc_html(number_format($stats ? (int) $stats['auto_users'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #f0ad4e; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Manual Assigned', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #f0ad4e;"><?php echo esc_html(number_format($stats ? (int) $stats['manual_users'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #667eea; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Avg Multiplier', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #667eea;"><?php echo esc_html(number_format($stats ? (float) $stats['avg_multiplier'] : 0, 2)); ?>x</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Search and Filter Bar -->
-                    <div style="background: white; padding: 15px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                        <form method="get" action="" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                            <input type="hidden" name="page" value="twork-rewards-point-tiers" />
-                            <input type="hidden" name="tab" value="users" />
-                            <input type="search" 
-                                   name="user_search" 
-                                   value="<?php echo esc_attr($user_search); ?>" 
-                                   placeholder="<?php esc_attr_e('Search by name or email...', 'twork-rewards'); ?>" 
-                                   style="flex: 1; min-width: 200px; padding: 6px 10px;" />
-                            <select name="tier_filter" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('All Tiers', 'twork-rewards'); ?></option>
-                                <?php foreach ($all_tiers_for_filter as $tier_option): ?>
-                                    <option value="<?php echo esc_attr($tier_option['id']); ?>" <?php selected($tier_filter, $tier_option['id']); ?>>
-                                        <?php echo esc_html($tier_option['tier_name'] . ' (Level ' . $tier_option['tier_level'] . ')'); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                            <select name="assignment_type_filter" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('All Types', 'twork-rewards'); ?></option>
-                                <option value="automatic" <?php selected($assignment_type_filter, 'automatic'); ?>><?php esc_html_e('Automatic', 'twork-rewards'); ?></option>
-                                <option value="manual" <?php selected($assignment_type_filter, 'manual'); ?>><?php esc_html_e('Manual', 'twork-rewards'); ?></option>
-                            </select>
-                            <select name="sort_by" style="padding: 6px 10px;">
-                                <option value="tier_level" <?php selected($sort_by, 'tier_level'); ?>><?php esc_html_e('Sort by Tier', 'twork-rewards'); ?></option>
-                                <option value="name" <?php selected($sort_by, 'name'); ?>><?php esc_html_e('Sort by Name', 'twork-rewards'); ?></option>
-                                <option value="assigned" <?php selected($sort_by, 'assigned'); ?>><?php esc_html_e('Sort by Date', 'twork-rewards'); ?></option>
-                                <option value="points" <?php selected($sort_by, 'points'); ?>><?php esc_html_e('Sort by Points', 'twork-rewards'); ?></option>
-                            </select>
-                            <select name="per_page" style="padding: 6px 10px;">
-                                <option value="25" <?php selected($per_page, 25); ?>>25</option>
-                                <option value="50" <?php selected($per_page, 50); ?>>50</option>
-                                <option value="100" <?php selected($per_page, 100); ?>>100</option>
-                                <option value="200" <?php selected($per_page, 200); ?>>200</option>
-                            </select>
-                            <button type="submit" class="button"><?php esc_html_e('Filter', 'twork-rewards'); ?></button>
-                            <?php if ($user_search || $tier_filter || $assignment_type_filter): ?>
-                                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'users'), admin_url('admin.php'))); ?>" 
-                                   class="button"><?php esc_html_e('Clear', 'twork-rewards'); ?></a>
-                            <?php endif; ?>
-                        </form>
-                        <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
-                            <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'users', 'action' => 'export'), admin_url('admin.php'))); ?>" 
-                               class="button button-secondary">
-                                <span class="dashicons dashicons-download" style="vertical-align: middle;"></span>
-                                <?php esc_html_e('Export CSV', 'twork-rewards'); ?>
-                            </a>
-                            <span style="color: #666; font-size: 13px;">
-                                <?php printf(esc_html__('Showing %d-%d of %d users', 'twork-rewards'),
-                                    $total_items > 0 ? $offset + 1 : 0,
-                                    min($offset + $per_page, $total_items),
-                                    $total_items); ?>
-                            </span>
-                        </div>
-                    </div>
-                    
-                    <!-- Bulk Actions -->
-                    <div style="background: white; padding: 10px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="bulk-user-tiers-form" style="display: flex; gap: 10px; align-items: center;">
-                            <?php wp_nonce_field('twork_rewards_bulk_user_tier_action'); ?>
-                            <input type="hidden" name="action" value="twork_rewards_bulk_user_tier_action" />
-                            <select name="bulk_action" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('Bulk Actions', 'twork-rewards'); ?></option>
-                                <option value="recalculate"><?php esc_html_e('Recalculate Tiers', 'twork-rewards'); ?></option>
-                                <option value="reassign"><?php esc_html_e('Bulk Reassign', 'twork-rewards'); ?></option>
-                            </select>
-                            <button type="submit" class="button" onclick="return confirm('<?php esc_attr_e('Are you sure?', 'twork-rewards'); ?>');"><?php esc_html_e('Apply', 'twork-rewards'); ?></button>
-                        </form>
-                    </div>
-                    
-                    <table class="wp-list-table widefat fixed striped">
-                        <thead>
-                            <tr>
-                                <th scope="col" class="manage-column column-cb check-column" style="width: 40px;">
-                                    <input type="checkbox" id="cb-select-all-users" />
-                                </th>
-                                <th><?php esc_html_e('User', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Tier', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Points at Assignment', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Current Points', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Assigned', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Type', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Actions', 'twork-rewards'); ?></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($users_with_tiers)): ?>
-                                <tr>
-                                    <td colspan="8" style="text-align: center; padding: 20px;">
-                                        <?php esc_html_e('No user tier assignments found.', 'twork-rewards'); ?>
-                                    </td>
-                                </tr>
-                            <?php else: ?>
-                                <?php
-                                // PROFESSIONAL OPTIMIZATION: Batch calculate points for all users to avoid N+1 query problem
-                                $user_ids = array_unique(array_column($users_with_tiers, 'user_id'));
-                                $points_cache = array();
-                                if (!empty($user_ids)) {
-                                    // Get points for all users in batch (if possible, otherwise calculate individually)
-                                    foreach ($user_ids as $uid) {
-                                        $points_cache[$uid] = $this->calculate_points_balance_from_transactions($uid);
-                                    }
-                                }
-                                foreach ($users_with_tiers as $assignment):
-                                    $current_points = isset($points_cache[$assignment['user_id']]) ? $points_cache[$assignment['user_id']] : 0;
-                                    ?>
-                                    <tr>
-                                        <th scope="row" class="check-column">
-                                            <input type="checkbox" name="user_ids[]" value="<?php echo esc_attr($assignment['user_id']); ?>" class="user-checkbox" />
-                                        </th>
-                                        <td>
-                                            <strong><?php echo esc_html($assignment['display_name']); ?></strong>
-                                            <br>
-                                            <small style="color: #666;"><?php echo esc_html($assignment['user_email']); ?></small>
-                                            <br>
-                                            <small style="color: #999;">ID: <?php echo esc_html($assignment['user_id']); ?></small>
-                                        </td>
-                                        <td>
-                                            <strong><?php echo esc_html($assignment['tier_name']); ?></strong>
-                                            <?php if (!empty($assignment['badge_color'])): ?>
-                                                <span style="display: inline-block; width: 16px; height: 16px; background: <?php echo esc_attr($assignment['badge_color']); ?>; border-radius: 50%; margin-left: 8px; vertical-align: middle;"></span>
-                                            <?php endif; ?>
-                                            <br>
-                                            <small style="color: #666;">
-                                                Level <?php echo esc_html($assignment['tier_level']); ?> • 
-                                                <?php echo esc_html(number_format((float) $assignment['earning_multiplier'], 2)); ?>x multiplier
-                                            </small>
-                                        </td>
-                                        <td><?php echo esc_html(number_format($assignment['points_at_assignment'])); ?></td>
-                                        <td>
-                                            <strong><?php echo esc_html(number_format($current_points)); ?></strong>
-                                            <?php if ($current_points != $assignment['points_at_assignment']): ?>
-                                                <br>
-                                                <small style="color: <?php echo $current_points > $assignment['points_at_assignment'] ? '#46b450' : '#d63638'; ?>;">
-                                                    <?php
-                                                    $diff = $current_points - $assignment['points_at_assignment'];
-                                                    echo ($diff > 0 ? '+' : '') . esc_html(number_format($diff));
-                                                    ?>
-                                                </small>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <?php echo esc_html(date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($assignment['assigned_at']))); ?>
-                                            <br>
-                                            <small style="color: #999;">
-                                                <?php
-                                                $assigned_time = strtotime($assignment['assigned_at']);
-                                                $time_diff = human_time_diff($assigned_time, current_time('timestamp'));
-                                                echo sprintf(esc_html__('%s ago', 'twork-rewards'), $time_diff);
-                                                ?>
-                                            </small>
-                                        </td>
-                                        <td>
-                                            <?php if ($assignment['assignment_type'] === 'automatic'): ?>
-                                                <span style="color: #2271b1; font-weight: 600;">
-                                                    <span class="dashicons dashicons-update" style="font-size: 16px; vertical-align: middle;"></span>
-                                                    <?php esc_html_e('Automatic', 'twork-rewards'); ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <span style="color: #46b450; font-weight: 600;">
-                                                    <span class="dashicons dashicons-admin-users" style="font-size: 16px; vertical-align: middle;"></span>
-                                                    <?php esc_html_e('Manual', 'twork-rewards'); ?>
-                                                </span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <a href="<?php echo esc_url(add_query_arg(array('tab' => 'users', 'user_id' => $assignment['user_id'], 'action' => 'reassign'), admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                                               class="button button-small">
-                                                <span class="dashicons dashicons-update" style="font-size: 14px; vertical-align: middle;"></span>
-                                                <?php esc_html_e('Reassign', 'twork-rewards'); ?>
-                                            </a>
-                                            <a href="<?php echo esc_url(add_query_arg(array('tab' => 'users', 'user_id' => $assignment['user_id']), admin_url('admin.php?page=twork-rewards-point-tiers'))); ?>" 
-                                               class="button button-small">
-                                                <span class="dashicons dashicons-visibility" style="font-size: 14px; vertical-align: middle;"></span>
-                                                <?php esc_html_e('View', 'twork-rewards'); ?>
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                    
-                    <!-- Pagination -->
-                    <?php if ($total_pages > 1): ?>
-                        <div class="tablenav bottom" style="margin-top: 15px;">
-                            <div class="tablenav-pages">
-                                <?php
-                                $pagination_args = array(
-                                    'base' => add_query_arg('paged', '%#%'),
-                                    'format' => '',
-                                    'prev_text' => '&laquo;',
-                                    'next_text' => '&raquo;',
-                                    'total' => $total_pages,
-                                    'current' => $paged,
-                                );
-
-                                // Preserve filters in pagination
-                                if ($user_search) {
-                                    $pagination_args['add_args'] = array('user_search' => $user_search);
-                                }
-                                if ($tier_filter) {
-                                    $pagination_args['add_args']['tier_filter'] = $tier_filter;
-                                }
-                                if ($assignment_type_filter) {
-                                    $pagination_args['add_args']['assignment_type_filter'] = $assignment_type_filter;
-                                }
-                                if ($sort_by) {
-                                    $pagination_args['add_args']['sort_by'] = $sort_by;
-                                }
-                                if ($per_page) {
-                                    $pagination_args['add_args']['per_page'] = $per_page;
-                                }
-
-                                echo paginate_links($pagination_args);
-                                ?>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                    
-                    <script type="text/javascript">
-                    jQuery(document).ready(function($) {
-                        // Select all checkbox
-                        $('#cb-select-all-users').on('change', function() {
-                            $('.user-checkbox').prop('checked', $(this).prop('checked'));
-                        });
-                        
-                        // Update select all when individual checkboxes change
-                        $('.user-checkbox').on('change', function() {
-                            var total = $('.user-checkbox').length;
-                            var checked = $('.user-checkbox:checked').length;
-                            $('#cb-select-all-users').prop('checked', total === checked);
-                        });
-                        
-                        // Bulk form validation
-                        $('#bulk-user-tiers-form').on('submit', function(e) {
-                            var bulkAction = $('select[name="bulk_action"]').val();
-                            var checked = $('.user-checkbox:checked').length;
-                            
-                            if (!bulkAction) {
-                                alert('<?php echo esc_js(__('Please select a bulk action.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            if (checked === 0) {
-                                alert('<?php echo esc_js(__('Please select at least one user.', 'twork-rewards')); ?>');
-                                e.preventDefault();
-                                return false;
-                            }
-                            
-                            // Add selected user IDs to form
-                            $('.user-checkbox:checked').each(function() {
-                                $(this).clone().appendTo('#bulk-user-tiers-form');
-                            });
-                        });
-                    });
-                    </script>
-                </div>
-            <?php elseif ($tab === 'history'): ?>
-                <!-- Tier History Tab -->
-                <div class="tab-content" style="margin-top: 20px;">
-                    <h2><?php esc_html_e('Tier Change History', 'twork-rewards'); ?></h2>
-                    <p class="description">
-                        <?php esc_html_e('View audit trail of all tier changes.', 'twork-rewards'); ?>
-                    </p>
-                    
-                    <?php
-                    // Get all tiers for filter dropdown
-                    $all_tiers_for_filter = array();
-                    if ($tiers_table_exists) {
-                        $all_tiers_for_filter = $wpdb->get_results(
-                            "SELECT id, tier_name, tier_level FROM $tiers_table WHERE is_active = 1 ORDER BY tier_level ASC",
-                            ARRAY_A
-                        );
-                    }
-
-                    // PROFESSIONAL FEATURE: Handle export action
-                    if (isset($_GET['action']) && $_GET['action'] === 'export' && $tab === 'history') {
-                        $this->handle_export_tier_history();
-                        exit;
-                    }
-
-                    $tier_history_table = $this->tier_history_table_name();
-
-                    // Get filter parameters
-                    $history_user_search = isset($_GET['history_user_search']) ? sanitize_text_field($_GET['history_user_search']) : '';
-                    $history_tier_filter = isset($_GET['history_tier_filter']) ? absint($_GET['history_tier_filter']) : 0;
-                    $change_type_filter = isset($_GET['change_type_filter']) ? sanitize_text_field($_GET['change_type_filter']) : '';
-                    $date_from = isset($_GET['date_from']) ? sanitize_text_field($_GET['date_from']) : '';
-                    $date_to = isset($_GET['date_to']) ? sanitize_text_field($_GET['date_to']) : '';
-                    $history_sort_by = isset($_GET['history_sort_by']) ? sanitize_text_field($_GET['history_sort_by']) : 'date';
-                    $history_per_page = isset($_GET['history_per_page']) ? absint($_GET['history_per_page']) : 50;
-                    $history_paged = isset($_GET['history_paged']) ? absint($_GET['history_paged']) : 1;
-                    $history_offset = ($history_paged - 1) * $history_per_page;
-
-                    // Build query
-                    $history_where_clauses = array('1=1');
-                    $history_query_params = array();
-
-                    if (!empty($history_user_search)) {
-                        $history_where_clauses[] = '(u.display_name LIKE %s OR u.user_email LIKE %s)';
-                        $history_search_term = '%' . $wpdb->esc_like($history_user_search) . '%';
-                        $history_query_params[] = $history_search_term;
-                        $history_query_params[] = $history_search_term;
-                    }
-
-                    if ($history_tier_filter > 0) {
-                        $history_where_clauses[] = '(th.old_tier_id = %d OR th.new_tier_id = %d)';
-                        $history_query_params[] = $history_tier_filter;
-                        $history_query_params[] = $history_tier_filter;
-                    }
-
-                    if (!empty($change_type_filter)) {
-                        $history_where_clauses[] = 'th.change_type = %s';
-                        $history_query_params[] = $change_type_filter;
-                    }
-
-                    if (!empty($date_from)) {
-                        $history_where_clauses[] = 'DATE(th.created_at) >= %s';
-                        $history_query_params[] = $date_from;
-                    }
-
-                    if (!empty($date_to)) {
-                        $history_where_clauses[] = 'DATE(th.created_at) <= %s';
-                        $history_query_params[] = $date_to;
-                    }
-
-                    $history_where_sql = implode(' AND ', $history_where_clauses);
-
-                    // Get sort order
-                    $history_order_by = 'th.created_at DESC';
-                    if ($history_sort_by === 'user') {
-                        $history_order_by = 'u.display_name ASC, th.created_at DESC';
-                    } elseif ($history_sort_by === 'tier') {
-                        $history_order_by = 'new_t.tier_level DESC, th.created_at DESC';
-                    } elseif ($history_sort_by === 'type') {
-                        $history_order_by = 'th.change_type ASC, th.created_at DESC';
-                    }
-
-                    // Get total count for pagination
-                    $history_count_query = "SELECT COUNT(*) 
-                                            FROM $tier_history_table th
-                                            LEFT JOIN $tiers_table old_t ON th.old_tier_id = old_t.id
-                                            INNER JOIN $tiers_table new_t ON th.new_tier_id = new_t.id
-                                            INNER JOIN {$wpdb->users} u ON th.user_id = u.ID
-                                            WHERE $history_where_sql";
-
-                    $history_total_items = 0;
-                    if (!empty($history_query_params)) {
-                        $history_total_items = $wpdb->get_var($wpdb->prepare($history_count_query, $history_query_params));
-                    } else {
-                        $history_total_items = $wpdb->get_var($history_count_query);
-                    }
-                    $history_total_pages = ceil($history_total_items / $history_per_page);
-
-                    // Get history
-                    $history = array();
-                    $tier_history_table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tier_history_table));
-                    if ($tier_history_table_check === $tier_history_table && $tiers_table_exists) {
-                        $history_data_query = "SELECT th.*, 
-                                              old_t.tier_name as old_tier_name,
-                                              old_t.tier_level as old_tier_level,
-                                              new_t.tier_name as new_tier_name,
-                                              new_t.tier_level as new_tier_level,
-                                              new_t.badge_color as new_badge_color,
-                                              u.display_name, u.user_email
-                                       FROM $tier_history_table th
-                                       LEFT JOIN $tiers_table old_t ON th.old_tier_id = old_t.id
-                                       INNER JOIN $tiers_table new_t ON th.new_tier_id = new_t.id
-                                       INNER JOIN {$wpdb->users} u ON th.user_id = u.ID
-                                       WHERE $history_where_sql
-                                       ORDER BY $history_order_by
-                                       LIMIT %d OFFSET %d";
-
-                        $history_query_params[] = $history_per_page;
-                        $history_query_params[] = $history_offset;
-
-                        if (!empty($history_query_params)) {
-                            $history = $wpdb->get_results($wpdb->prepare($history_data_query, $history_query_params), ARRAY_A);
-                        } else {
-                            $history = $wpdb->get_results($wpdb->prepare($history_data_query, $history_per_page, $history_offset), ARRAY_A);
-                        }
-                    }
-
-                    // Get statistics
-                    $history_stats_query = "SELECT 
-                        COUNT(*) as total_changes,
-                        COUNT(DISTINCT CASE WHEN th.change_type = 'upgrade' THEN th.id END) as upgrades,
-                        COUNT(DISTINCT CASE WHEN th.change_type = 'downgrade' THEN th.id END) as downgrades,
-                        COUNT(DISTINCT CASE WHEN th.change_type = 'manual' THEN th.id END) as manual_changes,
-                        COUNT(DISTINCT th.user_id) as unique_users
-                        FROM $tier_history_table th
-                        WHERE 1=1";
-                    $history_stats = $wpdb->get_row($history_stats_query, ARRAY_A);
-                    ?>
-                    
-                    <!-- Statistics Dashboard -->
-                    <div class="twork-stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px;">
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #2271b1; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Total Changes', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #2271b1;"><?php echo esc_html(number_format($history_stats ? (int) $history_stats['total_changes'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #46b450; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Upgrades', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #46b450;"><?php echo esc_html(number_format($history_stats ? (int) $history_stats['upgrades'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #d63638; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Downgrades', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #d63638;"><?php echo esc_html(number_format($history_stats ? (int) $history_stats['downgrades'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #f0ad4e; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Manual Changes', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #f0ad4e;"><?php echo esc_html(number_format($history_stats ? (int) $history_stats['manual_changes'] : 0)); ?></div>
-                        </div>
-                        <div class="twork-stat-card" style="background: white; padding: 20px; border-left: 4px solid #667eea; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                            <div style="font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px;"><?php esc_html_e('Unique Users', 'twork-rewards'); ?></div>
-                            <div style="font-size: 32px; font-weight: bold; color: #667eea;"><?php echo esc_html(number_format($history_stats ? (int) $history_stats['unique_users'] : 0)); ?></div>
-                        </div>
-                    </div>
-                    
-                    <!-- Search and Filter Bar -->
-                    <div style="background: white; padding: 15px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                        <form method="get" action="" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                            <input type="hidden" name="page" value="twork-rewards-point-tiers" />
-                            <input type="hidden" name="tab" value="history" />
-                            <input type="search" 
-                                   name="history_user_search" 
-                                   value="<?php echo esc_attr($history_user_search); ?>" 
-                                   placeholder="<?php esc_attr_e('Search by user...', 'twork-rewards'); ?>" 
-                                   style="flex: 1; min-width: 200px; padding: 6px 10px;" />
-                            <select name="history_tier_filter" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('All Tiers', 'twork-rewards'); ?></option>
-                                <?php foreach ($all_tiers_for_filter as $tier_option): ?>
-                                    <option value="<?php echo esc_attr($tier_option['id']); ?>" <?php selected($history_tier_filter, $tier_option['id']); ?>>
-                                        <?php echo esc_html($tier_option['tier_name']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                            <select name="change_type_filter" style="padding: 6px 10px;">
-                                <option value=""><?php esc_html_e('All Types', 'twork-rewards'); ?></option>
-                                <option value="upgrade" <?php selected($change_type_filter, 'upgrade'); ?>><?php esc_html_e('Upgrade', 'twork-rewards'); ?></option>
-                                <option value="downgrade" <?php selected($change_type_filter, 'downgrade'); ?>><?php esc_html_e('Downgrade', 'twork-rewards'); ?></option>
-                                <option value="manual" <?php selected($change_type_filter, 'manual'); ?>><?php esc_html_e('Manual', 'twork-rewards'); ?></option>
-                                <option value="initial" <?php selected($change_type_filter, 'initial'); ?>><?php esc_html_e('Initial', 'twork-rewards'); ?></option>
-                            </select>
-                            <input type="date" 
-                                   name="date_from" 
-                                   value="<?php echo esc_attr($date_from); ?>" 
-                                   placeholder="<?php esc_attr_e('From Date', 'twork-rewards'); ?>" 
-                                   style="padding: 6px 10px;" />
-                            <input type="date" 
-                                   name="date_to" 
-                                   value="<?php echo esc_attr($date_to); ?>" 
-                                   placeholder="<?php esc_attr_e('To Date', 'twork-rewards'); ?>" 
-                                   style="padding: 6px 10px;" />
-                            <select name="history_sort_by" style="padding: 6px 10px;">
-                                <option value="date" <?php selected($history_sort_by, 'date'); ?>><?php esc_html_e('Sort by Date', 'twork-rewards'); ?></option>
-                                <option value="user" <?php selected($history_sort_by, 'user'); ?>><?php esc_html_e('Sort by User', 'twork-rewards'); ?></option>
-                                <option value="tier" <?php selected($history_sort_by, 'tier'); ?>><?php esc_html_e('Sort by Tier', 'twork-rewards'); ?></option>
-                                <option value="type" <?php selected($history_sort_by, 'type'); ?>><?php esc_html_e('Sort by Type', 'twork-rewards'); ?></option>
-                            </select>
-                            <select name="history_per_page" style="padding: 6px 10px;">
-                                <option value="25" <?php selected($history_per_page, 25); ?>>25</option>
-                                <option value="50" <?php selected($history_per_page, 50); ?>>50</option>
-                                <option value="100" <?php selected($history_per_page, 100); ?>>100</option>
-                                <option value="200" <?php selected($history_per_page, 200); ?>>200</option>
-                            </select>
-                            <button type="submit" class="button"><?php esc_html_e('Filter', 'twork-rewards'); ?></button>
-                            <?php if ($history_user_search || $history_tier_filter || $change_type_filter || $date_from || $date_to): ?>
-                                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'history'), admin_url('admin.php'))); ?>" 
-                                   class="button"><?php esc_html_e('Clear', 'twork-rewards'); ?></a>
-                            <?php endif; ?>
-                        </form>
-                        <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
-                            <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'history', 'action' => 'export'), admin_url('admin.php'))); ?>" 
-                               class="button button-secondary">
-                                <span class="dashicons dashicons-download" style="vertical-align: middle;"></span>
-                                <?php esc_html_e('Export CSV', 'twork-rewards'); ?>
-                            </a>
-                            <span style="color: #666; font-size: 13px;">
-                                <?php printf(esc_html__('Showing %d-%d of %d records', 'twork-rewards'),
-                                    $history_total_items > 0 ? $history_offset + 1 : 0,
-                                    min($history_offset + $history_per_page, $history_total_items),
-                                    $history_total_items); ?>
-                            </span>
-                        </div>
-                    </div>
-                    
-                    <table class="wp-list-table widefat fixed striped">
-                        <thead>
-                            <tr>
-                                <th><?php esc_html_e('User', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Change', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Points', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Date', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Reason', 'twork-rewards'); ?></th>
-                                <th><?php esc_html_e('Type', 'twork-rewards'); ?></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($history)): ?>
-                                <tr>
-                                    <td colspan="6" style="text-align: center; padding: 20px;">
-                                        <?php esc_html_e('No tier change history found.', 'twork-rewards'); ?>
-                                    </td>
-                                </tr>
-                            <?php else: ?>
-                                <?php
-                                foreach ($history as $entry):
-                                    $change_type_color = '#2271b1';
-                                    $change_type_icon = 'update';
-                                    if ($entry['change_type'] === 'upgrade') {
-                                        $change_type_color = '#46b450';
-                                        $change_type_icon = 'arrow-up-alt';
-                                    } elseif ($entry['change_type'] === 'downgrade') {
-                                        $change_type_color = '#d63638';
-                                        $change_type_icon = 'arrow-down-alt';
-                                    } elseif ($entry['change_type'] === 'manual') {
-                                        $change_type_color = '#f0ad4e';
-                                        $change_type_icon = 'admin-users';
-                                    }
-                                    ?>
-                                    <tr>
-                                        <td>
-                                            <strong><?php echo esc_html($entry['display_name']); ?></strong>
-                                            <br>
-                                            <small style="color: #666;"><?php echo esc_html($entry['user_email']); ?></small>
-                                            <br>
-                                            <small style="color: #999;">ID: <?php echo esc_html($entry['user_id']); ?></small>
-                                        </td>
-                                        <td>
-                                            <div style="display: flex; align-items: center; gap: 8px;">
-                                                <?php if ($entry['old_tier_name']): ?>
-                                                    <div style="display: flex; align-items: center; gap: 5px;">
-                                                        <?php if (!empty($entry['old_tier_level'])): ?>
-                                                            <span style="font-size: 11px; color: #999; background: #f0f0f1; padding: 2px 6px; border-radius: 3px;">
-                                                                L<?php echo esc_html($entry['old_tier_level']); ?>
-                                                            </span>
-                                                        <?php endif; ?>
-                                                        <span style="color: #666;"><?php echo esc_html($entry['old_tier_name']); ?></span>
-                                                    </div>
-                                                    <span style="color: #999; font-weight: bold;">→</span>
-                                                <?php endif; ?>
-                                                <div style="display: flex; align-items: center; gap: 5px;">
-                                                    <?php if (!empty($entry['new_badge_color'])): ?>
-                                                        <span style="display: inline-block; width: 16px; height: 16px; background: <?php echo esc_attr($entry['new_badge_color']); ?>; border-radius: 50%;"></span>
-                                                    <?php endif; ?>
-                                                    <?php if (!empty($entry['new_tier_level'])): ?>
-                                                        <span style="font-size: 11px; color: #fff; background: <?php echo esc_attr($change_type_color); ?>; padding: 2px 6px; border-radius: 3px; font-weight: bold;">
-                                                            L<?php echo esc_html($entry['new_tier_level']); ?>
-                                                        </span>
-                                                    <?php endif; ?>
-                                                    <strong style="color: <?php echo esc_attr($change_type_color); ?>;">
-                                                        <?php echo esc_html($entry['new_tier_name']); ?>
-                                                    </strong>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <strong><?php echo esc_html(number_format($entry['points_at_change'])); ?></strong>
-                                            <br>
-                                            <small style="color: #666;"><?php esc_html_e('at change', 'twork-rewards'); ?></small>
-                                        </td>
-                                        <td>
-                                            <?php echo esc_html(date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($entry['created_at']))); ?>
-                                            <br>
-                                            <small style="color: #999;">
-                                                <?php
-                                                $history_time = strtotime($entry['created_at']);
-                                                $history_time_diff = human_time_diff($history_time, current_time('timestamp'));
-                                                echo sprintf(esc_html__('%s ago', 'twork-rewards'), $history_time_diff);
-                                                ?>
-                                            </small>
-                                        </td>
-                                        <td>
-                                            <?php echo esc_html($entry['change_reason']); ?>
-                                            <?php if (empty($entry['change_reason'])): ?>
-                                                <span style="color: #999; font-style: italic;"><?php esc_html_e('N/A', 'twork-rewards'); ?></span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <span style="color: <?php echo esc_attr($change_type_color); ?>; font-weight: 600; text-transform: capitalize;">
-                                                <span class="dashicons dashicons-<?php echo esc_attr($change_type_icon); ?>" style="font-size: 16px; vertical-align: middle;"></span>
-                                                <?php echo esc_html($entry['change_type']); ?>
-                                            </span>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                    
-                    <!-- Pagination -->
-                    <?php if ($history_total_pages > 1): ?>
-                        <div class="tablenav bottom" style="margin-top: 15px;">
-                            <div class="tablenav-pages">
-                                <?php
-                                $history_pagination_args = array(
-                                    'base' => add_query_arg('history_paged', '%#%'),
-                                    'format' => '',
-                                    'prev_text' => '&laquo;',
-                                    'next_text' => '&raquo;',
-                                    'total' => $history_total_pages,
-                                    'current' => $history_paged,
-                                );
-
-                                // Preserve filters in pagination
-                                if ($history_user_search) {
-                                    $history_pagination_args['add_args'] = array('history_user_search' => $history_user_search);
-                                }
-                                if ($history_tier_filter) {
-                                    $history_pagination_args['add_args']['history_tier_filter'] = $history_tier_filter;
-                                }
-                                if ($change_type_filter) {
-                                    $history_pagination_args['add_args']['change_type_filter'] = $change_type_filter;
-                                }
-                                if ($date_from) {
-                                    $history_pagination_args['add_args']['date_from'] = $date_from;
-                                }
-                                if ($date_to) {
-                                    $history_pagination_args['add_args']['date_to'] = $date_to;
-                                }
-                                if ($history_sort_by) {
-                                    $history_pagination_args['add_args']['history_sort_by'] = $history_sort_by;
-                                }
-                                if ($history_per_page) {
-                                    $history_pagination_args['add_args']['history_per_page'] = $history_per_page;
-                                }
-
-                                echo paginate_links($history_pagination_args);
-                                ?>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            <?php endif; ?>
-            <?php endif; ?>
-        </div>
-        <?php
-    }
-
-    /**
-     * Handle tier save (create/update)
-     */
-    public function handle_tier_save()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_save_tier');
-
-        global $wpdb;
-        $tiers_table = $this->point_tiers_table_name();
-
-        $tier_id = isset($_POST['tier_id']) ? absint($_POST['tier_id']) : 0;
-        $tier_name = isset($_POST['tier_name']) ? sanitize_text_field($_POST['tier_name']) : '';
-        $tier_slug = isset($_POST['tier_slug']) ? sanitize_title($_POST['tier_slug']) : '';
-        $tier_level = isset($_POST['tier_level']) ? absint($_POST['tier_level']) : 0;
-        $min_points = isset($_POST['min_points']) ? absint($_POST['min_points']) : 0;
-        $max_points = isset($_POST['max_points']) && !empty($_POST['max_points']) ? absint($_POST['max_points']) : null;
-        $earning_multiplier = isset($_POST['earning_multiplier']) ? floatval($_POST['earning_multiplier']) : 1.0;
-        $badge_color = isset($_POST['badge_color']) ? sanitize_hex_color($_POST['badge_color']) : '#666666';
-        $badge_icon = isset($_POST['badge_icon']) ? sanitize_text_field($_POST['badge_icon']) : '';
-        $description = isset($_POST['description']) ? sanitize_textarea_field($_POST['description']) : '';
-        $benefits = isset($_POST['benefits']) ? sanitize_textarea_field($_POST['benefits']) : '';
-        $display_order = isset($_POST['display_order']) ? absint($_POST['display_order']) : 0;
-        $is_active = isset($_POST['is_active']) ? 1 : 0;
-
-        // PROFESSIONAL VALIDATION: Validate required fields
-        if (empty($tier_name)) {
-            wp_die(__('Tier name is required.', 'twork-rewards'));
-        }
-
-        if ($tier_level <= 0) {
-            wp_die(__('Tier level must be greater than 0.', 'twork-rewards'));
-        }
-
-        if ($earning_multiplier <= 0 || $earning_multiplier > 10) {
-            wp_die(__('Earning multiplier must be between 0.01 and 10.00.', 'twork-rewards'));
-        }
-
-        // Auto-generate slug if empty
-        if (empty($tier_slug)) {
-            $tier_slug = sanitize_title($tier_name);
-        }
-
-        // PROFESSIONAL VALIDATION: Check for duplicate tier_level (if updating, exclude current tier)
-        $existing_tier = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $tiers_table WHERE tier_level = %d AND id != %d",
-            $tier_level,
-            $tier_id
-        ));
-
-        if ($existing_tier) {
-            wp_die(__('A tier with this level already exists. Please choose a different level.', 'twork-rewards'));
-        }
-
-        // PROFESSIONAL VALIDATION: Check for duplicate tier_slug (if updating, exclude current tier)
-        $existing_slug = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $tiers_table WHERE tier_slug = %s AND id != %d",
-            $tier_slug,
-            $tier_id
-        ));
-
-        if ($existing_slug) {
-            wp_die(__('A tier with this slug already exists. Please choose a different slug.', 'twork-rewards'));
-        }
-
-        // PROFESSIONAL VALIDATION: Validate points range
-        if ($max_points !== null && $max_points <= $min_points) {
-            wp_die(__('Maximum points must be greater than minimum points.', 'twork-rewards'));
-        }
-
-        // Parse benefits (comma-separated or newline-separated)
-        $benefits_array = array_filter(array_map('trim', explode("\n", $benefits)));
-        $benefits_json = json_encode($benefits_array);
-
-        $data = array(
-            'tier_name' => $tier_name,
-            'tier_slug' => $tier_slug,
-            'tier_level' => $tier_level,
-            'min_points' => $min_points,
-            'max_points' => $max_points,
-            'earning_multiplier' => $earning_multiplier,
-            'badge_color' => $badge_color,
-            'badge_icon' => $badge_icon,
-            'description' => $description,
-            'benefits' => $benefits_json,
-            'display_order' => $display_order,
-            'is_active' => $is_active,
-            'updated_at' => current_time('mysql'),
-        );
-
-        if ($tier_id > 0) {
-            // Update existing tier
-            $result = $wpdb->update(
-                $tiers_table,
-                $data,
-                array('id' => $tier_id),
-                array('%s', '%s', '%d', '%d', '%d', '%f', '%s', '%s', '%s', '%s', '%d', '%d', '%s'),
-                array('%d')
-            );
-
-            if ($result === false) {
-                wp_die(__('Failed to update tier. Please try again.', 'twork-rewards'));
-            }
-        } else {
-            // Create new tier
-            $data['created_at'] = current_time('mysql');
-            $result = $wpdb->insert($tiers_table, $data, array('%s', '%s', '%d', '%d', '%d', '%f', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s'));
-
-            if ($result === false) {
-                wp_die(__('Failed to create tier. Please try again.', 'twork-rewards'));
-            }
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Invalidate all tier-related caches when tier is saved
-        delete_transient('twork_rest_all_tiers');
-        delete_transient('twork_tier_thresholds');
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'updated' => 1), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * Handle tier deletion
-     */
-    public function handle_tier_delete()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_delete_tier');
-
-        global $wpdb;
-        $tiers_table = $this->point_tiers_table_name();
-        $tier_id = isset($_GET['tier_id']) ? absint($_GET['tier_id']) : 0;
-
-        if ($tier_id > 0) {
-            // PROFESSIONAL FIX: Check if tier exists and get tier name for logging
-            $tier = $wpdb->get_row($wpdb->prepare(
-                "SELECT tier_name, is_active FROM $tiers_table WHERE id = %d",
-                $tier_id
-            ), ARRAY_A);
-
-            if ($tier) {
-                // Deactivate instead of delete (soft delete)
-                $result = $wpdb->update(
-                    $tiers_table,
-                    array('is_active' => 0, 'updated_at' => current_time('mysql')),
-                    array('id' => $tier_id),
-                    array('%d', '%s'),
-                    array('%d')
-                );
-
-                if ($result !== false) {
-                    // PROFESSIONAL OPTIMIZATION: Invalidate all tier-related caches when tier is deleted
-                    delete_transient('twork_rest_all_tiers');
-                    delete_transient('twork_tier_thresholds');
-
-                    // Log for debugging
-                    if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log(sprintf(
-                            'T-Work Rewards: Tier deleted (deactivated). Tier ID: %d, Tier Name: %s',
-                            $tier_id,
-                            $tier['tier_name']
-                        ));
-                    }
-                } else {
-                    // Log error if update failed
-                    if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log(sprintf(
-                            'T-Work Rewards: Failed to delete tier. Tier ID: %d, Error: %s',
-                            $tier_id,
-                            $wpdb->last_error
-                        ));
-                    }
-                }
-            }
-        }
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'deleted' => 1), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * Handle user tier assignment (manual)
-     */
-    public function handle_user_tier_assign()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_assign_user_tier');
-
-        $user_id = isset($_POST['user_id']) ? absint($_POST['user_id']) : 0;
-        $tier_id = isset($_POST['tier_id']) ? absint($_POST['tier_id']) : 0;
-
-        if ($user_id > 0 && $tier_id > 0) {
-            $points_balance = $this->calculate_points_balance_from_transactions($user_id);
-            $this->assign_user_tier($user_id, $tier_id, 'manual', $points_balance, get_current_user_id());
-        }
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'users', 'assigned' => 1), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * Handle recalculate all user tiers
-     */
-    public function handle_recalculate_tiers()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_recalculate_tiers');
-
-        // Get all users
-        $users = get_users(array('fields' => 'ID'));
-        $recalculated = 0;
-
-        foreach ($users as $user_id) {
-            $tier = $this->calculate_user_tier($user_id, true);
-            if ($tier) {
-                $recalculated++;
-            }
-        }
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'recalculated' => $recalculated), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * Handle initialize default tiers
-     */
-    public function handle_initialize_tiers()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_initialize_tiers');
-
-        // Ensure tables exist
-        $this->create_point_tiers_tables();
-
-        // Initialize default tiers (will only insert if table is empty)
-        $this->initialize_default_tiers();
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'initialized' => 1), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Handle bulk tier actions (activate, deactivate, delete)
-     */
-    public function handle_bulk_tier_action()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_bulk_tier_action');
-
-        $bulk_action = isset($_POST['bulk_action']) ? sanitize_text_field($_POST['bulk_action']) : '';
-        $tier_ids = isset($_POST['tier_ids']) ? array_map('absint', $_POST['tier_ids']) : array();
-
-        if (empty($bulk_action) || empty($tier_ids)) {
-            wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', 'error' => 'no_selection'), admin_url('admin.php')));
-            exit;
-        }
-
-        global $wpdb;
-        $tiers_table = $this->point_tiers_table_name();
-        $updated = 0;
-
-        foreach ($tier_ids as $tier_id) {
-            if ($tier_id <= 0) {
-                continue;
-            }
-
-            if ($bulk_action === 'activate') {
-                $result = $wpdb->update(
-                    $tiers_table,
-                    array('is_active' => 1, 'updated_at' => current_time('mysql')),
-                    array('id' => $tier_id),
-                    array('%d', '%s'),
-                    array('%d')
-                );
-                if ($result !== false) {
-                    $updated++;
-                }
-            } elseif ($bulk_action === 'deactivate') {
-                $result = $wpdb->update(
-                    $tiers_table,
-                    array('is_active' => 0, 'updated_at' => current_time('mysql')),
-                    array('id' => $tier_id),
-                    array('%d', '%s'),
-                    array('%d')
-                );
-                if ($result !== false) {
-                    $updated++;
-                }
-            } elseif ($bulk_action === 'delete') {
-                // Soft delete (deactivate)
-                $result = $wpdb->update(
-                    $tiers_table,
-                    array('is_active' => 0, 'updated_at' => current_time('mysql')),
-                    array('id' => $tier_id),
-                    array('%d', '%s'),
-                    array('%d')
-                );
-                if ($result !== false) {
-                    $updated++;
-                }
-            }
-        }
-
-        $message = 'bulk_updated';
-        if ($bulk_action === 'activate') {
-            $message = 'bulk_activated';
-        } elseif ($bulk_action === 'deactivate') {
-            $message = 'bulk_deactivated';
-        } elseif ($bulk_action === 'delete') {
-            $message = 'bulk_deleted';
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Invalidate caches after bulk operations
-        if ($updated > 0) {
-            delete_transient('twork_rest_all_tiers');
-            delete_transient('twork_tier_thresholds');
-        }
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'tiers', $message => $updated), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Export tiers to CSV
-     */
-    public function handle_export_tiers()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-
-        global $wpdb;
-        $tiers_table = $this->point_tiers_table_name();
-        $user_tiers_table = $this->user_tiers_table_name();
-
-        // Get all tiers
-        $tiers = $wpdb->get_results("SELECT * FROM $tiers_table ORDER BY tier_level ASC", ARRAY_A);
-
-        // Get user counts for each tier
-        $tier_user_counts = array();
-        if ($wpdb->get_var("SHOW TABLES LIKE '$user_tiers_table'") === $user_tiers_table) {
-            $user_counts = $wpdb->get_results(
-                "SELECT tier_id, COUNT(DISTINCT user_id) as user_count 
-                 FROM $user_tiers_table 
-                 WHERE is_active = 1 
-                 GROUP BY tier_id",
-                ARRAY_A
-            );
-            foreach ($user_counts as $count) {
-                $tier_user_counts[$count['tier_id']] = $count['user_count'];
-            }
-        }
-
-        // Set headers for CSV download
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename=twork-tiers-' . date('Y-m-d') . '.csv');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-
-        $output = fopen('php://output', 'w');
-
-        // Add BOM for UTF-8
-        fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-
-        // CSV Headers
-        fputcsv($output, array(
-            __('ID', 'twork-rewards'),
-            __('Tier Name', 'twork-rewards'),
-            __('Slug', 'twork-rewards'),
-            __('Level', 'twork-rewards'),
-            __('Min Points', 'twork-rewards'),
-            __('Max Points', 'twork-rewards'),
-            __('Earning Multiplier', 'twork-rewards'),
-            __('Badge Color', 'twork-rewards'),
-            __('Badge Icon', 'twork-rewards'),
-            __('Description', 'twork-rewards'),
-            __('Benefits', 'twork-rewards'),
-            __('Users Count', 'twork-rewards'),
-            __('Status', 'twork-rewards'),
-            __('Display Order', 'twork-rewards'),
-            __('Created At', 'twork-rewards'),
-            __('Updated At', 'twork-rewards'),
-        ));
-
-        // CSV Data
-        foreach ($tiers as $tier) {
-            $benefits = !empty($tier['benefits']) ? json_decode($tier['benefits'], true) : array();
-            $benefits_text = is_array($benefits) ? implode('; ', $benefits) : '';
-            $user_count = isset($tier_user_counts[$tier['id']]) ? $tier_user_counts[$tier['id']] : 0;
-
-            fputcsv($output, array(
-                $tier['id'],
-                $tier['tier_name'],
-                $tier['tier_slug'],
-                $tier['tier_level'],
-                $tier['min_points'],
-                $tier['max_points'] ? $tier['max_points'] : __('Unlimited', 'twork-rewards'),
-                $tier['earning_multiplier'],
-                $tier['badge_color'],
-                $tier['badge_icon'] ? $tier['badge_icon'] : '',
-                $tier['description'],
-                $benefits_text,
-                $user_count,
-                $tier['is_active'] ? __('Active', 'twork-rewards') : __('Inactive', 'twork-rewards'),
-                $tier['display_order'],
-                $tier['created_at'],
-                $tier['updated_at'],
-            ));
-        }
-
-        fclose($output);
-        exit;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Handle bulk user tier actions (assign, remove, recalculate)
-     */
-    public function handle_bulk_user_tier_action()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_bulk_user_tier_action');
-
-        $bulk_action = isset($_POST['bulk_action']) ? sanitize_text_field($_POST['bulk_action']) : '';
-        $user_ids = isset($_POST['user_ids']) ? array_map('absint', $_POST['user_ids']) : array();
-        $tier_id = isset($_POST['tier_id']) ? absint($_POST['tier_id']) : 0;
-
-        if (empty($bulk_action) || empty($user_ids)) {
-            wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'users', 'error' => 'no_selection'), admin_url('admin.php')));
-            exit;
-        }
-
-        global $wpdb;
-        $user_tiers_table = $this->user_tiers_table_name();
-        $updated = 0;
-
-        foreach ($user_ids as $user_id) {
-            if ($user_id <= 0) {
-                continue;
-            }
-
-            if ($bulk_action === 'assign' && $tier_id > 0) {
-                $points_balance = $this->calculate_points_balance_from_transactions($user_id);
-                $result = $this->assign_user_tier($user_id, $tier_id, 'manual', $points_balance, get_current_user_id());
-                if ($result) {
-                    $updated++;
-                }
-            } elseif ($bulk_action === 'remove') {
-                // Deactivate all tier assignments for user
-                $result = $wpdb->update(
-                    $user_tiers_table,
-                    array('is_active' => 0, 'updated_at' => current_time('mysql')),
-                    array('user_id' => $user_id, 'is_active' => 1),
-                    array('%d', '%s'),
-                    array('%d', '%d')
-                );
-                if ($result !== false) {
-                    $updated++;
-                }
-            } elseif ($bulk_action === 'recalculate') {
-                $tier = $this->calculate_user_tier($user_id, true);
-                if ($tier) {
-                    $updated++;
-                }
-            }
-        }
-
-        $message = 'bulk_updated';
-        if ($bulk_action === 'assign') {
-            $message = 'bulk_assigned';
-        } elseif ($bulk_action === 'remove') {
-            $message = 'bulk_removed';
-        } elseif ($bulk_action === 'recalculate') {
-            $message = 'bulk_recalculated';
-        }
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-point-tiers', 'tab' => 'users', $message => $updated), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Export user tier assignments to CSV
-     */
-    public function handle_export_user_tiers()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-
-        global $wpdb;
-        $user_tiers_table = $this->user_tiers_table_name();
-        $tiers_table = $this->point_tiers_table_name();
-
-        // Check if tables exist
-        $user_tiers_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $user_tiers_table));
-        $tiers_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-
-        if ($user_tiers_check !== $user_tiers_table || $tiers_check !== $tiers_table) {
-            wp_die(__('Tier tables do not exist.', 'twork-rewards'));
-        }
-
-        // Get all user tier assignments with tier and user details
-        $assignments = $wpdb->get_results(
-            "SELECT ut.*, t.tier_name, t.tier_slug, t.tier_level, t.earning_multiplier,
-                    u.user_login, u.user_email, u.display_name
-             FROM $user_tiers_table ut
-             INNER JOIN $tiers_table t ON ut.tier_id = t.id
-             LEFT JOIN {$wpdb->users} u ON ut.user_id = u.ID
-             ORDER BY ut.assigned_at DESC",
-            ARRAY_A
-        );
-
-        // Set headers for CSV download
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename=twork-user-tiers-' . date('Y-m-d') . '.csv');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-
-        $output = fopen('php://output', 'w');
-
-        // Add BOM for UTF-8
-        fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-
-        // CSV Headers
-        fputcsv($output, array(
-            __('User ID', 'twork-rewards'),
-            __('Username', 'twork-rewards'),
-            __('Email', 'twork-rewards'),
-            __('Display Name', 'twork-rewards'),
-            __('Tier ID', 'twork-rewards'),
-            __('Tier Name', 'twork-rewards'),
-            __('Tier Level', 'twork-rewards'),
-            __('Earning Multiplier', 'twork-rewards'),
-            __('Assignment Type', 'twork-rewards'),
-            __('Points at Assignment', 'twork-rewards'),
-            __('Assigned By', 'twork-rewards'),
-            __('Assigned At', 'twork-rewards'),
-            __('Status', 'twork-rewards'),
-        ));
-
-        // CSV Data
-        foreach ($assignments as $assignment) {
-            $assigned_by_user = $assignment['assigned_by'] ? get_userdata($assignment['assigned_by']) : null;
-            $assigned_by_name = $assigned_by_user ? $assigned_by_user->display_name : __('System', 'twork-rewards');
-
-            fputcsv($output, array(
-                $assignment['user_id'],
-                $assignment['user_login'] ?? '',
-                $assignment['user_email'] ?? '',
-                $assignment['display_name'] ?? '',
-                $assignment['tier_id'],
-                $assignment['tier_name'],
-                $assignment['tier_level'],
-                $assignment['earning_multiplier'],
-                ucfirst($assignment['assignment_type']),
-                $assignment['points_at_assignment'],
-                $assigned_by_name,
-                $assignment['assigned_at'],
-                $assignment['is_active'] ? __('Active', 'twork-rewards') : __('Inactive', 'twork-rewards'),
-            ));
-        }
-
-        fclose($output);
-        exit;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Export tier history to CSV
-     */
-    public function handle_export_tier_history()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-
-        global $wpdb;
-        $tier_history_table = $this->tier_history_table_name();
-        $tiers_table = $this->point_tiers_table_name();
-
-        // Check if tables exist
-        $history_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tier_history_table));
-        $tiers_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-
-        if ($history_check !== $tier_history_table || $tiers_check !== $tiers_table) {
-            wp_die(__('Tier history table does not exist.', 'twork-rewards'));
-        }
-
-        // Get all tier history with tier and user details
-        $history = $wpdb->get_results(
-            "SELECT th.*, 
-                    old_tier.tier_name as old_tier_name, old_tier.tier_level as old_tier_level,
-                    new_tier.tier_name as new_tier_name, new_tier.tier_level as new_tier_level,
-                    u.user_login, u.user_email, u.display_name,
-                    changed_by_user.display_name as changed_by_name
-             FROM $tier_history_table th
-             LEFT JOIN $tiers_table old_tier ON th.old_tier_id = old_tier.id
-             INNER JOIN $tiers_table new_tier ON th.new_tier_id = new_tier.id
-             LEFT JOIN {$wpdb->users} u ON th.user_id = u.ID
-             LEFT JOIN {$wpdb->users} changed_by_user ON th.changed_by = changed_by_user.ID
-             ORDER BY th.changed_at DESC",
-            ARRAY_A
-        );
-
-        // Set headers for CSV download
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename=twork-tier-history-' . date('Y-m-d') . '.csv');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-
-        $output = fopen('php://output', 'w');
-
-        // Add BOM for UTF-8
-        fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
-
-        // CSV Headers
-        fputcsv($output, array(
-            __('ID', 'twork-rewards'),
-            __('User ID', 'twork-rewards'),
-            __('Username', 'twork-rewards'),
-            __('Email', 'twork-rewards'),
-            __('Old Tier', 'twork-rewards'),
-            __('Old Tier Level', 'twork-rewards'),
-            __('New Tier', 'twork-rewards'),
-            __('New Tier Level', 'twork-rewards'),
-            __('Change Type', 'twork-rewards'),
-            __('Points at Change', 'twork-rewards'),
-            __('Changed By', 'twork-rewards'),
-            __('Change Reason', 'twork-rewards'),
-            __('Changed At', 'twork-rewards'),
-        ));
-
-        // CSV Data
-        foreach ($history as $entry) {
-            fputcsv($output, array(
-                $entry['id'],
-                $entry['user_id'],
-                $entry['user_login'] ?? '',
-                $entry['user_email'] ?? '',
-                $entry['old_tier_name'] ?? __('None', 'twork-rewards'),
-                $entry['old_tier_level'] ?? '',
-                $entry['new_tier_name'],
-                $entry['new_tier_level'],
-                ucfirst($entry['change_type']),
-                $entry['points_at_change'],
-                $entry['changed_by_name'] ?? __('System', 'twork-rewards'),
-                $entry['change_reason'],
-                $entry['changed_at'],
-            ));
-        }
-
-        fclose($output);
-        exit;
-    }
 
     /**
      * Get User Page settings with defaults
@@ -4093,7 +1472,6 @@ class TWork_Rewards_System
             'show_quick_actions' => (int) get_option(self::OPTION_USER_PAGE_SHOW_QUICK_ACTIONS, 1),
             'default_view' => sanitize_text_field(get_option(self::OPTION_USER_PAGE_DEFAULT_VIEW, 'list')),
             'enable_advanced_filters' => (int) get_option(self::OPTION_USER_PAGE_ENABLE_ADVANCED_FILTERS, 0),
-            'show_user_tier' => (int) get_option(self::OPTION_USER_PAGE_SHOW_USER_TIER, 1),
             'show_registration_date' => (int) get_option(self::OPTION_USER_PAGE_SHOW_REGISTRATION_DATE, 0),
             'show_total_transactions' => (int) get_option(self::OPTION_USER_PAGE_SHOW_TOTAL_TRANSACTIONS, 0),
             'enable_real_time_updates' => (int) get_option(self::OPTION_USER_PAGE_ENABLE_REAL_TIME_UPDATES, 0),
@@ -4698,7 +2076,7 @@ class TWork_Rewards_System
                                        name="<?php echo esc_attr(self::OPTION_USER_PAGE_ENABLE_ADVANCED_FILTERS); ?>"
                                        id="<?php echo esc_attr(self::OPTION_USER_PAGE_ENABLE_ADVANCED_FILTERS); ?>"
                                        value="1" <?php checked($user_page_settings['enable_advanced_filters'], 1); ?> />
-                                <?php esc_html_e('Enable advanced filtering options (date range, points range, tier filter, etc.)', 'twork-rewards'); ?>
+                                <?php esc_html_e('Enable advanced filtering options (date range, points range, etc.)', 'twork-rewards'); ?>
                             </label>
                             <p class="description">
                                 <?php esc_html_e('When enabled, additional filtering options will be available on the Users page.', 'twork-rewards'); ?>
@@ -4761,12 +2139,6 @@ class TWork_Rewards_System
                                            name="<?php echo esc_attr(self::OPTION_USER_PAGE_SHOW_LAST_UPDATED); ?>"
                                            value="1" <?php checked($user_page_settings['show_last_updated'], 1); ?> />
                                     <?php esc_html_e('Last Updated', 'twork-rewards'); ?>
-                                </label>
-                                <label style="display: block; margin-bottom: 8px;">
-                                    <input type="checkbox"
-                                           name="<?php echo esc_attr(self::OPTION_USER_PAGE_SHOW_USER_TIER); ?>"
-                                           value="1" <?php checked($user_page_settings['show_user_tier'], 1); ?> />
-                                    <?php esc_html_e('User Tier', 'twork-rewards'); ?>
                                 </label>
                                 <label style="display: block; margin-bottom: 8px;">
                                     <input type="checkbox"
@@ -5113,7 +2485,7 @@ class TWork_Rewards_System
                                 <?php esc_html_e('Enable bulk actions for selected users', 'twork-rewards'); ?>
                             </label>
                             <p class="description">
-                                <?php esc_html_e('When enabled, administrators can perform bulk actions (export, update tier, etc.) on multiple users at once.', 'twork-rewards'); ?>
+                                <?php esc_html_e('When enabled, administrators can perform bulk actions (export, etc.) on multiple users at once.', 'twork-rewards'); ?>
                             </p>
                         </td>
                     </tr>
@@ -5305,7 +2677,6 @@ class TWork_Rewards_System
         update_option(self::OPTION_USER_PAGE_SHOW_POINTS, isset($_POST[self::OPTION_USER_PAGE_SHOW_POINTS]) ? 1 : 0);
         update_option(self::OPTION_USER_PAGE_SHOW_ACTIVITY_SCORE, isset($_POST[self::OPTION_USER_PAGE_SHOW_ACTIVITY_SCORE]) ? 1 : 0);
         update_option(self::OPTION_USER_PAGE_SHOW_LAST_UPDATED, isset($_POST[self::OPTION_USER_PAGE_SHOW_LAST_UPDATED]) ? 1 : 0);
-        update_option(self::OPTION_USER_PAGE_SHOW_USER_TIER, isset($_POST[self::OPTION_USER_PAGE_SHOW_USER_TIER]) ? 1 : 0);
         update_option(self::OPTION_USER_PAGE_SHOW_REGISTRATION_DATE, isset($_POST[self::OPTION_USER_PAGE_SHOW_REGISTRATION_DATE]) ? 1 : 0);
         update_option(self::OPTION_USER_PAGE_SHOW_TOTAL_TRANSACTIONS, isset($_POST[self::OPTION_USER_PAGE_SHOW_TOTAL_TRANSACTIONS]) ? 1 : 0);
 
@@ -5466,6 +2837,29 @@ class TWork_Rewards_System
     }
 
     /**
+     * REST API: require an authenticated WordPress user or a site administrator.
+     * Used for routes that read or modify per-user data.
+     *
+     * @param WP_REST_Request $request Request (unused; required by REST API).
+     * @return bool
+     */
+    public function rest_permission_user_or_admin(WP_REST_Request $request)
+    {
+        return is_user_logged_in() || current_user_can('manage_options');
+    }
+
+    /**
+     * REST API: intentionally public (read-only CMS or non-sensitive app config).
+     *
+     * @param WP_REST_Request $request Request (unused).
+     * @return bool
+     */
+    public function rest_permission_public(WP_REST_Request $request)
+    {
+        return true;
+    }
+
+    /**
      * REST API routes for Lucky Box toggle and request flow.
      *
      * Mobile app calls:
@@ -5477,9 +2871,7 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/luckybox/config/(?P<user_id>\d+)', array(
             'methods' => 'GET',
             'callback' => array($this, 'rest_luckybox_get_config'),
-            // Mobile app uses WooCommerce keys; no WP nonce/session available.
-            // Keep public but validate inputs and existence.
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'validate_callback' => function ($param) {
@@ -5492,7 +2884,7 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/luckybox/open', array(
             'methods' => 'POST',
             'callback' => array($this, 'rest_luckybox_open'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -5504,11 +2896,10 @@ class TWork_Rewards_System
             ),
         ));
 
-
         register_rest_route('twork/v1', '/luckybox/banner', array(
             'methods' => 'GET',
             'callback' => array($this, 'rest_luckybox_banner'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_public'),
         ));
     }
 
@@ -5530,8 +2921,8 @@ class TWork_Rewards_System
             $server = rest_get_server();
             if ($server) {
                 $routes = $server->get_routes();
-                $balance_route = '/twork/v1/points/balance/(?P<user_id>\\d+)';
-                $transactions_route = '/twork/v1/points/transactions/(?P<user_id>\\d+)';
+                $balance_route = '/twork/v1/points/balance/(?P<user_id>\d+)';
+                $transactions_route = '/twork/v1/points/transactions/(?P<user_id>\d+)';
                 if (isset($routes[$balance_route]) || isset($routes[$transactions_route])) {
                     return;
                 }
@@ -5544,7 +2935,7 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/points/balance/(?P<user_id>\d+)', array(
             'methods' => 'GET',
             'callback' => array($this, 'rest_get_balance'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -5559,7 +2950,7 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/points/transactions/(?P<user_id>\d+)', array(
             'methods' => 'GET',
             'callback' => array($this, 'rest_get_transactions'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -5597,43 +2988,6 @@ class TWork_Rewards_System
     }
 
     /**
-     * REST API routes for Code validation and redemption.
-     *
-     * Mobile app calls:
-     * - GET  /wp-json/twork/v1/prize/validate?code=123456789101
-     * - POST /wp-json/twork/v1/prize/redeem   body: { "user_id": 123, "code": "123456789101" }
-     */
-    public function register_code_routes()
-    {
-        register_rest_route('twork/v1', '/prize/validate', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'rest_prize_validate'),
-            'permission_callback' => '__return_true',
-            'args' => array(
-                'code' => array(
-                    'required' => true,
-                    'validate_callback' => function ($param) {
-                        return !empty($param) && is_string($param);
-                    }
-                ),
-            ),
-        ));
-
-        register_rest_route('twork/v1', '/prize/redeem', array(
-            'methods' => 'POST',
-            'callback' => array($this, 'rest_prize_redeem'),
-            'permission_callback' => '__return_true',
-        ));
-
-        // Also register /prize/claim endpoint (app calls this)
-        register_rest_route('twork/v1', '/prize/claim', array(
-            'methods' => 'POST',
-            'callback' => array($this, 'rest_prize_redeem'),
-            'permission_callback' => '__return_true',
-        ));
-    }
-
-    /**
      * REST API routes for Exchange requests
      */
     public function register_exchange_routes()
@@ -5641,21 +2995,21 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/rewards/exchange-request', array(
             'methods' => 'POST',
             'callback' => array($this, 'rest_exchange_request'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
         ));
 
         // API endpoint to get exchange settings (minimum points)
         register_rest_route('twork/v1', '/rewards/exchange-settings', array(
             'methods' => 'GET',
             'callback' => array($this, 'rest_exchange_settings'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_public'),
         ));
 
         // API endpoint to get app update settings
         register_rest_route('twork/v1', '/app/update-settings', array(
             'methods' => 'GET',
             'callback' => array($this, 'rest_app_update_settings'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_public'),
         ));
     }
 
@@ -5713,14 +3067,12 @@ class TWork_Rewards_System
         // CRITICAL: Point History depends on this route. If it's not registered,
         // the mobile app receives 404 and shows an empty transaction history.
         $this->register_transactions_route();
-        $this->register_code_routes();
         $this->register_exchange_routes();
         $this->register_engagement_routes();
         $this->register_usage_tracking_routes();
         $this->register_user_activity_routes();
         $this->register_user_meta_fields();
         $this->register_page_content_routes();
-        $this->register_point_tiers_routes();
 
         // Debug: Log route registration (only in development)
         if (defined('WP_DEBUG') && WP_DEBUG) {
@@ -5728,485 +3080,6 @@ class TWork_Rewards_System
         }
     }
 
-
-    /**
-     * PROFESSIONAL FEATURE: Register REST API routes for Point Tiers System
-     *
-     * Mobile app calls:
-     * - GET /wp-json/twork/v1/tiers/user/(?P<user_id>\d+) - Get user's current tier
-     * - GET /wp-json/twork/v1/tiers/list - Get all available tiers
-     */
-    public function register_point_tiers_routes()
-    {
-        // Get user's tier
-        register_rest_route('twork/v1', '/tiers/user/(?P<user_id>\d+)', array(
-            'methods' => WP_REST_Server::READABLE,
-            'callback' => array($this, 'rest_get_user_tier'),
-            'permission_callback' => '__return_true',
-            'args' => array(
-                'user_id' => array(
-                    'required' => true,
-                    'validate_callback' => function ($param) {
-                        return absint($param) > 0;
-                    }
-                ),
-            ),
-        ));
-
-        // Get all tiers
-        register_rest_route('twork/v1', '/tiers/list', array(
-            'methods' => WP_REST_Server::READABLE,
-            'callback' => array($this, 'rest_get_all_tiers'),
-            'permission_callback' => '__return_true',
-        ));
-
-        // Get user's tier progression (current tier + next tier info)
-        register_rest_route('twork/v1', '/tiers/progression/(?P<user_id>\d+)', array(
-            'methods' => WP_REST_Server::READABLE,
-            'callback' => array($this, 'rest_get_user_tier_progression'),
-            'permission_callback' => '__return_true',
-            'args' => array(
-                'user_id' => array(
-                    'required' => true,
-                    'validate_callback' => function ($param) {
-                        return absint($param) > 0;
-                    }
-                ),
-            ),
-        ));
-
-        // Get tier benefits
-        register_rest_route('twork/v1', '/tiers/(?P<tier_id>\d+)/benefits', array(
-            'methods' => WP_REST_Server::READABLE,
-            'callback' => array($this, 'rest_get_tier_benefits'),
-            'permission_callback' => '__return_true',
-            'args' => array(
-                'tier_id' => array(
-                    'required' => true,
-                    'validate_callback' => function ($param) {
-                        return absint($param) > 0;
-                    }
-                ),
-            ),
-        ));
-    }
-
-    /**
-     * REST API: Get user's current tier
-     */
-    public function rest_get_user_tier(WP_REST_Request $request)
-    {
-        try {
-            $user_id = absint($request->get_param('user_id'));
-
-            if ($user_id <= 0) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Invalid user_id parameter'
-                ), 400);
-            }
-
-            // Verify user exists
-            $user = get_userdata($user_id);
-            if (!$user) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'User not found'
-                ), 404);
-            }
-
-            // PROFESSIONAL OPTIMIZATION: Cache REST API response (5 minutes)
-            // This prevents unnecessary database queries when mobile app polls frequently
-            $cache_key = 'twork_rest_tier_' . $user_id;
-            $cached_response = get_transient($cache_key);
-            if ($cached_response !== false) {
-                return new WP_REST_Response($cached_response, 200);
-            }
-
-            // PROFESSIONAL OPTIMIZATION: Get user's tier (cached if possible)
-            $tier = $this->get_user_tier($user_id);
-
-            // Only calculate if tier not found (avoid unnecessary calculation)
-            // But respect rate limiting - don't force recalculation on every API call
-            if (!$tier) {
-                // Check if we should recalculate (rate limited)
-                $recalc_lock_key = 'twork_tier_recalc_lock_' . $user_id;
-                $last_recalc_time = get_transient($recalc_lock_key);
-
-                // Only recalculate if not recently done (within last 5 minutes)
-                if ($last_recalc_time === false) {
-                    // Set rate limit lock
-                    set_transient($recalc_lock_key, time(), 5 * MINUTE_IN_SECONDS);
-                    // Calculate and assign tier if not assigned (only when needed)
-                    $tier = $this->calculate_user_tier($user_id, true);
-                }
-            }
-
-            if (!$tier) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'No tier found for user'
-                ), 404);
-            }
-
-            // PROFESSIONAL OPTIMIZATION: Get user's points balance (already calculated in calculate_user_tier if called)
-            // Only calculate if not already available from tier calculation
-            $points_balance = $this->calculate_points_balance_from_transactions($user_id);
-
-            // Format response
-            $response_data = array(
-                'tier_id' => (int) $tier['tier_id'] ?? (int) $tier['id'],
-                'tier_name' => $tier['tier_name'],
-                'tier_slug' => $tier['tier_slug'],
-                'tier_level' => (int) $tier['tier_level'],
-                'earning_multiplier' => (float) $tier['earning_multiplier'],
-                'badge_icon' => $tier['badge_icon'] ?? null,
-                'badge_color' => $tier['badge_color'] ?? '#666666',
-                'description' => $tier['description'] ?? '',
-                'benefits' => $tier['benefits'] ?? array(),
-                'current_points' => $points_balance,
-                'assigned_at' => $tier['assigned_at'] ?? null,
-            );
-
-            $response = array(
-                'success' => true,
-                'data' => $response_data
-            );
-
-            // Cache the response for 5 minutes
-            set_transient($cache_key, $response, 5 * MINUTE_IN_SECONDS);
-
-            return new WP_REST_Response($response, 200);
-        } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_get_user_tier: ' . $e->getMessage());
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'An error occurred while retrieving tier information',
-                'debug' => defined('WP_DEBUG') && WP_DEBUG ? $e->getMessage() : null
-            ), 500);
-        }
-    }
-
-    /**
-     * REST API: Get all available tiers
-     */
-    public function rest_get_all_tiers(WP_REST_Request $request)
-    {
-        try {
-            // PROFESSIONAL OPTIMIZATION: Cache tiers list (30 minutes - tiers don't change often)
-            $cache_key = 'twork_rest_all_tiers';
-            $cached_response = get_transient($cache_key);
-            if ($cached_response !== false) {
-                return new WP_REST_Response($cached_response, 200);
-            }
-
-            global $wpdb;
-            $tiers_table = $this->point_tiers_table_name();
-
-            // Check if table exists using SHOW TABLES LIKE (more compatible)
-            $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-            $table_exists = ($table_check === $tiers_table);
-
-            if (!$table_exists) {
-                $response = array(
-                    'success' => true,
-                    'data' => array()
-                );
-                // Cache empty response too
-                set_transient($cache_key, $response, 30 * MINUTE_IN_SECONDS);
-                return new WP_REST_Response($response, 200);
-            }
-
-            // Get all active tiers
-            $tiers = $wpdb->get_results(
-                "SELECT * FROM $tiers_table WHERE is_active = 1 ORDER BY tier_level ASC",
-                ARRAY_A
-            );
-
-            // Format response
-            $formatted_tiers = array();
-            foreach ($tiers as $tier) {
-                $benefits = array();
-                if (!empty($tier['benefits'])) {
-                    $benefits = json_decode($tier['benefits'], true);
-                    if (!is_array($benefits)) {
-                        $benefits = array();
-                    }
-                }
-
-                $formatted_tiers[] = array(
-                    'id' => (int) $tier['id'],
-                    'tier_name' => $tier['tier_name'],
-                    'tier_slug' => $tier['tier_slug'],
-                    'tier_level' => (int) $tier['tier_level'],
-                    'min_points' => (int) $tier['min_points'],
-                    'max_points' => $tier['max_points'] ? (int) $tier['max_points'] : null,
-                    'earning_multiplier' => (float) $tier['earning_multiplier'],
-                    'badge_icon' => $tier['badge_icon'] ?? null,
-                    'badge_color' => $tier['badge_color'] ?? '#666666',
-                    'description' => $tier['description'] ?? '',
-                    'benefits' => $benefits,
-                );
-            }
-
-            $response = array(
-                'success' => true,
-                'data' => $formatted_tiers
-            );
-
-            // Cache the response for 30 minutes (tiers don't change frequently)
-            set_transient($cache_key, $response, 30 * MINUTE_IN_SECONDS);
-
-            return new WP_REST_Response($response, 200);
-        } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_get_all_tiers: ' . $e->getMessage());
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'An error occurred while retrieving tiers',
-                'debug' => defined('WP_DEBUG') && WP_DEBUG ? $e->getMessage() : null
-            ), 500);
-        }
-    }
-
-    /**
-     * REST API: Get user's tier progression (current tier + next tier info)
-     */
-    public function rest_get_user_tier_progression(WP_REST_Request $request)
-    {
-        try {
-            $user_id = absint($request->get_param('user_id'));
-
-            if ($user_id <= 0) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Invalid user_id parameter'
-                ), 400);
-            }
-
-            // Verify user exists
-            $user = get_userdata($user_id);
-            if (!$user) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'User not found'
-                ), 404);
-            }
-
-            // PROFESSIONAL OPTIMIZATION: Cache tier progression response (5 minutes)
-            $cache_key = 'twork_tier_progression_' . $user_id;
-            $cached_response = get_transient($cache_key);
-            if ($cached_response !== false) {
-                return new WP_REST_Response($cached_response, 200);
-            }
-
-            // Get current tier
-            $current_tier = $this->get_user_tier($user_id);
-            if (!$current_tier) {
-                // Check rate limit before calculating
-                $recalc_lock_key = 'twork_tier_recalc_lock_' . $user_id;
-                $last_recalc_time = get_transient($recalc_lock_key);
-
-                // Only recalculate if not recently done
-                if ($last_recalc_time === false) {
-                    set_transient($recalc_lock_key, time(), 5 * MINUTE_IN_SECONDS);
-                    // Calculate and assign tier if not assigned
-                    $current_tier = $this->calculate_user_tier($user_id, true);
-                }
-            }
-
-            // Get user's points balance
-            $points_balance = $this->calculate_points_balance_from_transactions($user_id);
-
-            // Get all active tiers
-            global $wpdb;
-            $tiers_table = $this->point_tiers_table_name();
-            $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-            $table_exists = ($table_check === $tiers_table);
-
-            $next_tier = null;
-            $progress_to_next = null;
-            $points_needed = null;
-
-            if ($table_exists) {
-                // Find next tier (higher level than current)
-                if ($current_tier) {
-                    $next_tier = $wpdb->get_row($wpdb->prepare(
-                        "SELECT * FROM $tiers_table 
-                         WHERE is_active = 1 
-                         AND tier_level > %d 
-                         AND min_points > %d
-                         ORDER BY tier_level ASC
-                         LIMIT 1",
-                        $current_tier['tier_level'],
-                        $points_balance
-                    ), ARRAY_A);
-
-                    if ($next_tier) {
-                        $points_needed = max(0, $next_tier['min_points'] - $points_balance);
-                        $progress_to_next = $next_tier['min_points'] > 0
-                            ? min(100, ($points_balance / $next_tier['min_points']) * 100)
-                            : 0;
-
-                        // Parse benefits
-                        if (!empty($next_tier['benefits'])) {
-                            $next_tier['benefits'] = json_decode($next_tier['benefits'], true);
-                            if (!is_array($next_tier['benefits'])) {
-                                $next_tier['benefits'] = array();
-                            }
-                        }
-                    }
-                } else {
-                    // No current tier, find lowest tier
-                    $next_tier = $wpdb->get_row(
-                        "SELECT * FROM $tiers_table 
-                         WHERE is_active = 1 
-                         ORDER BY tier_level ASC
-                         LIMIT 1",
-                        ARRAY_A
-                    );
-
-                    if ($next_tier) {
-                        $points_needed = max(0, $next_tier['min_points'] - $points_balance);
-                        $progress_to_next = $next_tier['min_points'] > 0
-                            ? min(100, ($points_balance / $next_tier['min_points']) * 100)
-                            : 0;
-
-                        // Parse benefits
-                        if (!empty($next_tier['benefits'])) {
-                            $next_tier['benefits'] = json_decode($next_tier['benefits'], true);
-                            if (!is_array($next_tier['benefits'])) {
-                                $next_tier['benefits'] = array();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Format current tier
-            $current_tier_data = null;
-            if ($current_tier) {
-                $current_tier_data = array(
-                    'tier_id' => (int) ($current_tier['tier_id'] ?? $current_tier['id']),
-                    'tier_name' => $current_tier['tier_name'],
-                    'tier_slug' => $current_tier['tier_slug'],
-                    'tier_level' => (int) $current_tier['tier_level'],
-                    'earning_multiplier' => (float) $current_tier['earning_multiplier'],
-                    'badge_icon' => $current_tier['badge_icon'] ?? null,
-                    'badge_color' => $current_tier['badge_color'] ?? '#666666',
-                    'description' => $current_tier['description'] ?? '',
-                    'benefits' => $current_tier['benefits'] ?? array(),
-                );
-            }
-
-            // Format next tier
-            $next_tier_data = null;
-            if ($next_tier) {
-                $next_tier_data = array(
-                    'tier_id' => (int) $next_tier['id'],
-                    'tier_name' => $next_tier['tier_name'],
-                    'tier_slug' => $next_tier['tier_slug'],
-                    'tier_level' => (int) $next_tier['tier_level'],
-                    'min_points' => (int) $next_tier['min_points'],
-                    'earning_multiplier' => (float) $next_tier['earning_multiplier'],
-                    'badge_icon' => $next_tier['badge_icon'] ?? null,
-                    'badge_color' => $next_tier['badge_color'] ?? '#666666',
-                    'description' => $next_tier['description'] ?? '',
-                    'benefits' => $next_tier['benefits'] ?? array(),
-                );
-            }
-
-            return new WP_REST_Response(array(
-                'success' => true,
-                'data' => array(
-                    'current_tier' => $current_tier_data,
-                    'next_tier' => $next_tier_data,
-                    'current_points' => $points_balance,
-                    'points_needed' => $points_needed,
-                    'progress_percentage' => $progress_to_next,
-                )
-            ), 200);
-        } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_get_user_tier_progression: ' . $e->getMessage());
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'An error occurred while retrieving tier progression',
-                'debug' => defined('WP_DEBUG') && WP_DEBUG ? $e->getMessage() : null
-            ), 500);
-        }
-    }
-
-    /**
-     * REST API: Get tier benefits
-     */
-    public function rest_get_tier_benefits(WP_REST_Request $request)
-    {
-        try {
-            $tier_id = absint($request->get_param('tier_id'));
-
-            if ($tier_id <= 0) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Invalid tier_id parameter'
-                ), 400);
-            }
-
-            global $wpdb;
-            $tiers_table = $this->point_tiers_table_name();
-
-            $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-            $table_exists = ($table_check === $tiers_table);
-
-            if (!$table_exists) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Tier system not available'
-                ), 404);
-            }
-
-            $tier = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM $tiers_table WHERE id = %d AND is_active = 1",
-                $tier_id
-            ), ARRAY_A);
-
-            if (!$tier) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Tier not found'
-                ), 404);
-            }
-
-            // Parse benefits
-            $benefits = array();
-            if (!empty($tier['benefits'])) {
-                $benefits = json_decode($tier['benefits'], true);
-                if (!is_array($benefits)) {
-                    $benefits = array();
-                }
-            }
-
-            return new WP_REST_Response(array(
-                'success' => true,
-                'data' => array(
-                    'tier_id' => (int) $tier['id'],
-                    'tier_name' => $tier['tier_name'],
-                    'tier_slug' => $tier['tier_slug'],
-                    'tier_level' => (int) $tier['tier_level'],
-                    'earning_multiplier' => (float) $tier['earning_multiplier'],
-                    'badge_icon' => $tier['badge_icon'] ?? null,
-                    'badge_color' => $tier['badge_color'] ?? '#666666',
-                    'description' => $tier['description'] ?? '',
-                    'benefits' => $benefits,
-                )
-            ), 200);
-        } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_get_tier_benefits: ' . $e->getMessage());
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'An error occurred while retrieving tier benefits',
-                'debug' => defined('WP_DEBUG') && WP_DEBUG ? $e->getMessage() : null
-            ), 500);
-        }
-    }
 
     /**
      * REST API routes for Engagement Hub (Banners, Quizzes)
@@ -6225,7 +3098,7 @@ class TWork_Rewards_System
         $feed_result = register_rest_route('twork/v1', '/engagement/feed/(?P<user_id>\d+)', array(
             'methods' => WP_REST_Server::READABLE,  // GET only
             'callback' => array($this, 'rest_engagement_feed'),
-            'permission_callback' => '__return_true',  // Same as other working routes
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6240,7 +3113,7 @@ class TWork_Rewards_System
         $interact_result = register_rest_route('twork/v1', '/engagement/interact', array(
             'methods' => WP_REST_Server::CREATABLE,  // POST only
             'callback' => array($this, 'rest_engagement_interact'),
-            'permission_callback' => '__return_true',  // Same as other working routes
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6271,7 +3144,7 @@ class TWork_Rewards_System
         $updates_result = register_rest_route('twork/v1', '/engagement/updates/(?P<user_id>\d+)', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_engagement_updates'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6291,7 +3164,7 @@ class TWork_Rewards_System
         $result_result = register_rest_route('twork/v1', '/engagement/result/(?P<item_id>\d+)', array(
             'methods' => WP_REST_Server::READABLE,  // GET only
             'callback' => array($this, 'rest_engagement_result'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'item_id' => array(
                     'required' => true,
@@ -6346,7 +3219,7 @@ class TWork_Rewards_System
         $start_result = register_rest_route('twork/v1', '/usage/start', array(
             'methods' => WP_REST_Server::CREATABLE,
             'callback' => array($this, 'rest_usage_start'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6387,7 +3260,7 @@ class TWork_Rewards_System
         $end_result = register_rest_route('twork/v1', '/usage/end', array(
             'methods' => WP_REST_Server::CREATABLE,
             'callback' => array($this, 'rest_usage_end'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6412,7 +3285,7 @@ class TWork_Rewards_System
         $stats_result = register_rest_route('twork/v1', '/usage/stats/(?P<user_id>\d+)', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_usage_stats'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6440,7 +3313,7 @@ class TWork_Rewards_System
         $activity_result = register_rest_route('twork/v1', '/user/activity/(?P<user_id>\d+)', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_user_activity'),
-            'permission_callback' => '__return_true',
+            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
             'args' => array(
                 'user_id' => array(
                     'required' => true,
@@ -6542,38 +3415,6 @@ class TWork_Rewards_System
             ),
         ));
 
-        // PROFESSIONAL FEATURE: Add tier information to user REST API
-        register_rest_field('user', 'point_tier', array(
-            'get_callback' => function ($user) {
-                $instance = self::get_instance();
-                $tier = $instance->get_user_tier($user['id']);
-
-                if (!$tier) {
-                    // Calculate and assign if not assigned
-                    $tier = $instance->calculate_user_tier($user['id'], true);
-                }
-
-                if ($tier) {
-                    return array(
-                        'tier_id' => (int) ($tier['tier_id'] ?? $tier['id']),
-                        'tier_name' => $tier['tier_name'],
-                        'tier_slug' => $tier['tier_slug'],
-                        'tier_level' => (int) $tier['tier_level'],
-                        'earning_multiplier' => (float) $tier['earning_multiplier'],
-                        'badge_icon' => $tier['badge_icon'] ?? null,
-                        'badge_color' => $tier['badge_color'] ?? '#666666',
-                    );
-                }
-
-                return null;
-            },
-            'update_callback' => null,  // Read-only
-            'schema' => array(
-                'description' => __('User point tier information', 'twork-rewards'),
-                'type' => 'object',
-                'context' => array('view', 'edit'),
-            ),
-        ));
 
         // Note: Activity status is tracked on backend for admin purposes only
         // It is NOT exposed to mobile app via REST API for privacy and performance
@@ -6592,7 +3433,7 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/page-content/(?P<page_slug>[a-zA-Z0-9-]+)', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_get_page_content'),
-            'permission_callback' => '__return_true',  // Public access
+            'permission_callback' => array($this, 'rest_permission_public'),
             'args' => array(
                 'page_slug' => array(
                     'required' => true,
@@ -6607,21 +3448,21 @@ class TWork_Rewards_System
         register_rest_route('twork/v1', '/page-content', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_get_all_pages'),
-            'permission_callback' => '__return_true',  // Public access
+            'permission_callback' => array($this, 'rest_permission_public'),
         ));
 
         // Get FAQ items
         register_rest_route('twork/v1', '/faq', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_get_faq'),
-            'permission_callback' => '__return_true',  // Public access
+            'permission_callback' => array($this, 'rest_permission_public'),
         ));
 
         // Get About Us content
         register_rest_route('twork/v1', '/about-us', array(
             'methods' => WP_REST_Server::READABLE,
             'callback' => array($this, 'rest_get_about_us'),
-            'permission_callback' => '__return_true',  // Public access
+            'permission_callback' => array($this, 'rest_permission_public'),
         ));
     }
 
@@ -6637,28 +3478,6 @@ class TWork_Rewards_System
         try {
             global $wpdb;
             $table_name = $this->page_content_table_name();
-
-            // PROFESSIONAL FIX: Ensure table exists before querying
-            $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-            if ($table_exists !== $table_name) {
-                // Table doesn't exist - create it
-                $this->create_page_content_table();
-                // Verify table was created
-                $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-                if ($table_exists !== $table_name) {
-                    // Table creation failed - return placeholder content
-                    $page_slug = sanitize_text_field($request->get_param('page_slug'));
-                    return new WP_REST_Response(array(
-                        'success' => true,
-                        'data' => array(
-                            'title' => ucwords(str_replace('-', ' ', $page_slug)),
-                            'content' => '<p>Content coming soon. Please check back later.</p>',
-                            'slug' => $page_slug,
-                            'last_modified' => current_time('mysql'),
-                        )
-                    ), 200);
-                }
-            }
 
             $page_slug = sanitize_text_field($request->get_param('page_slug'));
 
@@ -6735,22 +3554,6 @@ class TWork_Rewards_System
         try {
             global $wpdb;
             $table_name = $this->page_content_table_name();
-
-            // PROFESSIONAL FIX: Ensure table exists before querying
-            $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-            if ($table_exists !== $table_name) {
-                // Table doesn't exist - create it
-                $this->create_page_content_table();
-                // Verify table was created
-                $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-                if ($table_exists !== $table_name) {
-                    // Table creation failed - return empty list
-                    return new WP_REST_Response(array(
-                        'success' => true,
-                        'data' => array()
-                    ), 200);
-                }
-            }
 
             // PROFESSIONAL FIX: Check if display_order column exists before querying
             $columns = $wpdb->get_col("DESCRIBE $table_name");
@@ -6889,30 +3692,27 @@ class TWork_Rewards_System
             global $wpdb;
             $faq_items = array();
 
-            // METHOD 1: Get FAQ items from plugin database table (PRIMARY)
+            // METHOD 1: Get FAQ items from plugin database table (PRIMARY; no SHOW TABLES)
             $faq_table = $this->faq_table_name();
-            if ($wpdb->get_var("SHOW TABLES LIKE '$faq_table'") === $faq_table) {
-                $plugin_faq_items = $wpdb->get_results(
-                    "SELECT * FROM $faq_table WHERE status = 'active' ORDER BY display_order ASC, id ASC",
-                    ARRAY_A
-                );
+            $plugin_faq_items = $wpdb->get_results(
+                "SELECT * FROM $faq_table WHERE status = 'active' ORDER BY display_order ASC, id ASC",
+                ARRAY_A
+            );
 
-                if (!empty($plugin_faq_items)) {
-                    foreach ($plugin_faq_items as $item) {
-                        $faq_items[] = array(
-                            'id' => (int) $item['id'],
-                            'question' => $item['question'],
-                            'answer' => apply_filters('the_content', $item['answer']),  // Process HTML
-                            'order' => (int) $item['display_order'],
-                        );
-                    }
-
-                    // If plugin database has items, return them (don't check WordPress posts)
-                    return new WP_REST_Response(array(
-                        'success' => true,
-                        'data' => $faq_items
-                    ), 200);
+            if (!$wpdb->last_error && !empty($plugin_faq_items)) {
+                foreach ($plugin_faq_items as $item) {
+                    $faq_items[] = array(
+                        'id' => (int) $item['id'],
+                        'question' => $item['question'],
+                        'answer' => apply_filters('the_content', $item['answer']),  // Process HTML
+                        'order' => (int) $item['display_order'],
+                    );
                 }
+
+                return new WP_REST_Response(array(
+                    'success' => true,
+                    'data' => $faq_items
+                ), 200);
             }
 
             // METHOD 2: Try custom post type 'faq' (fallback if plugin table is empty)
@@ -6985,35 +3785,6 @@ class TWork_Rewards_System
         try {
             global $wpdb;
             $table_name = $this->about_us_table_name();
-
-            // PROFESSIONAL FIX: Ensure table exists before querying
-            $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-            if ($table_exists !== $table_name) {
-                // Table doesn't exist - create it
-                $this->create_about_us_table();
-                // Verify table was created
-                $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-                if ($table_exists !== $table_name) {
-                    // Table creation failed - return default content
-                    return new WP_REST_Response(array(
-                        'success' => true,
-                        'data' => array(
-                            'company_name' => 'PLANETmm',
-                            'tagline' => 'Pansy & Lincoln',
-                            'subtitle' => 'All-in-One Network Myanmar',
-                            'logo_url' => '',
-                            'about_body_1' => "PLANETmm is Myanmar's premier all-in-one digital network platform, bringing together lifestyle, commerce, rewards, and community into a single seamless experience for users across the country.",
-                            'about_body_2' => 'Our platform is built to connect people, businesses, and services in a modern, convenient, and secure way. We focus on delivering real value through exclusive promotions, smart loyalty points, easy payments, and a smooth shopping journey. With a strong technical foundation and a customer-first mindset, we are continuously improving to match the needs of Myanmar users in the digital age.',
-                            'mission' => "To empower Myanmar's digital economy by connecting people, businesses, and communities through innovative technology, reliable services, and a rewarding experience that adds real value to everyday life.",
-                            'vision' => "To become Myanmar's leading all-in-one digital platform, transforming how people shop, earn rewards, communicate, and live — by combining technology, creativity, and local understanding into a single powerful ecosystem.",
-                            'email' => 'support@planetmm.com',
-                            'phone' => '+95 9 123 456 789',
-                            'address' => 'No. 123, Example Street, Yangon, Myanmar',
-                            'version' => '1.0.2',
-                        )
-                    ), 200);
-                }
-            }
 
             // Get active About Us content (there should be only one record)
             $content = $wpdb->get_row(
@@ -7092,8 +3863,8 @@ class TWork_Rewards_System
             return is_string($interaction_value) ? $interaction_value : '';
         }
         $options = $quiz_data['options'];
-        $parts   = array_map('trim', explode(',', (string) $interaction_value));
-        $texts   = array();
+        $parts = array_map('trim', explode(',', (string) $interaction_value));
+        $texts = array();
         foreach ($parts as $part) {
             if ($part === '') {
                 continue;
@@ -7262,58 +4033,72 @@ class TWork_Rewards_System
         }
 
         if ($current_ts > $end_ts && $correct_index < 0) {
-            $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT interaction_value FROM $table_interactions WHERE item_id = %d",
-                $item_id
-            ), ARRAY_A);
+            // Atomic Lock to prevent DB choking from concurrent feed requests
+            $lock_key = 'twork_poll_lock_' . $item_id;
+            if (get_transient($lock_key)) {
+                return; // Another process is already resolving this poll
+            }
+            set_transient($lock_key, true, 60); // Lock for 60 seconds
+
             $options = $quiz_data['options'] ?? array();
             $num_options = count($options);
-            $options_with_votes = array();
-            foreach ($rows as $row) {
-                $value = isset($row['interaction_value']) ? trim($row['interaction_value']) : '';
-                if ($value === '') {
-                    continue;
-                }
-                foreach (array_map('trim', explode(',', $value)) as $part) {
-                    if ($part !== '' && is_numeric($part)) {
-                        $idx = (int) $part;
-                        if ($idx >= 0 && $idx < $num_options) {
-                            $options_with_votes[$idx] = true;
-                        }
-                    }
+
+            $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+
+            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? '';
+            $start_ts = strtotime($started_at);
+            // Senior guard: fallback if strtotime fails
+            if (!$start_ts) {
+                $start_ts = time();
+            }
+
+            $cycle_seconds = ($period_minutes + $result_duration_min) * 60;
+            $elapsed = max(0, $current_ts - $start_ts);
+            $iteration = (int) floor($elapsed / $cycle_seconds);
+            $session_id = 's' . $iteration;
+
+            if ($override_index >= 0 && $override_index < $num_options) {
+                $correct_index = $override_index;
+            } else {
+                // Pure random — aligned with class-poll-auto-run.php (cryptographic RNG per resolution).
+                if ($num_options > 0) {
+                    $correct_index = random_int(0, $num_options - 1);
+                } else {
+                    $correct_index = 0;
                 }
             }
-            $options_with_votes = array_keys($options_with_votes);
-            if (!empty($options_with_votes)) {
-                $correct_index = $options_with_votes[array_rand($options_with_votes)];
-                $quiz_data['correct_index'] = $correct_index;
-                $quiz_data['poll_correct_answer_mode'] = 'random';
-                $quiz_data['poll_resolved_at'] = $current_time;
-                $wpdb->update(
-                    $table_items,
-                    array('quiz_data' => wp_json_encode($quiz_data)),
-                    array('id' => $item_id),
-                    array('%s'),
-                    array('%d')
-                );
-                $this->award_poll_winner_points($item_id);
-            } elseif ($num_options > 0) {
-                // No votes this period: still pick a random winner so Hub/feed can show a result
-                // (matches TWork_Poll_Auto_Run::rest_poll_results_by_session behaviour).
-                $correct_index = wp_rand(0, $num_options - 1);
-                $quiz_data['correct_index'] = (int) $correct_index;
-                $quiz_data['poll_correct_answer_mode'] = 'random';
-                $quiz_data['poll_resolved_at'] = $current_time;
-                $wpdb->update(
-                    $table_items,
-                    array('quiz_data' => wp_json_encode($quiz_data)),
-                    array('id' => $item_id),
-                    array('%s'),
-                    array('%d')
-                );
-                $this->award_poll_winner_points($item_id);
-            }
+
+            $quiz_data['correct_index'] = (int) $correct_index;
+            $quiz_data['poll_correct_answer_mode'] = ($override_index >= 0) ? 'fixed' : 'random';
+            $quiz_data['poll_resolved_at'] = $current_time;
+
+            $wpdb->update(
+                $table_items,
+                array('quiz_data' => wp_json_encode($quiz_data)),
+                array('id' => $item_id),
+                array('%s'),
+                array('%d')
+            );
+
+            // Point ပေးတဲ့ Code (၁) ခါတည်းသာ ပါဝင်ပါသည်
+            $this->award_poll_winner_points($item_id);
+
+            // Prevent double payout by marking this session as rewarded
+            $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
+            $wpdb->replace(
+                $table_rewards,
+                array(
+                    'poll_id' => $item_id,
+                    'session_id' => $session_id,
+                    'rewards_distributed' => 1,
+                    'distributed_at' => current_time('mysql'),
+                ),
+                array('%d', '%s', '%d', '%s')
+            );
+
             $item['quiz_data'] = wp_json_encode($quiz_data);
+
+            delete_transient($lock_key);
         }
     }
 
@@ -7378,8 +4163,10 @@ class TWork_Rewards_System
         $effective_base = class_exists('TWork_Poll_PNP') ? TWork_Poll_PNP::get_effective_reward_base($quiz_data) : 0;
         $reward_multiplier = isset($quiz_data['reward_multiplier']) ? max(0.0, (float) $quiz_data['reward_multiplier']) : 4;
         $bet_amount_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
-        $allow_user_amount = !isset($quiz_data['allow_user_amount']) || $quiz_data['allow_user_amount'] === true
-            || $quiz_data['allow_user_amount'] === 1 || $quiz_data['allow_user_amount'] === '1';
+        $allow_user_amount = !isset($quiz_data['allow_user_amount']) ||
+            $quiz_data['allow_user_amount'] === true ||
+            $quiz_data['allow_user_amount'] === 1 ||
+            $quiz_data['allow_user_amount'] === '1';
 
         $reward_points = (int) ($item['reward_points'] ?? 0);
         if ($effective_base > 0 && $reward_multiplier > 0) {
@@ -7662,16 +4449,17 @@ class TWork_Rewards_System
                     $stats = $this->get_engagement_item_statistics($item_id);
                     if ($stats) {
                         $winning_option_single = null;
-                        if ($correct_index_for_result !== null && $correct_index_for_result >= 0
-                            && isset($stats['options']) && is_array($stats['options'])
-                            && array_key_exists($correct_index_for_result, $stats['options'])
-                        ) {
-                            $raw_win = $stats['options'][ $correct_index_for_result ];
+                        if ($correct_index_for_result !== null &&
+                                $correct_index_for_result >= 0 &&
+                                isset($stats['options']) &&
+                                is_array($stats['options']) &&
+                                array_key_exists($correct_index_for_result, $stats['options'])) {
+                            $raw_win = $stats['options'][$correct_index_for_result];
                             if (is_array($raw_win)) {
                                 $winning_option_single = array(
                                     'text' => isset($raw_win['text']) ? (string) $raw_win['text'] : (isset($raw_win[0]) ? (string) $raw_win[0] : ''),
-                                    'media_url' => ! empty($raw_win['media_url']) ? esc_url_raw($raw_win['media_url']) : null,
-                                    'media_type' => ! empty($raw_win['media_type']) ? sanitize_key($raw_win['media_type']) : null,
+                                    'media_url' => !empty($raw_win['media_url']) ? esc_url_raw($raw_win['media_url']) : null,
+                                    'media_type' => !empty($raw_win['media_type']) ? sanitize_key($raw_win['media_type']) : null,
                                 );
                             } else {
                                 $winning_option_single = array(
@@ -7718,10 +4506,6 @@ class TWork_Rewards_System
         $table_items = $wpdb->prefix . 'twork_engagement_items';
         $table_interactions = $wpdb->prefix . 'twork_user_interactions';
 
-        if ($wpdb->get_var("SHOW TABLES LIKE '$table_items'") !== $table_items) {
-            return new WP_REST_Response(array('success' => true, 'updates' => array()), 200);
-        }
-
         $item_ids_param = $request->get_param('item_ids');
         $item_ids = array();
         if (!empty($item_ids_param) && is_string($item_ids_param)) {
@@ -7742,7 +4526,9 @@ class TWork_Rewards_System
                 $current_time,
                 $current_time
             ), ARRAY_A);
-            $item_ids = array_map(function ($r) { return (int) $r['id']; }, $rows ?: array());
+            $item_ids = array_map(function ($r) {
+                return (int) $r['id'];
+            }, $rows ?: array());
         }
 
         if (empty($item_ids)) {
@@ -7864,7 +4650,8 @@ class TWork_Rewards_System
                                 'total_votes' => $stats['total_votes'],
                                 'options' => $stats['options'],
                                 'winning_index' => (isset($quiz_data['correct_index']) && (int) $quiz_data['correct_index'] >= 0)
-                                    ? (int) $quiz_data['correct_index'] : null,
+                                    ? (int) $quiz_data['correct_index']
+                                    : null,
                             );
                         }
                     }
@@ -7904,18 +4691,6 @@ class TWork_Rewards_System
 
             $table_items = $wpdb->prefix . 'twork_engagement_items';
             $table_interactions = $wpdb->prefix . 'twork_user_interactions';
-
-            // Verify tables exist (safety check)
-            if ($wpdb->get_var("SHOW TABLES LIKE '$table_items'") !== $table_items) {
-                if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Engagement items table does not exist');
-                }
-                return new WP_REST_Response(array(
-                    'success' => true,
-                    'data' => array(),
-                    'message' => 'Engagement system not initialized'
-                ), 200);
-            }
 
             // Get active items
             // Note: Date filtering is optional - if start_date/end_date are NULL, item is always active
@@ -7979,7 +4754,9 @@ class TWork_Rewards_System
             // Get interaction counts AFTER process_auto_run_poll (it may have deleted interactions on reset)
             $interaction_counts = array();
             if (!empty($items)) {
-                $item_ids = array_map(function ($i) { return (int) $i['id']; }, $items);
+                $item_ids = array_map(function ($i) {
+                    return (int) $i['id'];
+                }, $items);
                 $placeholders = implode(',', array_fill(0, count($item_ids), '%d'));
                 $count_results = $wpdb->get_results($wpdb->prepare(
                     "SELECT item_id, COUNT(*) as cnt FROM $table_interactions 
@@ -8087,7 +4864,7 @@ class TWork_Rewards_System
                         if ($item['type'] === 'poll' && is_array($quiz_data)) {
                             $current_time = current_time('mysql');
                             $current_timestamp = strtotime($current_time);
-                            
+
                             // Check if voting is currently allowed based on schedule
                             $voting_allowed = true;
                             $voting_status = 'open';
@@ -8097,7 +4874,7 @@ class TWork_Rewards_System
                             $poll_period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
                             $result_dur_min = isset($quiz_data['result_display_duration']) ? max(0, (int) $quiz_data['result_display_duration']) : 1;
                             $result_display_sec = $result_dur_min * 60;
-                            
+
                             if (!empty($quiz_data['poll_voting_start_time'])) {
                                 $start_timestamp = strtotime($quiz_data['poll_voting_start_time']);
                                 if ($current_timestamp < $start_timestamp) {
@@ -8105,12 +4882,12 @@ class TWork_Rewards_System
                                     $voting_status = 'not_started';
                                 }
                             }
-                            
+
                             if (!empty($quiz_data['poll_voting_end_time'])) {
                                 $end_timestamp = strtotime($quiz_data['poll_voting_end_time']);
                                 $seconds_until_close = max(0, $end_timestamp - $current_timestamp);
                                 $result_display_ends_at = date('c', $end_timestamp + $result_display_sec);
-                                
+
                                 if ($current_timestamp > $end_timestamp) {
                                     $voting_allowed = false;
                                     $voting_status = ($current_timestamp <= $end_timestamp + $result_display_sec) ? 'showing_result' : 'ended';
@@ -8118,7 +4895,7 @@ class TWork_Rewards_System
                                     $voting_status = 'countdown';
                                 }
                             }
-                            
+
                             // Include schedule information in response
                             $feed_item['poll_voting_schedule'] = array(
                                 'voting_allowed' => $voting_allowed,
@@ -8130,7 +4907,7 @@ class TWork_Rewards_System
                                 'result_display_ends_at' => $result_display_ends_at,
                                 'result_display_seconds' => $result_display_sec,
                             );
-                            
+
                             if (!empty($quiz_data['poll_voting_start_time'])) {
                                 $feed_item['poll_voting_schedule']['start_time'] = $quiz_data['poll_voting_start_time'];
                                 $feed_item['poll_voting_schedule']['start_time_formatted'] = date_i18n(
@@ -8138,7 +4915,7 @@ class TWork_Rewards_System
                                     strtotime($quiz_data['poll_voting_start_time'])
                                 );
                             }
-                            
+
                             if (!empty($quiz_data['poll_voting_end_time'])) {
                                 $feed_item['poll_voting_schedule']['end_time'] = $quiz_data['poll_voting_end_time'];
                                 $feed_item['poll_voting_schedule']['end_time_formatted'] = date_i18n(
@@ -8150,17 +4927,16 @@ class TWork_Rewards_System
                                 $stats = $this->get_engagement_item_statistics($item_id);
                                 if ($stats) {
                                     $winning_option_payload = null;
-                                    if ($poll_resolved_winning_index !== null
-                                        && isset($stats['options'])
-                                        && is_array($stats['options'])
-                                        && array_key_exists($poll_resolved_winning_index, $stats['options'])
-                                    ) {
-                                        $raw_win = $stats['options'][ $poll_resolved_winning_index ];
+                                    if ($poll_resolved_winning_index !== null &&
+                                            isset($stats['options']) &&
+                                            is_array($stats['options']) &&
+                                            array_key_exists($poll_resolved_winning_index, $stats['options'])) {
+                                        $raw_win = $stats['options'][$poll_resolved_winning_index];
                                         if (is_array($raw_win)) {
                                             $winning_option_payload = array(
                                                 'text' => isset($raw_win['text']) ? (string) $raw_win['text'] : (isset($raw_win[0]) ? (string) $raw_win[0] : ''),
-                                                'media_url' => ! empty($raw_win['media_url']) ? esc_url_raw($raw_win['media_url']) : null,
-                                                'media_type' => ! empty($raw_win['media_type']) ? sanitize_key($raw_win['media_type']) : null,
+                                                'media_url' => !empty($raw_win['media_url']) ? esc_url_raw($raw_win['media_url']) : null,
+                                                'media_type' => !empty($raw_win['media_type']) ? sanitize_key($raw_win['media_type']) : null,
                                             );
                                         } else {
                                             $winning_option_payload = array(
@@ -8276,16 +5052,21 @@ class TWork_Rewards_System
             }
             $total_votes = array_sum($vote_counts);
         } else {
-            // Quiz: single selection (exact match on interaction_value)
-            foreach (array_keys($options) as $index) {
-                $count = $wpdb->get_var($wpdb->prepare(
-                    "SELECT COUNT(*) FROM $table_interactions 
-                     WHERE item_id = %d AND interaction_value = %s",
-                    $item_id,
-                    (string) $index
-                ));
-                $vote_counts[$index] = (int) $count;
-                $total_votes += (int) $count;
+            // Quiz: single selection (Optimized: Single query with GROUP BY)
+            $results = $wpdb->get_results($wpdb->prepare(
+                "SELECT interaction_value, COUNT(*) as count 
+                 FROM $table_interactions 
+                 WHERE item_id = %d 
+                 GROUP BY interaction_value",
+                $item_id
+            ));
+
+            foreach ($results as $row) {
+                $idx = (string) $row->interaction_value;
+                if (array_key_exists($idx, $vote_counts)) {
+                    $vote_counts[$idx] = (int) $row->count;
+                    $total_votes += (int) $row->count;
+                }
             }
         }
 
@@ -8392,14 +5173,6 @@ class TWork_Rewards_System
             $table_items = $wpdb->prefix . 'twork_engagement_items';
             $table_interactions = $wpdb->prefix . 'twork_user_interactions';
 
-            // Verify tables exist
-            if ($wpdb->get_var("SHOW TABLES LIKE '$table_items'") !== $table_items) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Engagement system not initialized'
-                ), 500);
-            }
-
             // Check if item exists
             $item = $wpdb->get_row($wpdb->prepare(
                 "SELECT * FROM $table_items WHERE id = %d",
@@ -8437,12 +5210,12 @@ class TWork_Rewards_System
                         ), 400);
                     }
                 }
-                
+
                 // PROFESSIONAL FEATURE: Check poll voting schedule (only for polls)
                 if ($item['type'] === 'poll' && is_array($quiz_data)) {
                     $current_time = current_time('mysql');
                     $current_timestamp = strtotime($current_time);
-                    
+
                     // Check start time
                     if (!empty($quiz_data['poll_voting_start_time'])) {
                         $start_timestamp = strtotime($quiz_data['poll_voting_start_time']);
@@ -8459,7 +5232,7 @@ class TWork_Rewards_System
                             ), 400);
                         }
                     }
-                    
+
                     // Check end time
                     if (!empty($quiz_data['poll_voting_end_time'])) {
                         $end_timestamp = strtotime($quiz_data['poll_voting_end_time']);
@@ -8480,33 +5253,33 @@ class TWork_Rewards_System
             }
 
             // AUTO_RUN: derive current_session_id when client does not send it (feed-based clients)
-            if ( $item['type'] === 'poll' && $session_id === '' && ! empty( $item['quiz_data'] ) ) {
-                $qd = json_decode( $item['quiz_data'], true );
-                if ( is_array( $qd ) && strtoupper( (string) ( $qd['poll_mode'] ?? '' ) ) === 'AUTO_RUN' ) {
+            if ($item['type'] === 'poll' && $session_id === '' && !empty($item['quiz_data'])) {
+                $qd = json_decode($item['quiz_data'], true);
+                if (is_array($qd) && strtoupper((string) ($qd['poll_mode'] ?? '')) === 'AUTO_RUN') {
                     $started_at = $qd['started_at'] ?? $qd['poll_actual_start_at'] ?? '';
-                    if ( empty( $started_at ) ) {
-                        $started_at = current_time( 'mysql' );
+                    if (empty($started_at)) {
+                        $started_at = current_time('mysql');
                         $qd['started_at'] = $started_at;
                         $wpdb->update(
                             $table_items,
-                            array( 'quiz_data' => wp_json_encode( $qd ) ),
-                            array( 'id' => $item_id ),
-                            array( '%s' ),
-                            array( '%d' )
+                            array('quiz_data' => wp_json_encode($qd)),
+                            array('id' => $item_id),
+                            array('%s'),
+                            array('%d')
                         );
                     }
-                    $poll_dur = max( 1, (int) ( $qd['poll_duration'] ?? 15 ) );
-                    $result_dur = max( 0, (int) ( $qd['result_display_duration'] ?? 1 ) );
-                    $cycle_sec = ( $poll_dur + $result_dur ) * 60;
+                    $poll_dur = max(1, (int) ($qd['poll_duration'] ?? 15));
+                    $result_dur = max(0, (int) ($qd['result_display_duration'] ?? 1));
+                    $cycle_sec = ($poll_dur + $result_dur) * 60;
                     $voting_sec = $poll_dur * 60;
-                    $start_ts = strtotime( $started_at );
+                    $start_ts = strtotime($started_at);
                     $now_ts = time();
-                    $elapsed = max( 0, $now_ts - $start_ts );
-                    $iteration = (int) floor( $elapsed / $cycle_sec );
-                    $cycle_start_ts = $start_ts + ( $iteration * $cycle_sec );
+                    $elapsed = max(0, $now_ts - $start_ts);
+                    $iteration = (int) floor($elapsed / $cycle_sec);
+                    $cycle_start_ts = $start_ts + ($iteration * $cycle_sec);
                     $voting_ends_ts = $cycle_start_ts + $voting_sec;
                     $results_ends_ts = $cycle_start_ts + $cycle_sec;
-                    if ( $now_ts >= $results_ends_ts ) {
+                    if ($now_ts >= $results_ends_ts) {
                         $iteration++;
                     }
                     $session_id = 's' . $iteration;
@@ -8664,8 +5437,10 @@ class TWork_Rewards_System
                 }
                 // User Amount mode: cost = bet_amount_step × sum(amount per option) or × options × bet_amount.
                 // Base Cost mode: cost = poll_base_cost × options × bet_amount (legacy).
-                $allow_user_amount = !isset($quiz_data['allow_user_amount']) || $quiz_data['allow_user_amount'] === true
-                    || $quiz_data['allow_user_amount'] === 1 || $quiz_data['allow_user_amount'] === '1';
+                $allow_user_amount = !isset($quiz_data['allow_user_amount']) ||
+                    $quiz_data['allow_user_amount'] === true ||
+                    $quiz_data['allow_user_amount'] === 1 ||
+                    $quiz_data['allow_user_amount'] === '1';
 
                 if ($poll_base_cost > 0 || $allow_user_amount) {
                     $bet_step = 1000;
@@ -8908,7 +5683,6 @@ class TWork_Rewards_System
             $item_type = $item['type'] ?? 'unknown';
             $item_title = $item['title'] ?? 'Activity #' . $item_id;
 
-
             // For poll vote updates, don't award points again (points already awarded on first vote)
             // Only award points for new votes, not vote updates
 
@@ -9112,14 +5886,6 @@ class TWork_Rewards_System
             $table_items = $wpdb->prefix . 'twork_engagement_items';
             $table_interactions = $wpdb->prefix . 'twork_user_interactions';
 
-            // Verify tables exist
-            if ($wpdb->get_var("SHOW TABLES LIKE '$table_items'") !== $table_items) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Engagement system not initialized'
-                ), 500);
-            }
-
             // Get item
             $item = $wpdb->get_row($wpdb->prepare(
                 "SELECT * FROM $table_items WHERE id = %d",
@@ -9286,14 +6052,6 @@ class TWork_Rewards_System
 
             $usage_table = $this->usage_tracking_table_name();
 
-            // Check if table exists
-            if ($wpdb->get_var("SHOW TABLES LIKE '$usage_table'") !== $usage_table) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Usage tracking system not initialized'
-                ), 500);
-            }
-
             // Check if user has an active session (not ended)
             $active_session = $wpdb->get_row($wpdb->prepare(
                 "SELECT * FROM $usage_table 
@@ -9436,22 +6194,6 @@ class TWork_Rewards_System
 
             $usage_table = $this->usage_tracking_table_name();
 
-            // Check if table exists, create if missing
-            if ($wpdb->get_var("SHOW TABLES LIKE '$usage_table'") !== $usage_table) {
-                error_log('T-Work Rewards: Usage tracking table not found, creating...');
-                $this->create_usage_tracking_table();
-
-                // Verify table was created
-                if ($wpdb->get_var("SHOW TABLES LIKE '$usage_table'") !== $usage_table) {
-                    error_log('T-Work Rewards: Failed to create usage tracking table');
-                    return new WP_REST_Response(array(
-                        'success' => false,
-                        'message' => 'Usage tracking system not initialized. Please create the table from admin page.'
-                    ), 500);
-                }
-                error_log('T-Work Rewards: Usage tracking table created successfully');
-            }
-
             // Find active session
             $where_clause = 'user_id = %d AND session_end IS NULL';
             $where_values = array($user_id);
@@ -9565,14 +6307,6 @@ class TWork_Rewards_System
             }
 
             $usage_table = $this->usage_tracking_table_name();
-
-            // Check if table exists
-            if ($wpdb->get_var("SHOW TABLES LIKE '$usage_table'") !== $usage_table) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Usage tracking system not initialized'
-                ), 500);
-            }
 
             // Get total statistics
             $stats = $wpdb->get_row($wpdb->prepare(
@@ -10840,7 +7574,7 @@ class TWork_Rewards_System
         if ($request_points_value > 0) {
             // Use request amount as absolute source of truth (prevents double refunds)
             $total_deducted = $request_points_value;
-            
+
             // Log if we detect discrepancies (for debugging and monitoring)
             if (count($valid_transactions) > 1) {
                 error_log(sprintf(
@@ -10877,7 +7611,7 @@ class TWork_Rewards_System
                 $total_points
             ));
             $total_deducted = $max_points;
-            
+
             // ABSOLUTE SAFETY: If we're using fallback and there are multiple transactions,
             // we MUST NOT use the sum - use the max to prevent double refund
             if (count($valid_transactions) > 1 && $total_points > $max_points) {
@@ -10888,7 +7622,7 @@ class TWork_Rewards_System
                     $user_id,
                     $request_id
                 ));
-                $total_deducted = $max_points; // Use max, not sum
+                $total_deducted = $max_points;  // Use max, not sum
             }
         }
 
@@ -11036,10 +7770,10 @@ class TWork_Rewards_System
             "SELECT points_value FROM $exchange_table WHERE id = %d",
             $request_id
         ), ARRAY_A);
-        
+
         if ($request_data && !empty($request_data['points_value'])) {
             $request_points_value = (float) $request_data['points_value'];
-            
+
             // ABSOLUTE SAFETY: Never refund more than the request amount
             // If the passed points exceed the request amount, cap it at request amount
             if ($points > $request_points_value) {
@@ -11050,7 +7784,7 @@ class TWork_Rewards_System
                     $user_id,
                     $request_id
                 ));
-                $points = $request_points_value; // Cap at request amount
+                $points = $request_points_value;  // Cap at request amount
             }
         }
 
@@ -11168,10 +7902,10 @@ class TWork_Rewards_System
             "SELECT points_value FROM $exchange_table WHERE id = %d",
             $request_id
         ), ARRAY_A);
-        
+
         if ($final_request_check && !empty($final_request_check['points_value'])) {
             $final_request_points = (float) $final_request_check['points_value'];
-            
+
             // ABSOLUTE FINAL SAFETY: If points parameter doesn't match request, use request amount
             if (abs($points - $final_request_points) > 0.01) {
                 error_log(sprintf(
@@ -11181,10 +7915,10 @@ class TWork_Rewards_System
                     $user_id,
                     $request_id
                 ));
-                $points = $final_request_points; // Use request amount
+                $points = $final_request_points;  // Use request amount
             }
         }
-        
+
         // CRITICAL LOG: Log exactly what we're about to refund
         error_log(sprintf(
             'T-Work Rewards: Creating refund transaction. User ID: %d, Request ID: %d, Points to Refund: %s, Request Points Value: %s',
@@ -11197,7 +7931,7 @@ class TWork_Rewards_System
         // PROFESSIONAL ARCHITECTURE: Create refund transaction (single source of truth).
         $refund_transaction_id = $this->create_exchange_refund_transaction(
             $user_id,
-            (int) round($points), // Use round() to ensure proper integer conversion
+            (int) round($points),  // Use round() to ensure proper integer conversion
             $request_id,
             $reason
         );
@@ -11388,7 +8122,7 @@ class TWork_Rewards_System
             "SELECT points_value FROM $exchange_table WHERE id = %d",
             $request_id
         ), ARRAY_A);
-        
+
         if ($request_validation && !empty($request_validation['points_value'])) {
             $request_validation_points = (float) $request_validation['points_value'];
             if ($points > $request_validation_points) {
@@ -11399,10 +8133,10 @@ class TWork_Rewards_System
                     $user_id,
                     $request_id
                 ));
-                $points = (int) round($request_validation_points); // Cap at request amount
+                $points = (int) round($request_validation_points);  // Cap at request amount
             }
         }
-        
+
         // CRITICAL LOG: Log what we're actually inserting
         error_log(sprintf(
             'T-Work Rewards: Inserting refund transaction. User ID: %d, Request ID: %d, Points: %d, Request Points: %s',
@@ -11478,362 +8212,6 @@ class TWork_Rewards_System
         );
     }
 
-    /**
-     * PROFESSIONAL FEATURE: Point Tiers System - Get User's Current Tier
-     *
-     * Returns the active tier for a user based on their current points balance
-     *
-     * @param int $user_id User ID
-     * @return array|null Tier data or null if not found
-     */
-    private function get_user_tier($user_id)
-    {
-        global $wpdb;
-
-        if (!$user_id || $user_id <= 0) {
-            return null;
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Check cache first (15 minute cache for better performance)
-        $cache_key = 'twork_user_tier_' . $user_id;
-        $cached_tier = get_transient($cache_key);
-        if ($cached_tier !== false) {
-            return $cached_tier;
-        }
-
-        $user_tiers_table = $this->user_tiers_table_name();
-        $tiers_table = $this->point_tiers_table_name();
-
-        // PROFESSIONAL OPTIMIZATION: Check table existence using SHOW TABLES LIKE (more compatible, faster)
-        $user_tiers_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $user_tiers_table));
-        $tiers_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-
-        if ($user_tiers_check !== $user_tiers_table || $tiers_check !== $tiers_table) {
-            return null;  // Tables don't exist yet
-        }
-
-        // Get user's active tier assignment
-        $user_tier = $wpdb->get_row($wpdb->prepare(
-            "SELECT ut.*, t.tier_name, t.tier_slug, t.tier_level, t.earning_multiplier, 
-                    t.badge_icon, t.badge_color, t.description, t.benefits
-             FROM $user_tiers_table ut
-             INNER JOIN $tiers_table t ON ut.tier_id = t.id
-             WHERE ut.user_id = %d AND ut.is_active = 1 AND t.is_active = 1
-             ORDER BY t.tier_level DESC
-             LIMIT 1",
-            $user_id
-        ), ARRAY_A);
-
-        if ($user_tier) {
-            // Parse benefits JSON
-            if (!empty($user_tier['benefits'])) {
-                $user_tier['benefits'] = json_decode($user_tier['benefits'], true);
-            }
-            // Cache for 15 minutes (tier assignments don't change frequently)
-            set_transient($cache_key, $user_tier, 15 * MINUTE_IN_SECONDS);
-            return $user_tier;
-        }
-
-        // PROFESSIONAL OPTIMIZATION: No tier assigned, but don't auto-calculate here
-        // Let the caller decide if calculation is needed (avoid unnecessary calculations)
-        // This prevents recursive calls and unnecessary tier calculations
-        return null;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Invalidate user tier cache
-     *
-     * Call this when tier assignments change to ensure fresh data
-     *
-     * @param int $user_id User ID
-     */
-    private function invalidate_user_tier_cache($user_id)
-    {
-        if (!$user_id || $user_id <= 0) {
-            return;
-        }
-        $cache_key = 'twork_user_tier_' . $user_id;
-        delete_transient($cache_key);
-
-        // Also invalidate REST API cache
-        delete_transient('twork_rest_tier_' . $user_id);
-
-        // Invalidate tier progression cache if exists
-        delete_transient('twork_tier_progression_' . $user_id);
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Calculate and assign tier based on user's points
-     *
-     * @param int $user_id User ID
-     * @param bool $auto_assign Whether to automatically assign the tier
-     * @return array|null Tier data
-     */
-    private function calculate_user_tier($user_id, $auto_assign = true)
-    {
-        global $wpdb;
-
-        if (!$user_id || $user_id <= 0) {
-            return null;
-        }
-
-        $tiers_table = $this->point_tiers_table_name();
-
-        // PROFESSIONAL OPTIMIZATION: Check table existence using SHOW TABLES LIKE (faster, more compatible)
-        $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-        if ($table_check !== $tiers_table) {
-            return null;  // Table doesn't exist yet
-        }
-
-        // Get user's current points balance
-        $points_balance = $this->calculate_points_balance_from_transactions($user_id);
-
-        // Find appropriate tier based on points
-        $tier = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $tiers_table 
-             WHERE is_active = 1 
-             AND min_points <= %d 
-             AND (max_points IS NULL OR max_points >= %d)
-             ORDER BY tier_level DESC
-             LIMIT 1",
-            $points_balance,
-            $points_balance
-        ), ARRAY_A);
-
-        if (!$tier) {
-            return null;  // No tier found
-        }
-
-        // Parse benefits JSON
-        if (!empty($tier['benefits'])) {
-            $tier['benefits'] = json_decode($tier['benefits'], true);
-        }
-
-        // Auto-assign tier if requested
-        if ($auto_assign) {
-            $this->assign_user_tier($user_id, $tier['id'], 'automatic', $points_balance);
-        }
-
-        return $tier;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Assign tier to user
-     *
-     * @param int $user_id User ID
-     * @param int $tier_id Tier ID
-     * @param string $assignment_type 'automatic' or 'manual'
-     * @param int $points_at_assignment Points balance when assigned
-     * @param int|null $assigned_by Admin user ID (for manual assignments)
-     * @return bool Success status
-     */
-    private function assign_user_tier($user_id, $tier_id, $assignment_type = 'automatic', $points_at_assignment = 0, $assigned_by = null)
-    {
-        global $wpdb;
-
-        if (!$user_id || !$tier_id) {
-            return false;
-        }
-
-        $user_tiers_table = $this->user_tiers_table_name();
-        $tier_history_table = $this->tier_history_table_name();
-
-        // PROFESSIONAL OPTIMIZATION: Direct query instead of get_user_tier() to avoid unnecessary table checks
-        // Get current active tier assignment directly (single query, no function call overhead)
-        $old_tier_id = $wpdb->get_var($wpdb->prepare(
-            "SELECT tier_id FROM $user_tiers_table WHERE user_id = %d AND is_active = 1 LIMIT 1",
-            $user_id
-        ));
-
-        // If same tier, don't update (avoid unnecessary database writes)
-        if ($old_tier_id == $tier_id) {
-            return true;
-        }
-
-        // Deactivate old tier assignment
-        if ($old_tier_id) {
-            $wpdb->update(
-                $user_tiers_table,
-                array('is_active' => 0, 'updated_at' => current_time('mysql')),
-                array('user_id' => $user_id, 'tier_id' => $old_tier_id, 'is_active' => 1),
-                array('%d', '%s'),
-                array('%d', '%d', '%d')
-            );
-        }
-
-        // Check if user already has this tier (inactive)
-        $existing = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $user_tiers_table WHERE user_id = %d AND tier_id = %d",
-            $user_id,
-            $tier_id
-        ));
-
-        if ($existing) {
-            // Reactivate existing assignment
-            $wpdb->update(
-                $user_tiers_table,
-                array(
-                    'is_active' => 1,
-                    'assigned_at' => current_time('mysql'),
-                    'assigned_by' => $assigned_by ? $assigned_by : get_current_user_id(),
-                    'assignment_type' => $assignment_type,
-                    'points_at_assignment' => $points_at_assignment,
-                    'updated_at' => current_time('mysql')
-                ),
-                array('id' => $existing),
-                array('%d', '%s', '%d', '%s', '%d', '%s'),
-                array('%d')
-            );
-        } else {
-            // Create new assignment
-            $wpdb->insert(
-                $user_tiers_table,
-                array(
-                    'user_id' => $user_id,
-                    'tier_id' => $tier_id,
-                    'assigned_at' => current_time('mysql'),
-                    'assigned_by' => $assigned_by ? $assigned_by : get_current_user_id(),
-                    'assignment_type' => $assignment_type,
-                    'points_at_assignment' => $points_at_assignment,
-                    'is_active' => 1
-                ),
-                array('%d', '%d', '%s', '%d', '%s', '%d', '%d')
-            );
-        }
-
-        // Record in history
-        $change_type = 'upgrade';
-        if ($old_tier_id) {
-            $old_tier_level = $wpdb->get_var($wpdb->prepare(
-                "SELECT tier_level FROM {$this->point_tiers_table_name()} WHERE id = %d",
-                $old_tier_id
-            ));
-            $new_tier_level = $wpdb->get_var($wpdb->prepare(
-                "SELECT tier_level FROM {$this->point_tiers_table_name()} WHERE id = %d",
-                $tier_id
-            ));
-
-            if ($new_tier_level < $old_tier_level) {
-                $change_type = 'downgrade';
-            } elseif ($new_tier_level == $old_tier_level) {
-                $change_type = 'change';
-            }
-        }
-
-        $wpdb->insert(
-            $tier_history_table,
-            array(
-                'user_id' => $user_id,
-                'old_tier_id' => $old_tier_id,
-                'new_tier_id' => $tier_id,
-                'change_type' => $change_type,
-                'points_at_change' => $points_at_assignment,
-                'changed_by' => $assigned_by ? $assigned_by : get_current_user_id(),
-                'change_reason' => $assignment_type === 'automatic' ? 'Automatic tier calculation' : 'Manual tier assignment'
-            ),
-            array('%d', '%d', '%d', '%s', '%d', '%d', '%s')
-        );
-
-        // Send notification if tier changed
-        if ($old_tier_id != $tier_id) {
-            $this->send_tier_change_notification($user_id, $old_tier_id, $tier_id, $change_type);
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Invalidate tier cache when tier changes
-        $this->invalidate_user_tier_cache($user_id);
-
-        // Also invalidate REST API cache for this user
-        delete_transient('twork_rest_tier_' . $user_id);
-
-        // Invalidate tier thresholds cache (in case tier definitions changed)
-        delete_transient('twork_tier_thresholds');
-
-        // Invalidate all tiers list cache
-        delete_transient('twork_rest_all_tiers');
-
-        return true;
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Get tier earning multiplier
-     *
-     * @param int $user_id User ID
-     * @return float Multiplier (default 1.0)
-     */
-    private function get_tier_multiplier($user_id)
-    {
-        $tier = $this->get_user_tier($user_id);
-        if ($tier && isset($tier['earning_multiplier'])) {
-            return (float) $tier['earning_multiplier'];
-        }
-        return 1.0;  // Default multiplier
-    }
-
-    /**
-     * PROFESSIONAL FEATURE: Send tier change notification
-     *
-     * @param int $user_id User ID
-     * @param int|null $old_tier_id Old tier ID
-     * @param int $new_tier_id New tier ID
-     * @param string $change_type 'upgrade', 'downgrade', or 'change'
-     */
-    private function send_tier_change_notification($user_id, $old_tier_id, $new_tier_id, $change_type)
-    {
-        global $wpdb;
-
-        $tiers_table = $this->point_tiers_table_name();
-
-        $old_tier = null;
-        if ($old_tier_id) {
-            $old_tier = $wpdb->get_row($wpdb->prepare(
-                "SELECT tier_name, tier_slug FROM $tiers_table WHERE id = %d",
-                $old_tier_id
-            ), ARRAY_A);
-        }
-
-        $new_tier = $wpdb->get_row($wpdb->prepare(
-            "SELECT tier_name, tier_slug, earning_multiplier FROM $tiers_table WHERE id = %d",
-            $new_tier_id
-        ), ARRAY_A);
-
-        if (!$new_tier) {
-            return;
-        }
-
-        $title = '';
-        $message = '';
-
-        if ($change_type === 'upgrade') {
-            $title = sprintf(__('🎉 Tier Upgrade!', 'twork-rewards'));
-            $message = sprintf(
-                __('Congratulations! You have been upgraded to %s tier. You now earn %.0f%% bonus points on all purchases!', 'twork-rewards'),
-                $new_tier['tier_name'],
-                (($new_tier['earning_multiplier'] - 1) * 100)
-            );
-        } elseif ($change_type === 'downgrade') {
-            $title = sprintf(__('Tier Changed', 'twork-rewards'));
-            $message = sprintf(
-                __('Your tier has been changed to %s tier.', 'twork-rewards'),
-                $new_tier['tier_name']
-            );
-        } else {
-            $title = sprintf(__('Tier Updated', 'twork-rewards'));
-            $message = sprintf(
-                __('Your tier has been updated to %s tier.', 'twork-rewards'),
-                $new_tier['tier_name']
-            );
-        }
-
-        // Send FCM notification
-        $this->send_points_fcm_notification($user_id, 'tier_change', array(
-            'title' => $title,
-            'message' => $message,
-            'tier_name' => $new_tier['tier_name'],
-            'tier_slug' => $new_tier['tier_slug'],
-            'change_type' => $change_type,
-            'multiplier' => $new_tier['earning_multiplier']
-        ));
-    }
 
     /**
      * PROFESSIONAL ARCHITECTURE: Transaction-Based Point Management
@@ -11861,24 +8239,6 @@ class TWork_Rewards_System
 
         global $wpdb;
 
-        // PROFESSIONAL FEATURE: Apply tier multiplier for point earning (positive delta only)
-        $original_delta = $delta;
-        $multiplier_applied = false;
-        if ($delta > 0) {
-            $multiplier = $this->get_tier_multiplier($user_id);
-            if ($multiplier > 1.0) {
-                $delta = $delta * $multiplier;
-                $multiplier_applied = true;
-
-                // Update description to show multiplier if not already set
-                if (empty($description) && $multiplier > 1.0) {
-                    $description = sprintf(
-                        'Points earned (%.0f%% tier bonus applied)',
-                        (($multiplier - 1) * 100)
-                    );
-                }
-            }
-        }
 
         // PROFESSIONAL FIX: Create transaction FIRST (source of truth).
         $transaction_created = false;
@@ -11930,101 +8290,73 @@ class TWork_Rewards_System
             );
 
             // Create transaction in points system (twork_point_transactions) - PRIMARY TABLE.
-            // Use SHOW TABLES LIKE (same as calculate_points_balance_from_transactions) for compatibility
-            // — information_schema can be blocked on some MySQL hosts.
+            // No SHOW TABLES check: direct insert; missing table surfaces via $wpdb->last_error.
             $points_table = $wpdb->prefix . 'twork_point_transactions';
-            $points_table_exists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $points_table)) === $points_table);
+            $transaction_type = $delta >= 0 ? 'earn' : 'redeem';
+            $points_abs = abs((int) $delta);
 
-            if ($points_table_exists) {
-                $transaction_type = $delta >= 0 ? 'earn' : 'redeem';
-                $points_abs = abs((int) $delta);
+            $result = $wpdb->insert(
+                $points_table,
+                array(
+                    'user_id' => $user_id,
+                    'type' => $transaction_type,
+                    'points' => $points_abs,
+                    'description' => $description,
+                    'order_id' => $order_id,
+                    'expires_at' => null,
+                    'created_at' => current_time('mysql'),
+                    'status' => 'approved',
+                ),
+                array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
+            );
 
-                $result = $wpdb->insert(
-                    $points_table,
-                    array(
-                        'user_id' => $user_id,
-                        'type' => $transaction_type,
-                        'points' => $points_abs,
-                        'description' => $description,
-                        'order_id' => $order_id,
-                        'expires_at' => null,
-                        'created_at' => current_time('mysql'),
-                        'status' => 'approved',
-                    ),
-                    array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
-                );
-
-                // CRITICAL DEBUG: Log transaction creation result.
-                if (false === $result) {
-                    error_log(
-                        sprintf(
-                            'T-Work Rewards: FAILED to create transaction in points table. User ID: %d, Delta: %s, Error: %s',
-                            $user_id,
-                            $delta,
-                            $wpdb->last_error
-                        )
-                    );
-                } else {
-                    $transaction_id = $wpdb->insert_id;
-                    $transaction_created = true;
-                    error_log(
-                        sprintf(
-                            'T-Work Rewards: Transaction created successfully. Transaction ID: %d, User ID: %d, Type: %s, Points: %d',
-                            $transaction_id,
-                            $user_id,
-                            $transaction_type,
-                            $points_abs
-                        )
-                    );
-                }
-            } else {
-                // CRITICAL: Table doesn't exist! Use fallback mechanism.
+            if (false === $result) {
                 error_log(
                     sprintf(
-                        'T-Work Rewards: Points table does NOT exist! User ID: %d, Delta: %s. Using fallback mechanism.',
+                        'T-Work Rewards: FAILED to create transaction in points table. User ID: %d, Delta: %s, Error: %s',
                         $user_id,
-                        $delta
+                        $delta,
+                        $wpdb->last_error
+                    )
+                );
+            } else {
+                $transaction_id = $wpdb->insert_id;
+                $transaction_created = true;
+                error_log(
+                    sprintf(
+                        'T-Work Rewards: Transaction created successfully. Transaction ID: %d, User ID: %d, Type: %s, Points: %d',
+                        $transaction_id,
+                        $user_id,
+                        $transaction_type,
+                        $points_abs
                     )
                 );
             }
         }
 
-        // CRITICAL: Calculate balance from transactions (single source of truth).
-        // If table doesn't exist, calculate_points_balance_from_transactions will use fallback.
+        // Invalidate points_balance_cache so the next calculation sums twork_point_transactions (includes rows just inserted).
+        delete_user_meta($user_id, 'points_balance_cache');
+        delete_user_meta($user_id, 'points_balance_cache_time');
+
+        // Single source of truth: full aggregate from DB; repopulates points_balance_cache inside the helper.
         $calculated_balance = $this->calculate_points_balance_from_transactions($user_id);
 
-        // FALLBACK: If no transaction was created (table doesn't exist), manually calculate balance.
-        if (!$transaction_created && $create_transaction) {
-            // Get current balance from meta.
-            $current_balance = get_user_meta($user_id, 'points_balance', true);
-            if (!is_numeric($current_balance)) {
-                $current_balance = 0;
-            }
-
-            // Add delta to current balance.
-            $calculated_balance = max(0, (int) $current_balance + (int) $delta);
-
+        if ($create_transaction && !$transaction_created && defined('WP_DEBUG') && WP_DEBUG) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Using fallback calculation. User ID: %d, Old Balance: %d, Delta: %s, New Balance: %d',
+                    'T-Work Rewards: Point transaction row not created; balance recomputed from DB only. User ID: %d, Delta attempted: %s',
                     $user_id,
-                    $current_balance,
-                    $delta,
-                    $calculated_balance
+                    (string) $delta
                 )
             );
         }
 
-        // Update cache fields (my_points and points_balance are CACHE ONLY).
+        // Update mirror meta (my_points / points_balance) from DB-derived balance — do not derive balance from these fields.
         $stored = (string) $calculated_balance;
         update_user_meta($user_id, 'my_points', $stored);
         update_user_meta($user_id, 'my_point', $stored);  // Backward compatibility.
         update_user_meta($user_id, 'points_balance', $calculated_balance);
         update_user_meta($user_id, 'my_points_updated_at', time());
-
-        // Invalidate balance cache.
-        delete_user_meta($user_id, 'points_balance_cache');
-        delete_user_meta($user_id, 'points_balance_cache_time');
 
         // PROFESSIONAL FCM NOTIFICATION: Send notification for manual point adjustments
         // Check if this is a manual adjustment (order_id starts with 'manual:')
@@ -12073,18 +8405,6 @@ class TWork_Rewards_System
             );
         }
 
-        // PROFESSIONAL OPTIMIZATION: Check and update user tier after points change
-        // Only check if points were actually changed AND tier system is enabled
-        // Skip tier check if delta is 0 or transaction wasn't created (no actual change)
-        if ($transaction_created && $delta != 0) {
-            // Check if tier tables exist before attempting tier calculation (avoid unnecessary queries)
-            $tiers_table = $this->point_tiers_table_name();
-            $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-            if ($table_check === $tiers_table) {
-                // Only recalculate tier if points actually changed (positive or negative)
-                $this->calculate_user_tier($user_id, true);
-            }
-        }
 
         return true;
     }
@@ -12204,20 +8524,17 @@ class TWork_Rewards_System
         // Use transaction-based calculation as single source of truth
         $current_balance = $this->calculate_points_balance_from_transactions($user_id);
 
-        // Optional: lifetime stats (single query)
+        // Optional: lifetime stats (no SHOW TABLES — direct aggregates)
         global $wpdb;
         $table_name = $wpdb->prefix . 'twork_point_transactions';
-        $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
-        $lifetime_earned = 0;
+        $lifetime_earned = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COALESCE(SUM(points), 0) FROM $table_name 
+             WHERE user_id = %d AND type IN ('earn','refund') AND status = 'approved'",
+            $user_id
+        ));
         $lifetime_redeemed = 0;
         $lifetime_expired = 0;
-
-        if ($table_exists === $table_name) {
-            $lifetime_earned = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COALESCE(SUM(points), 0) FROM $table_name 
-                 WHERE user_id = %d AND type IN ('earn','refund') AND status = 'approved'",
-                $user_id
-            ));
+        if (!$wpdb->last_error) {
             $lifetime_redeemed = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COALESCE(SUM(points), 0) FROM $table_name 
                  WHERE user_id = %d AND type = 'redeem' AND status IN ('approved','pending')",
@@ -12228,6 +8545,8 @@ class TWork_Rewards_System
                  WHERE user_id = %d AND type = 'earn' AND expires_at IS NOT NULL AND expires_at <= NOW()",
                 $user_id
             ));
+        } else {
+            $lifetime_earned = 0;
         }
 
         $last_updated = current_time('c');
@@ -12254,11 +8573,11 @@ class TWork_Rewards_System
         $page = intval($request->get_param('page')) ?: 1;
         $per_page = intval($request->get_param('per_page')) ?: 20;
         $offset = ($page - 1) * $per_page;
-        
+
         // PROFESSIONAL FIX: Support orderby and order parameters from frontend
         $orderby_param = sanitize_text_field($request->get_param('orderby')) ?: 'created_at';
         $order = strtoupper(sanitize_text_field($request->get_param('order'))) === 'ASC' ? 'ASC' : 'DESC';
-        
+
         // Validate and map orderby field to prevent SQL injection
         $allowed_orderby = array(
             'id' => 'id',
@@ -12273,123 +8592,35 @@ class TWork_Rewards_System
             return new WP_Error('invalid_user', 'Invalid user ID', array('status' => 400));
         }
 
-        // PROFESSIONAL FIX: Use twork_point_transactions as SINGLE SOURCE OF TRUTH
-        // This table is the primary source for all point transactions.
-        //
-        // CRITICAL RELIABILITY FIX:
-        // Avoid information_schema checks (can be blocked on some MySQL hosts),
-        // otherwise we mistakenly fall back to legacy table and return empty history.
+        // PROFESSIONAL FIX: Use twork_point_transactions as SINGLE SOURCE OF TRUTH.
+        // No SHOW TABLES — query directly; use $wpdb->last_error to fall back to legacy table.
         $points_table = $wpdb->prefix . 'twork_point_transactions';
-        $points_table_exists = $wpdb->get_var(
-            $wpdb->prepare('SHOW TABLES LIKE %s', $points_table)
-        );
 
         $formatted_transactions = array();
         $total = 0;
 
-        if ($points_table_exists === $points_table) {
-            // PRIMARY: Query from twork_point_transactions (SINGLE SOURCE OF TRUTH)
-            // PROFESSIONAL FIX: Use orderby and order parameters from request
-            $transactions = $wpdb->get_results($wpdb->prepare(
-                "SELECT * FROM $points_table 
-                WHERE user_id = %d 
-                ORDER BY $orderby $order, id DESC 
-                LIMIT %d OFFSET %d",
-                $user_id,
-                $per_page,
-                $offset
-            ));
+        $transactions = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM $points_table 
+            WHERE user_id = %d 
+            ORDER BY $orderby $order, id DESC 
+            LIMIT %d OFFSET %d",
+            $user_id,
+            $per_page,
+            $offset
+        ));
 
-            $total = $wpdb->get_var($wpdb->prepare(
+        $points_table_ok = !$wpdb->last_error;
+        if ($points_table_ok) {
+            $total = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM $points_table WHERE user_id = %d",
                 $user_id
             ));
+        }
 
-            // BACKWARD COMPATIBILITY:
-            // If points table exists but has no rows for this user, fall back to legacy rewards table.
-            // This happens on older installs where transactions were stored in twork_reward_transactions.
-            if (intval($total) > 0) {
-                foreach ($transactions as $transaction) {
-                    // Points are stored as integer in points table
-                    // PROFESSIONAL FIX: Preserve actual points value (positive for earn, positive for redeem amount)
-                    // The app will handle sign display based on transaction type
-                    $points_int = isset($transaction->points) ? intval($transaction->points) : 0;
-                    
-                    // For adjust type, check if points value is stored as negative
-                    // Adjustments can be positive (add) or negative (subtract)
-                    if ($transaction->type === 'adjust' && $points_int < 0) {
-                        // Keep negative value for negative adjustments
-                        // App will display correctly based on formattedPoints getter
-                    }
-
-                    $formatted_transactions[] = array(
-                        'id' => $transaction->id,
-                        'user_id' => $transaction->user_id,
-                        'type' => $transaction->type, // Already in correct format (earn, redeem, adjust, etc.)
-                        'points' => $points_int,  // Preserve actual value (positive for earn/redeem amounts, can be negative for adjust)
-                        'description' => $transaction->description ?: '',
-                        'order_id' => $transaction->order_id,
-                        'created_at' => $transaction->created_at,
-                        'expires_at' => $transaction->expires_at,
-                        'is_expired' => (bool) $transaction->is_expired,
-                        'status' => isset($transaction->status) ? $transaction->status : 'approved',
-                    );
-                }
-            } else {
-                // BACKWARD COMPATIBILITY:
-                // Points table exists but this user has no rows there yet.
-                // Fall back to the legacy rewards table so the mobile app can still show history.
-                $table_name = $wpdb->prefix . 'twork_reward_transactions';
-
-                $transactions = $wpdb->get_results($wpdb->prepare(
-                    "SELECT * FROM $table_name 
-                    WHERE user_id = %d 
-                    AND deleted_at IS NULL
-                    ORDER BY $orderby $order, id DESC 
-                    LIMIT %d OFFSET %d",
-                    $user_id,
-                    $per_page,
-                    $offset
-                ));
-
-                $total = $wpdb->get_var($wpdb->prepare(
-                    "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL",
-                    $user_id
-                ));
-
-                foreach ($transactions as $transaction) {
-                    $points_value = $transaction->points_value;
-                    $points_int = 0;
-
-                    if ($points_value !== null && $points_value !== '') {
-                        if (is_numeric($points_value)) {
-                            $points_int = (int) floatval($points_value);
-                        } else {
-                            $points_int = intval($points_value);
-                        }
-                    }
-
-                    $formatted_transactions[] = array(
-                        'id' => $transaction->id,
-                        'user_id' => $transaction->user_id,
-                        'type' => $this->map_transaction_type($transaction->type, $transaction->order_id),
-                        'points' => $points_int,
-                        'description' => $transaction->description ?: $this->get_default_description($transaction),
-                        'order_id' => $transaction->order_id,
-                        'created_at' => $transaction->created_at,
-                        'expires_at' => null,
-                        'is_expired' => false,
-                        'status' => $transaction->status ?: 'approved',
-                    );
-                }
-            }
-        } else {
-            // FALLBACK: If points table doesn't exist, query from rewards table (legacy support)
+        if (!$points_table_ok) {
+            // FALLBACK: Points table missing or unreadable — legacy rewards table
             $table_name = $wpdb->prefix . 'twork_reward_transactions';
 
-            // PROFESSIONAL FIX: Exclude deleted/trashed transactions from API response
-            // Get transactions ordered by newest first, excluding soft-deleted ones
-            // PROFESSIONAL FIX: Use orderby and order parameters from request
             $transactions = $wpdb->get_results($wpdb->prepare(
                 "SELECT * FROM $table_name 
                 WHERE user_id = %d 
@@ -12401,23 +8632,19 @@ class TWork_Rewards_System
                 $offset
             ));
 
-            $total = $wpdb->get_var($wpdb->prepare(
+            $total = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL",
                 $user_id
             ));
 
-            foreach ($transactions as $transaction) {
-                // PROFESSIONAL FIX: Preserve negative values for adjustments
-                // points_value is stored as string, so we need to handle negative values correctly
+            foreach ($transactions ?: array() as $transaction) {
                 $points_value = $transaction->points_value;
                 $points_int = 0;
 
                 if ($points_value !== null && $points_value !== '') {
-                    // Handle both string and numeric values
                     if (is_numeric($points_value)) {
-                        $points_int = (int) floatval($points_value);  // Use floatval first to handle decimals, then cast to int
+                        $points_int = (int) floatval($points_value);
                     } else {
-                        // Try to extract number from string
                         $points_int = intval($points_value);
                     }
                 }
@@ -12426,11 +8653,77 @@ class TWork_Rewards_System
                     'id' => $transaction->id,
                     'user_id' => $transaction->user_id,
                     'type' => $this->map_transaction_type($transaction->type, $transaction->order_id),
-                    'points' => $points_int,  // Preserve negative values
+                    'points' => $points_int,
                     'description' => $transaction->description ?: $this->get_default_description($transaction),
                     'order_id' => $transaction->order_id,
                     'created_at' => $transaction->created_at,
-                    'expires_at' => null,  // Not tracked in rewards system
+                    'expires_at' => null,
+                    'is_expired' => false,
+                    'status' => $transaction->status ?: 'approved',
+                );
+            }
+        } elseif ($total > 0) {
+            foreach ($transactions ?: array() as $transaction) {
+                $points_int = isset($transaction->points) ? intval($transaction->points) : 0;
+
+                if ($transaction->type === 'adjust' && $points_int < 0) {
+                    // Keep negative value for negative adjustments
+                }
+
+                $formatted_transactions[] = array(
+                    'id' => $transaction->id,
+                    'user_id' => $transaction->user_id,
+                    'type' => $transaction->type,
+                    'points' => $points_int,
+                    'description' => $transaction->description ?: '',
+                    'order_id' => $transaction->order_id,
+                    'created_at' => $transaction->created_at,
+                    'expires_at' => $transaction->expires_at,
+                    'is_expired' => (bool) $transaction->is_expired,
+                    'status' => isset($transaction->status) ? $transaction->status : 'approved',
+                );
+            }
+        } else {
+            // Points table OK but no rows for this user — legacy rewards table
+            $table_name = $wpdb->prefix . 'twork_reward_transactions';
+
+            $transactions = $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM $table_name 
+                WHERE user_id = %d 
+                AND deleted_at IS NULL
+                ORDER BY $orderby $order, id DESC 
+                LIMIT %d OFFSET %d",
+                $user_id,
+                $per_page,
+                $offset
+            ));
+
+            $total = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL",
+                $user_id
+            ));
+
+            foreach ($transactions ?: array() as $transaction) {
+                $points_value = $transaction->points_value;
+                $points_int = 0;
+
+                if ($points_value !== null && $points_value !== '') {
+                    if (is_numeric($points_value)) {
+                        $points_int = (int) floatval($points_value);
+                    } else {
+                        $points_int = intval($points_value);
+                    }
+                }
+
+                $formatted_transactions[] = array(
+                    'id' => $transaction->id,
+                    'user_id' => $transaction->user_id,
+                    'type' => $this->map_transaction_type($transaction->type, $transaction->order_id),
+                    'points' => $points_int,
+                    'description' => $transaction->description ?: $this->get_default_description($transaction),
+                    'order_id' => $transaction->order_id,
+                    'created_at' => $transaction->created_at,
+                    'expires_at' => null,
                     'is_expired' => false,
                     'status' => $transaction->status ?: 'approved',
                 );
@@ -12492,7 +8785,6 @@ class TWork_Rewards_System
             'reward' => 'earn',
             'exchange' => 'redeem',
             'luckybox' => 'earn',
-            'prize_code' => 'earn',
         );
 
         return isset($type_map[$type]) ? $type_map[$type] : 'earn';
@@ -12508,10 +8800,6 @@ class TWork_Rewards_System
                 return 'Lucky Box Request';
             }
             return 'Order #' . $transaction->order_id;
-        }
-
-        if ($transaction->type === 'prize_code') {
-            return 'Prize Code Redeemed';
         }
 
         if ($transaction->type === 'exchange') {
@@ -12714,212 +9002,6 @@ class TWork_Rewards_System
         error_log('T-Work Rewards: Returning response: ' . print_r($response, true));
 
         return new WP_REST_Response($response, 200);
-    }
-
-    /**
-     * REST API: Validate prize code
-     */
-    public function rest_prize_validate(WP_REST_Request $request)
-    {
-        $code = trim($request->get_param('code'));
-
-        if (empty($code)) {
-            return new WP_REST_Response(array(
-                'valid' => false,
-                'message' => 'Code is required',
-            ), 400);
-        }
-
-        global $wpdb;
-        $codes_table = $this->codes_table_name();
-
-        // Find matching code prefix
-        $matched_code = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $codes_table WHERE code_prefix = %s AND is_active = 1",
-            $code
-        ));
-
-        if (!$matched_code) {
-            return new WP_REST_Response(array(
-                'valid' => false,
-                'message' => 'Invalid code',
-            ), 200);
-        }
-
-        // Check if code has reached max uses
-        if ($matched_code->max_uses !== null && $matched_code->max_uses > 0) {
-            if ($matched_code->current_uses >= $matched_code->max_uses) {
-                return new WP_REST_Response(array(
-                    'valid' => false,
-                    'message' => 'Code has reached maximum uses',
-                ), 200);
-            }
-        }
-
-        return new WP_REST_Response(array(
-            'valid' => true,
-            'code' => $code,
-            'prize_value' => $matched_code->reward_value ?: 0,
-            'prize_points' => $matched_code->points_value ?: 0,
-            'description' => $matched_code->description ?: 'Prize code redeemed',
-            'message' => 'Code is valid',
-        ), 200);
-    }
-
-    /**
-     * REST API: Redeem prize code
-     */
-    public function rest_prize_redeem(WP_REST_Request $request)
-    {
-        $params = $request->get_json_params();
-        $user_id = isset($params['user_id']) ? absint($params['user_id']) : 0;
-        $code = isset($params['code']) ? trim($params['code']) : '';
-
-        if ($user_id <= 0 || !get_user_by('ID', $user_id)) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Invalid user',
-            ), 400);
-        }
-
-        if (empty($code)) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Code is required',
-            ), 400);
-        }
-
-        global $wpdb;
-        $codes_table = $this->codes_table_name();
-
-        // Find matching code prefix
-        $matched_code = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $codes_table WHERE code_prefix = %s AND is_active = 1",
-            $code
-        ));
-
-        if (!$matched_code) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Invalid code',
-            ), 400);
-        }
-
-        // Check if code already redeemed by this user (one-time use per user)
-        $table = $this->table_name();
-        $existing = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table WHERE user_id = %d AND order_id = %s",
-            $user_id,
-            'code:' . $code
-        ));
-
-        if ($existing > 0) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'You have already redeemed this code',
-            ), 400);
-        }
-
-        // Check if code has reached max uses
-        if ($matched_code->max_uses !== null && $matched_code->max_uses > 0) {
-            if ($matched_code->current_uses >= $matched_code->max_uses) {
-                return new WP_REST_Response(array(
-                    'success' => false,
-                    'message' => 'Code has reached maximum uses',
-                ), 400);
-            }
-        }
-
-        // Create transaction with approved status
-        $transaction_id = $wpdb->insert(
-            $table,
-            array(
-                'user_id' => $user_id,
-                'order_id' => 'code:' . $code,
-                'status' => 'approved',
-                'reward_value' => $matched_code->reward_value,
-                'points_value' => $matched_code->points_value,
-                'created_at' => current_time('mysql'),
-                'updated_at' => current_time('mysql'),
-            ),
-            array('%d', '%s', '%s', '%s', '%s', '%s', '%s')
-        );
-
-        if ($transaction_id === false) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Failed to create transaction',
-            ), 500);
-        }
-
-        $transaction_id = $wpdb->insert_id;
-
-        // Increment current_uses for the code
-        $wpdb->update(
-            $codes_table,
-            array(
-                'current_uses' => $matched_code->current_uses + 1,
-                'updated_at' => current_time('mysql'),
-            ),
-            array('id' => $matched_code->id),
-            array('%d', '%s'),
-            array('%d')
-        );
-
-        // PROFESSIONAL FIX: Update user points using unified system.
-        if (!empty($matched_code->points_value) && is_numeric($matched_code->points_value)) {
-            $delta = (float) $matched_code->points_value;
-            $order_id = 'code:' . $code . ':' . time();
-            $description = sprintf(
-                'Reward code redeemed: %s (%s %d points)',
-                $code,
-                $delta >= 0 ? '+' : '-',
-                abs((int) $delta)
-            );
-
-            // Use unified sync function (creates transaction and updates cache).
-            $this->sync_user_points($user_id, $delta, $order_id, $description, true);
-
-            error_log(
-                sprintf(
-                    'T-Work Rewards: Reward code redeemed. User ID: %d, Code: %s, Points: %s',
-                    $user_id,
-                    $code,
-                    $matched_code->points_value
-                )
-            );
-        }
-
-        // PROFESSIONAL FCM NOTIFICATION: Send notification for reward code redemption
-        // Send legacy webhook notification (for backward compatibility)
-        $this->send_reward_update_notification(array(
-            'user_id' => $user_id,
-            'transaction_id' => $transaction_id,
-            'reward_value' => $matched_code->reward_value,
-            'points_value' => $matched_code->points_value,
-            'status' => 'approved',
-        ));
-
-        // Send professional FCM notification for points earned
-        if (!empty($matched_code->points_value) && is_numeric($matched_code->points_value)) {
-            $this->send_points_fcm_notification(
-                $user_id,
-                'points_earned',
-                array(
-                    'transaction_id' => $transaction_id,
-                    'points' => (int) $matched_code->points_value,
-                    'points_value' => $matched_code->points_value,
-                    'description' => sprintf('Reward code redeemed: %s (+%d points)', $code, (int) $matched_code->points_value),
-                )
-            );
-        }
-
-        return new WP_REST_Response(array(
-            'success' => true,
-            'transaction_id' => $transaction_id,
-            'prize_points' => $matched_code->points_value ?: 0,
-            'message' => 'Prize claimed successfully!',
-        ), 200);
     }
 
     /**
@@ -13352,6 +9434,36 @@ class TWork_Rewards_System
     }
 
     /**
+     * Parse engagement poll-related point transaction order_id strings.
+     *
+     * Supported formats:
+     * - engagement:poll_cost:{item_id}:… (vote / cost)
+     * - engagement:poll:{item_id}:resolve:… or engagement:poll:{item_id}:session:… (win / reward)
+     *
+     * @param string $order_id_str Raw order_id from point transactions table.
+     * @return array|null { 'kind' => 'pay'|'win', 'item_id' => int } or null if not a poll pattern.
+     */
+    private function parse_engagement_poll_order_id($order_id_str)
+    {
+        if (!is_string($order_id_str) || $order_id_str === '') {
+            return null;
+        }
+        // Poll cost uses prefix engagement:poll_cost: (distinct from engagement:poll: for wins).
+        if (strpos($order_id_str, 'engagement:poll_cost:') === 0) {
+            $parts = explode(':', $order_id_str);
+            $item_id = isset($parts[2]) ? absint($parts[2]) : 0;
+            return ($item_id > 0) ? array('kind' => 'pay', 'item_id' => $item_id) : null;
+        }
+        if (strpos($order_id_str, 'engagement:poll:') === 0) {
+            $parts = explode(':', $order_id_str);
+            $item_id = isset($parts[2]) ? absint($parts[2]) : 0;
+            return ($item_id > 0) ? array('kind' => 'win', 'item_id' => $item_id) : null;
+        }
+
+        return null;
+    }
+
+    /**
      * Transactions list page
      */
     public function render_transactions_page()
@@ -13442,6 +9554,58 @@ class TWork_Rewards_System
                 <a class="page-title-action" href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards', 'status' => 'trash'), admin_url('admin.php'))); ?>"><?php esc_html_e('Trash', 'twork-rewards'); ?></a>
             <?php endif; ?>
             <hr class="wp-header-end" />
+
+            <style>
+                .twork-txn-poll-pay {
+                    display: inline-flex;
+                    align-items: center;
+                    flex-wrap: wrap;
+                    gap: 4px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    line-height: 1.35;
+                    background: #fef2f2;
+                    color: #7f1d1d;
+                    border: 1px solid #fecaca;
+                    max-width: 100%;
+                }
+                .twork-txn-poll-pay a {
+                    color: #b91c1c;
+                    font-weight: 600;
+                    text-decoration: none;
+                }
+                .twork-txn-poll-pay a:hover {
+                    text-decoration: underline;
+                }
+                .twork-txn-poll-win {
+                    display: inline-flex;
+                    align-items: center;
+                    flex-wrap: wrap;
+                    gap: 4px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    line-height: 1.35;
+                    background: #ecfdf5;
+                    color: #065f46;
+                    border: 1px solid #6ee7b7;
+                    max-width: 100%;
+                }
+                .twork-txn-poll-win a {
+                    color: #047857;
+                    font-weight: 600;
+                    text-decoration: none;
+                }
+                .twork-txn-poll-win a:hover {
+                    text-decoration: underline;
+                }
+                .twork-txn-poll-sep {
+                    color: inherit;
+                    opacity: 0.75;
+                    font-weight: 400;
+                }
+            </style>
 
             <form method="get" style="margin: 12px 0;">
                 <input type="hidden" name="page" value="twork-rewards" />
@@ -13537,7 +9701,7 @@ class TWork_Rewards_System
                     // PROFESSIONAL FIX: Batch fetch exchange requests for exchange request transactions
                     $exchange_table = $this->exchange_requests_table_name();
                     $exchange_request_ids = array();
-                    $exchange_request_map = array(); // Maps transaction order_id to exchange request data
+                    $exchange_request_map = array();  // Maps transaction order_id to exchange request data
                     foreach ($transactions as $txn) {
                         if (!empty($txn['order_id'])) {
                             $order_id_str = (string) $txn['order_id'];
@@ -13585,6 +9749,43 @@ class TWork_Rewards_System
                             }
                         }
                     }
+
+                    // Batch load engagement poll item titles for Order column UX.
+                    $engagement_items_table = $wpdb->prefix . 'twork_engagement_items';
+                    $poll_item_ids = array();
+                    foreach ($transactions as $txn_poll_scan) {
+                        if (empty($txn_poll_scan['order_id'])) {
+                            continue;
+                        }
+                        $parsed_poll = $this->parse_engagement_poll_order_id((string) $txn_poll_scan['order_id']);
+                        if ($parsed_poll && !empty($parsed_poll['item_id'])) {
+                            $poll_item_ids[] = (int) $parsed_poll['item_id'];
+                        }
+                    }
+                    $poll_item_ids = array_values(array_unique(array_filter($poll_item_ids)));
+                    $poll_engagement_title_map = array();
+                    if (!empty($poll_item_ids)) {
+                        $poll_in_placeholders = implode(',', array_fill(0, count($poll_item_ids), '%d'));
+                        $safe_engagement_poll_table = esc_sql($engagement_items_table);
+                        $poll_sql = "SELECT id, title FROM `{$safe_engagement_poll_table}` WHERE id IN ($poll_in_placeholders)";
+                        $poll_rows = $wpdb->get_results($wpdb->prepare($poll_sql, $poll_item_ids), ARRAY_A);
+                        if (is_array($poll_rows)) {
+                            foreach ($poll_rows as $poll_row) {
+                                $pid = isset($poll_row['id']) ? (int) $poll_row['id'] : 0;
+                                if ($pid < 1) {
+                                    continue;
+                                }
+                                $t = isset($poll_row['title']) ? trim((string) $poll_row['title']) : '';
+                                $poll_engagement_title_map[$pid] = ($t !== '')
+                                    ? $t
+                                    : sprintf(
+                                        /* translators: %d: engagement item ID */
+                                        __('Poll #%d', 'twork-rewards'),
+                                        $pid
+                                    );
+                            }
+                        }
+                    }
                     ?>
                     <?php
                     foreach ($transactions as $txn):
@@ -13596,8 +9797,36 @@ class TWork_Rewards_System
                         if (!empty($txn['order_id'])) {
                             $order_id_str = (string) $txn['order_id'];
 
+                            // Engagement poll: show human-readable title + link to View Results.
+                            $poll_parsed = $this->parse_engagement_poll_order_id($order_id_str);
+                            if ($poll_parsed !== null) {
+                                $poll_item_id = (int) $poll_parsed['item_id'];
+                                $poll_title = isset($poll_engagement_title_map[$poll_item_id])
+                                    ? $poll_engagement_title_map[$poll_item_id]
+                                    : sprintf(
+                                        /* translators: %d: engagement item ID */
+                                        __('Poll #%d', 'twork-rewards'),
+                                        $poll_item_id
+                                    );
+                                $poll_results_url = add_query_arg(
+                                    array(
+                                        'page' => 'twork-rewards-engagement',
+                                        'action' => 'view_results',
+                                        'id' => $poll_item_id,
+                                    ),
+                                    admin_url('admin.php')
+                                );
+                                $title_link = '<a href="' . esc_url($poll_results_url) . '">' . esc_html($poll_title) . '</a>';
+                                if ($poll_parsed['kind'] === 'pay') {
+                                    $label = esc_html__('[Poll Pay]', 'twork-rewards');
+                                    $order_link = '<span class="twork-txn-poll-pay"><strong>' . $label . '</strong> <span class="twork-txn-poll-sep">-</span> ' . $title_link . '</span>';
+                                } else {
+                                    $label = esc_html__('[Poll Win]', 'twork-rewards');
+                                    $order_link = '<span class="twork-txn-poll-win"><strong>' . $label . '</strong> <span class="twork-txn-poll-sep">-</span> ' . $title_link . '</span>';
+                                }
+                            }
                             // Check for exchange request
-                            if (strpos($order_id_str, 'exchange:') === 0) {
+                            elseif (strpos($order_id_str, 'exchange:') === 0) {
                                 $is_exchange_request = true;
                                 // Extract exchange request ID from order_id (format: exchange:123 or exchange:123:456:789)
                                 // Get the first number after "exchange:"
@@ -13612,10 +9841,6 @@ class TWork_Rewards_System
                             // Check for manual point adjustment
                             elseif (strpos($order_id_str, 'manual:') === 0) {
                                 $order_link = '<span style="color: #f59e0b; font-weight: 500;">' . esc_html__('Point Adjustment', 'twork-rewards') . '</span>';
-                            }
-                            // Check for code redemption
-                            elseif (strpos($order_id_str, 'code:') === 0) {
-                                $order_link = '<span style="color: #8b5cf6; font-weight: 500;">' . esc_html__('Code Redemption', 'twork-rewards') . '</span>';
                             }
                             // Check for lucky box (format: luckybox:{user_id}_{timestamp} or old format: luckybox)
                             elseif (strpos($order_id_str, 'luckybox:') === 0 || $order_id_str === 'luckybox') {
@@ -13698,7 +9923,7 @@ class TWork_Rewards_System
                                     if ($exchange_request_data) {
                                         // Normalize status to lowercase for comparison
                                         $ex_status = strtolower(trim($exchange_request_data['status']));
-                                        
+
                                         // CRITICAL FIX: Check status first, regardless of approved_by/rejected_by
                                         // This ensures we show the correct status even if tracking fields are empty
                                         if ($ex_status === 'approved') {
@@ -13756,7 +9981,7 @@ class TWork_Rewards_System
                                             "SELECT status, approved_by, rejected_by FROM $exchange_table WHERE id = %d",
                                             $exchange_request_id
                                         ), ARRAY_A);
-                                        
+
                                         if ($fallback_exchange) {
                                             $ex_status = strtolower(trim($fallback_exchange['status']));
                                             if ($ex_status === 'approved') {
@@ -14171,8 +10396,6 @@ class TWork_Rewards_System
                     $transaction_type = 'Manual Adjustment';
                 } elseif (strpos($order_id, 'order:') === 0) {
                     $transaction_type = 'Order';
-                } elseif (strpos($order_id, 'code:') === 0) {
-                    $transaction_type = 'Reward Code';
                 }
 
                 $description = sprintf(
@@ -16441,9 +12664,9 @@ class TWork_Rewards_System
             if ($settings['show_stats']):
                 $activity_stats = $this->get_activity_statistics();
                 if (!empty($activity_stats)):
-                $active_percentage = $activity_stats['total_count'] > 0 ? ($activity_stats['active_count'] / $activity_stats['total_count']) * 100 : 0;
-                $inactive_percentage = $activity_stats['total_count'] > 0 ? ($activity_stats['inactive_count'] / $activity_stats['total_count']) * 100 : 0;
-                ?>
+                    $active_percentage = $activity_stats['total_count'] > 0 ? ($activity_stats['active_count'] / $activity_stats['total_count']) * 100 : 0;
+                    $inactive_percentage = $activity_stats['total_count'] > 0 ? ($activity_stats['inactive_count'] / $activity_stats['total_count']) * 100 : 0;
+                    ?>
             <style>
                 .twork-activity-stats-container {
                     display: grid;
@@ -16689,9 +12912,6 @@ class TWork_Rewards_System
                     <?php if ($settings['show_phone']): ?>
                     <th><?php esc_html_e('Phone', 'twork-rewards'); ?></th>
                     <?php endif; ?>
-                    <?php if ($settings['show_user_tier']): ?>
-                    <th><?php esc_html_e('Tier', 'twork-rewards'); ?></th>
-                    <?php endif; ?>
                     <th><?php esc_html_e('Last Activity', 'twork-rewards'); ?></th>
                     <?php if ($settings['show_activity_score']): ?>
                     <th><?php esc_html_e('Activity Score', 'twork-rewards'); ?></th>
@@ -16770,18 +12990,6 @@ class TWork_Rewards_System
                             <?php endif; ?>
                             <?php if ($settings['show_phone']): ?>
                             <td><?php echo $phone ? esc_html($phone) : '&mdash;'; ?></td>
-                            <?php endif; ?>
-                            <?php if ($settings['show_user_tier']): ?>
-                            <td>
-                                <?php
-                                $user_tier = $this->get_user_tier($user->ID);
-                                if ($user_tier) {
-                                    echo esc_html($user_tier['name']);
-                                } else {
-                                    echo '<span style="color: #999;">&mdash;</span>';
-                                }
-                                ?>
-                            </td>
                             <?php endif; ?>
                             <td>
                                 <?php if (!empty($activity['last_activity_formatted'])): ?>
@@ -16867,18 +13075,26 @@ class TWork_Rewards_System
                 <?php else: ?>
                     <?php
                     // Calculate column count dynamically
-                    $col_count = 1; // User column is always shown
-                    if ($settings['show_activity_badge']) $col_count++;
-                    if ($settings['show_avatar']) $col_count++;
-                    if ($settings['show_email']) $col_count++;
-                    if ($settings['show_phone']) $col_count++;
-                    if ($settings['show_user_tier']) $col_count++;
-                    $col_count++; // Last Activity is always shown
-                    if ($settings['show_activity_score']) $col_count++;
-                    if ($settings['show_points']) $col_count++;
-                    if ($settings['show_total_transactions']) $col_count++;
-                    if ($settings['show_registration_date']) $col_count++;
-                    if ($settings['show_last_updated']) $col_count++;
+                    $col_count = 1;  // User column is always shown
+                    if ($settings['show_activity_badge'])
+                        $col_count++;
+                    if ($settings['show_avatar'])
+                        $col_count++;
+                    if ($settings['show_email'])
+                        $col_count++;
+                    if ($settings['show_phone'])
+                        $col_count++;
+                    $col_count++;  // Last Activity is always shown
+                    if ($settings['show_activity_score'])
+                        $col_count++;
+                    if ($settings['show_points'])
+                        $col_count++;
+                    if ($settings['show_total_transactions'])
+                        $col_count++;
+                    if ($settings['show_registration_date'])
+                        $col_count++;
+                    if ($settings['show_last_updated'])
+                        $col_count++;
                     ?>
                     <tr><td colspan="<?php echo esc_attr($col_count); ?>" style="text-align: center; padding: 40px;">
                         <p style="color: #666; font-size: 14px;"><?php esc_html_e('No users found matching your criteria.', 'twork-rewards'); ?></p>
@@ -17578,10 +13794,6 @@ class TWork_Rewards_System
                                 elseif (strpos($order_id_str, 'exchange:') === 0) {
                                     $order_link = '<span style="color: #3b82f6; font-weight: 500;">' . esc_html__('Exchange Request', 'twork-rewards') . '</span>';
                                 }
-                                // Check for code redemption
-                                elseif (strpos($order_id_str, 'code:') === 0) {
-                                    $order_link = '<span style="color: #8b5cf6; font-weight: 500;">' . esc_html__('Code Redemption', 'twork-rewards') . '</span>';
-                                }
                                 // Check for lucky box (format: luckybox:{user_id}_{timestamp} or old format: luckybox)
                                 elseif (strpos($order_id_str, 'luckybox:') === 0 || $order_id_str === 'luckybox') {
                                     $order_link = '<span style="color: #667eea; font-weight: 500;">' . esc_html__('Lucky Box', 'twork-rewards') . '</span>';
@@ -17784,11 +13996,6 @@ class TWork_Rewards_System
         delete_user_meta($user_id, 'points_balance_cache');
         delete_user_meta($user_id, 'points_balance_cache_time');
 
-        // PROFESSIONAL FEATURE: Auto-recalculate tier if points changed significantly
-        // Only recalculate if balance changed and tier system is available
-        if ($calculated_balance != $previous_balance) {
-            $this->maybe_recalculate_user_tier($user_id, $previous_balance, $calculated_balance);
-        }
 
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(
@@ -17804,113 +14011,6 @@ class TWork_Rewards_System
         return $calculated_balance;
     }
 
-    /**
-     * PROFESSIONAL FEATURE: Conditionally recalculate user tier based on point changes
-     *
-     * This function intelligently decides when to recalculate tiers:
-     * - Always recalculate if user has no tier assigned
-     * - Recalculate if points changed significantly (crossed tier thresholds)
-     * - Skip recalculation for minor changes to avoid unnecessary database queries
-     * - Rate limiting: Prevent too frequent recalculations (max once per 5 minutes per user)
-     *
-     * @param int $user_id User ID
-     * @param int $previous_balance Previous points balance
-     * @param int $current_balance Current points balance
-     */
-    private function maybe_recalculate_user_tier($user_id, $previous_balance, $current_balance)
-    {
-        global $wpdb;
-
-        if (!$user_id || $user_id <= 0) {
-            return;
-        }
-
-        // PROFESSIONAL OPTIMIZATION: Rate limiting - prevent too frequent recalculations
-        // Check if we recently recalculated for this user (within last 5 minutes)
-        $recalc_lock_key = 'twork_tier_recalc_lock_' . $user_id;
-        $last_recalc_time = get_transient($recalc_lock_key);
-
-        if ($last_recalc_time !== false) {
-            // Recently recalculated, skip to prevent unnecessary database queries
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log(
-                    sprintf(
-                        'T-Work Rewards: Tier recalculation skipped for user %d (rate limited). Last recalc: %s',
-                        $user_id,
-                        date('Y-m-d H:i:s', $last_recalc_time)
-                    )
-                );
-            }
-            return;
-        }
-
-        $tiers_table = $this->point_tiers_table_name();
-        $table_check = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $tiers_table));
-
-        if ($table_check !== $tiers_table) {
-            return;  // Tier system not available
-        }
-
-        // Get current tier assignment (uses cache, so it's fast)
-        $current_tier = $this->get_user_tier($user_id);
-
-        // Always recalculate if no tier assigned (but still respect rate limit)
-        if (!$current_tier) {
-            // Set rate limit lock before calculation
-            set_transient($recalc_lock_key, time(), 5 * MINUTE_IN_SECONDS);
-            $this->calculate_user_tier($user_id, true);
-            return;
-        }
-
-        // Check if points crossed any tier threshold
-        // PROFESSIONAL OPTIMIZATION: Cache tier thresholds (they don't change often)
-        $thresholds_cache_key = 'twork_tier_thresholds';
-        $tier_thresholds = get_transient($thresholds_cache_key);
-
-        if ($tier_thresholds === false) {
-            $tier_thresholds = $wpdb->get_col(
-                "SELECT DISTINCT min_points FROM $tiers_table WHERE is_active = 1 AND min_points > 0 ORDER BY min_points ASC"
-            );
-            // Cache thresholds for 1 hour (they rarely change)
-            set_transient($thresholds_cache_key, $tier_thresholds, HOUR_IN_SECONDS);
-        }
-
-        $should_recalculate = false;
-
-        // Check if we crossed any threshold
-        foreach ($tier_thresholds as $threshold) {
-            $threshold = (int) $threshold;
-            // Crossed threshold going up or down
-            if (($previous_balance < $threshold && $current_balance >= $threshold) ||
-                    ($previous_balance >= $threshold && $current_balance < $threshold)) {
-                $should_recalculate = true;
-                break;
-            }
-        }
-
-        // Also recalculate if change is significant (more than 10% of current balance or 1000 points)
-        $change_amount = abs($current_balance - $previous_balance);
-        $significant_change = $change_amount >= 1000 ||
-            ($current_balance > 0 && $change_amount >= ($current_balance * 0.1));
-
-        if ($should_recalculate || $significant_change) {
-            // Set rate limit lock before calculation
-            set_transient($recalc_lock_key, time(), 5 * MINUTE_IN_SECONDS);
-            $this->calculate_user_tier($user_id, true);
-
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log(
-                    sprintf(
-                        'T-Work Rewards: Tier recalculated for user %d. Previous: %d, Current: %d, Change: %d',
-                        $user_id,
-                        $previous_balance,
-                        $current_balance,
-                        $change_amount
-                    )
-                );
-            }
-        }
-    }
 
     /**
      * PROFESSIONAL FIX: Calculate user's point balance from transactions
@@ -17924,46 +14024,15 @@ class TWork_Rewards_System
      */
     private function calculate_points_balance_from_transactions($user_id)
     {
-        global $wpdb;
-
-        // Check if points system table exists.
-        //
-        // CRITICAL RELIABILITY FIX:
-        // Avoid information_schema checks (blocked on some MySQL hosts).
-        // Use SHOW TABLES LIKE (same approach as rest_get_transactions).
-        $table_name = $wpdb->prefix . 'twork_point_transactions';
-        $table_exists = $wpdb->get_var(
-            $wpdb->prepare('SHOW TABLES LIKE %s', $table_name)
-        );
-
-        if ($table_exists !== $table_name) {
-            // FALLBACK: Table doesn't exist, use points_balance meta as source of truth
-            // This ensures backward compatibility with older installations
-            $balance = get_user_meta($user_id, 'points_balance', true);
-            $calculated = is_numeric($balance) ? max(0, (int) $balance) : 0;
-
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log(sprintf(
-                    'T-Work Rewards: Points table not found. Using points_balance meta. User ID: %d, Balance: %d',
-                    $user_id,
-                    $calculated
-                ));
-            }
-
-            return $calculated;
+        // 1. Check Cache First (Massive Performance Boost)
+        $cached_balance = get_user_meta($user_id, 'points_balance_cache', true);
+        if ($cached_balance !== '') {
+            return (int) $cached_balance;
         }
 
-        // PROFESSIONAL FIX: Calculate balance from transactions
-        // Include approved transactions AND pending redeem transactions
-        // Why? When user exchanges points, we deduct immediately (pending redeem)
-        // This prevents double-spending while waiting for admin approval
-        //
-        // Transaction types:
-        // - earn (approved): Add points
-        // - refund (approved): Add points back
-        // - redeem (approved): Subtract points (admin approved exchange)
-        // - redeem (pending): Subtract points (user requested exchange, not yet approved)
-        // - redeem (rejected): Ignored (will have corresponding refund transaction)
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'twork_point_transactions';
+
         $balance = $wpdb->get_var($wpdb->prepare(
             "SELECT 
                 COALESCE(SUM(
@@ -17981,58 +14050,17 @@ class TWork_Rewards_System
             $user_id
         ));
 
-        $calculated = max(0, (int) $balance);
-
-        // CRITICAL DEBUG: Log balance calculation for troubleshooting.
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            // Get transaction count and breakdown for debugging.
-            $txn_count = $wpdb->get_var(
-                $wpdb->prepare(
-                    "SELECT COUNT(*) FROM $table_name WHERE user_id = %d",
-                    $user_id
-                )
-            );
-
-            // Get transaction breakdown.
-            $breakdown = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT type, status, SUM(points) as total_points, COUNT(*) as count
-                     FROM $table_name 
-                     WHERE user_id = %d 
-                     GROUP BY type, status",
-                    $user_id
-                ),
-                ARRAY_A
-            );
-
-            error_log(
-                sprintf(
-                    'T-Work Rewards: Balance calculated. User ID: %d, Balance: %d, Transaction Count: %d',
-                    $user_id,
-                    $calculated,
-                    $txn_count
-                )
-            );
-
-            if (!empty($breakdown)) {
-                error_log('T-Work Rewards: Transaction breakdown:');
-                foreach ($breakdown as $item) {
-                    error_log(
-                        sprintf(
-                            '  - Type: %s, Status: %s, Total Points: %d, Count: %d',
-                            $item['type'],
-                            $item['status'],
-                            $item['total_points'],
-                            $item['count']
-                        )
-                    );
-                }
-            } else {
-                error_log('T-Work Rewards: No transactions found for this user.');
-            }
+        if ($wpdb->last_error) {
+            $fallback_balance = get_user_meta($user_id, 'points_balance', true);
+            return is_numeric($fallback_balance) ? max(0, (int) $fallback_balance) : 0;
         }
 
-        return $calculated;
+        $final_balance = max(0, (int) $balance);
+
+        // 2. Save to Cache
+        update_user_meta($user_id, 'points_balance_cache', $final_balance);
+
+        return $final_balance;
     }
 
     /**
@@ -18084,482 +14112,6 @@ class TWork_Rewards_System
 
         $response->set_data($data);
         return $response;
-    }
-
-    /**
-     * Code Prefixes management page
-     */
-    public function render_codes_page()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
-        global $wpdb;
-        $codes_table = $this->codes_table_name();
-
-        // Pagination for codes to prevent memory issues
-        $paged = isset($_GET['paged']) ? max(1, intval($_GET['paged'])) : 1;
-        $per_page = isset($_GET['per_page']) ? intval($_GET['per_page']) : 50;
-        $per_page = ($per_page > 0) ? min(200, $per_page) : 50;
-        $offset = ($paged - 1) * $per_page;
-
-        // Get total count
-        $total = (int) $wpdb->get_var("SELECT COUNT(*) FROM $codes_table");
-
-        // Get paginated codes, ordered by most recent first
-        $codes = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM $codes_table ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d",
-            $per_page,
-            $offset
-        ));
-
-        $total_pages = $per_page > 0 ? (int) ceil(max(0, $total) / $per_page) : 1;
-
-        $saved_code_prefix = '';
-        if (isset($_GET['updated']) && intval($_GET['updated']) === 1) {
-            // Get the saved code prefix from URL or recent code
-            if (isset($_GET['code']) && !empty($_GET['code'])) {
-                $saved_code_prefix = sanitize_text_field($_GET['code']);
-            } elseif (!empty($codes)) {
-                $saved_code_prefix = $codes[0]->code_prefix;
-            }
-        }
-
-        $edit_id = isset($_GET['edit']) ? absint($_GET['edit']) : 0;
-        $edit_code = null;
-        if ($edit_id > 0) {
-            $edit_code = $wpdb->get_row($wpdb->prepare("SELECT * FROM $codes_table WHERE id = %d", $edit_id));
-        }
-        ?>
-        <style>
-            /* Scope all styles to only affect this plugin's admin page */
-            body.twork-rewards-admin-page .twork-codes-notice {
-                margin: 20px 0 !important;
-                padding: 15px 20px !important;
-                background: #fff !important;
-                border-left: 4px solid #46b450 !important;
-                box-shadow: 0 1px 1px rgba(0,0,0,.04) !important;
-            }
-            body.twork-rewards-admin-page .twork-codes-notice strong {
-                color: #46b450;
-                font-size: 16px;
-            }
-            body.twork-rewards-admin-page .twork-codes-list {
-                background: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                padding: 20px;
-                margin-bottom: 20px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            }
-            body.twork-rewards-admin-page .twork-codes-list h2 {
-                margin-top: 0;
-                padding-bottom: 15px;
-                border-bottom: 2px solid #f0f0f0;
-            }
-            body.twork-rewards-admin-page .twork-codes-form {
-                background: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                padding: 20px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            }
-            body.twork-rewards-admin-page .twork-codes-form h2 {
-                margin-top: 0;
-                padding-bottom: 15px;
-                border-bottom: 2px solid #f0f0f0;
-            }
-            body.twork-rewards-admin-page .twork-code-row.newly-added {
-                background: #f0f9ff !important;
-                border-left: 4px solid #46b450 !important;
-                animation: highlightFade 3s ease-out;
-            }
-            @keyframes highlightFade {
-                0% { background: #d4edda; }
-                100% { background: #f0f9ff; }
-            }
-        </style>
-        <script>
-            // Add body class to scope CSS
-            document.addEventListener('DOMContentLoaded', function() {
-                document.body.classList.add('twork-rewards-admin-page');
-            });
-        </script>
-        <div class="wrap">
-            <h1 class="wp-heading-inline"><?php esc_html_e('Code Prefixes', 'twork-rewards'); ?></h1>
-            <a href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-codes')); ?>" class="page-title-action"><?php esc_html_e('Add New', 'twork-rewards'); ?></a>
-            <hr class="wp-header-end">
-
-            <?php if (isset($_GET['updated']) && intval($_GET['updated']) === 1): ?>
-                <div class="twork-codes-notice notice notice-success is-dismissible">
-                    <p>
-                        <strong><?php esc_html_e('✓ Code saved successfully!', 'twork-rewards'); ?></strong>
-                        <?php if (!empty($saved_code_prefix)): ?>
-                            <br><?php printf(esc_html__('Code "%s" has been saved. You can see it in the list below.', 'twork-rewards'), esc_html($saved_code_prefix)); ?>
-                        <?php endif; ?>
-                    </p>
-                </div>
-            <?php endif; ?>
-
-            <?php if (isset($_GET['deleted']) && intval($_GET['deleted']) === 1): ?>
-                <div class="twork-codes-notice notice notice-success is-dismissible">
-                    <p><strong><?php esc_html_e('✓ Code deleted successfully!', 'twork-rewards'); ?></strong></p>
-                </div>
-            <?php endif; ?>
-
-            <!-- Codes List (Top) -->
-            <div class="twork-codes-list">
-                <h2><?php esc_html_e('All Codes', 'twork-rewards'); ?> (<?php echo number_format($total); ?>)</h2>
-                <?php if (!empty($codes)): ?>
-                    <table class="wp-list-table widefat fixed striped">
-                        <thead>
-                        <tr>
-                            <th style="width: 200px;"><?php esc_html_e('Code', 'twork-rewards'); ?></th>
-                            <th><?php esc_html_e('Points', 'twork-rewards'); ?></th>
-                            <th style="width: 120px;"><?php esc_html_e('Uses', 'twork-rewards'); ?></th>
-                            <th style="width: 100px;"><?php esc_html_e('Status', 'twork-rewards'); ?></th>
-                            <th style="width: 150px;"><?php esc_html_e('Actions', 'twork-rewards'); ?></th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        <?php
-                        foreach ($codes as $code):
-                            $is_newly_added = isset($_GET['updated']) && !empty($saved_code_prefix) && $code->code_prefix === $saved_code_prefix;
-                            ?>
-                            <tr class="<?php echo $is_newly_added ? 'twork-code-row newly-added' : ''; ?>" id="code-<?php echo esc_attr($code->id); ?>">
-                                <td><strong style="font-family: monospace; font-size: 14px;"><?php echo esc_html($code->code_prefix); ?></strong></td>
-                                <td><?php echo esc_html($code->points_value ?: '—'); ?></td>
-                                <td>
-                                    <?php
-                                    $current_uses = isset($code->current_uses) ? (int) $code->current_uses : 0;
-                                    $max_uses = isset($code->max_uses) && $code->max_uses > 0 ? (int) $code->max_uses : null;
-                                    echo esc_html($current_uses);
-                                    if ($max_uses !== null) {
-                                        echo ' / ' . esc_html($max_uses);
-                                        if ($current_uses >= $max_uses) {
-                                            echo ' <span style="color: #dc3232; font-weight: bold;">(' . esc_html__('Full', 'twork-rewards') . ')</span>';
-                                        }
-                                    } else {
-                                        echo ' <span style="color: #666;">(' . esc_html__('Unlimited', 'twork-rewards') . ')</span>';
-                                    }
-                                    ?>
-                                </td>
-                                <td>
-                                    <span style="color: <?php echo $code->is_active ? '#46b450' : '#dc3232'; ?>; font-weight: 600;">
-                                        <?php echo $code->is_active ? esc_html__('Active', 'twork-rewards') : esc_html__('Inactive', 'twork-rewards'); ?>
-                                    </span>
-                                </td>
-                                <td>
-                                    <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-codes', 'edit' => $code->id), admin_url('admin.php'))); ?>" class="button button-small"><?php esc_html_e('Edit', 'twork-rewards'); ?></a>
-                                    <a href="<?php echo esc_url(wp_nonce_url(add_query_arg(array('action' => 'twork_rewards_delete_code', 'delete' => $code->id), admin_url('admin-post.php')), 'delete_code_' . $code->id)); ?>" 
-                                       onclick="return confirm('<?php esc_attr_e('Are you sure you want to delete this code?', 'twork-rewards'); ?>');" 
-                                       class="button button-small" style="color: #dc3232;"><?php esc_html_e('Delete', 'twork-rewards'); ?></a>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                    
-                    <?php
-                    // Pagination links
-                    if ($total_pages > 1) {
-                        $pagination_args = array(
-                            'base' => add_query_arg('paged', '%#%'),
-                            'format' => '',
-                            'prev_text' => __('&laquo;'),
-                            'next_text' => __('&raquo;'),
-                            'total' => $total_pages,
-                            'current' => $paged,
-                        );
-                        echo '<div class="tablenav"><div class="tablenav-pages">';
-                        echo paginate_links($pagination_args);
-                        echo '</div></div>';
-                    }
-                    ?>
-                    
-                    <?php if (isset($_GET['updated']) && !empty($saved_code_prefix)):
-                        // Find the saved code ID to scroll to
-                        $saved_code_id = null;
-                        foreach ($codes as $code) {
-                            if ($code->code_prefix === $saved_code_prefix) {
-                                $saved_code_id = $code->id;
-                                break;
-                            }
-                        }
-                        if ($saved_code_id): ?>
-                        <script>
-                            setTimeout(function() {
-                                var row = document.getElementById('code-<?php echo esc_js($saved_code_id); ?>');
-                                if (row) {
-                                    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                }
-                            }, 100);
-                        </script>
-                        <?php endif; ?>
-                    <?php endif; ?>
-                <?php else: ?>
-                    <p style="padding: 20px; text-align: center; color: #666;">
-                        <?php esc_html_e('No codes found. Add your first code using the form below.', 'twork-rewards'); ?>
-                    </p>
-                <?php endif; ?>
-            </div>
-
-            <!-- Add/Edit Form (Bottom) -->
-            <div class="twork-codes-form">
-                    <h2><?php echo $edit_id > 0 ? esc_html__('Edit Code', 'twork-rewards') : esc_html__('Add New Code', 'twork-rewards'); ?></h2>
-                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                        <?php wp_nonce_field('twork_rewards_save_code', 'twork_rewards_code_nonce'); ?>
-                        <input type="hidden" name="action" value="twork_rewards_save_code" />
-                        <?php if ($edit_id > 0): ?>
-                            <input type="hidden" name="code_id" value="<?php echo esc_attr($edit_id); ?>" />
-                        <?php endif; ?>
-
-                        <table class="form-table">
-                            <tr>
-                                <th scope="row">
-                                    <label for="code_prefix"><?php esc_html_e('Code Prefix', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="text" 
-                                           class="regular-text" 
-                                           name="code_prefix" 
-                                           id="code_prefix"
-                                           value="<?php echo $edit_code ? esc_attr($edit_code->code_prefix) : ''; ?>"
-                                           required />
-                                    <p class="description"><?php esc_html_e('Enter the code prefix (e.g., 1234656789101). Users will enter this exact code to redeem.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            <tr>
-                                <th scope="row">
-                                    <label for="points_value"><?php esc_html_e('Points Value', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="text" 
-                                           class="regular-text" 
-                                           name="points_value" 
-                                           id="points_value"
-                                           value="<?php echo $edit_code ? esc_attr($edit_code->points_value) : ''; ?>"
-                                           placeholder="<?php esc_attr_e('e.g., 1', 'twork-rewards'); ?>" />
-                                    <p class="description"><?php esc_html_e('Points to add when code is redeemed (e.g., 1). Leave empty if no points.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            <tr>
-                                <th scope="row">
-                                    <label for="description"><?php esc_html_e('Description', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <textarea name="description" 
-                                              id="description" 
-                                              class="large-text" 
-                                              rows="3"><?php echo $edit_code ? esc_textarea($edit_code->description) : ''; ?></textarea>
-                                    <p class="description"><?php esc_html_e('Optional description for this code.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                            <tr>
-                                <th scope="row">
-                                    <label for="max_uses"><?php esc_html_e('Max Uses', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <input type="number" 
-                                           class="small-text" 
-                                           name="max_uses" 
-                                           id="max_uses"
-                                           value="<?php echo $edit_code ? esc_attr($edit_code->max_uses) : ''; ?>"
-                                           min="1"
-                                           placeholder="<?php esc_attr_e('Unlimited', 'twork-rewards'); ?>" />
-                                    <p class="description"><?php esc_html_e('Maximum number of users who can claim this code. Leave empty for unlimited. Each user can only claim once.', 'twork-rewards'); ?></p>
-                                    <?php if ($edit_code && isset($edit_code->current_uses)): ?>
-                                        <p class="description" style="color: #666; margin-top: 5px;">
-                                            <strong><?php esc_html_e('Current Uses:', 'twork-rewards'); ?></strong> 
-                                            <?php echo esc_html($edit_code->current_uses); ?>
-                                            <?php if ($edit_code->max_uses > 0): ?>
-                                                / <?php echo esc_html($edit_code->max_uses); ?>
-                                            <?php endif; ?>
-                                        </p>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                            <tr>
-                                <th scope="row">
-                                    <label for="is_active"><?php esc_html_e('Active', 'twork-rewards'); ?></label>
-                                </th>
-                                <td>
-                                    <label>
-                                        <input type="checkbox" 
-                                               name="is_active" 
-                                               id="is_active"
-                                               value="1" <?php checked($edit_code ? $edit_code->is_active : 1, 1); ?> />
-                                        <?php esc_html_e('Enable this code', 'twork-rewards'); ?>
-                                    </label>
-                                    <p class="description"><?php esc_html_e('Only active codes can be redeemed.', 'twork-rewards'); ?></p>
-                                </td>
-                            </tr>
-                        </table>
-
-                        <?php submit_button($edit_id > 0 ? __('Update Code', 'twork-rewards') : __('Add Code', 'twork-rewards')); ?>
-                        <?php if ($edit_id > 0): ?>
-                            <a href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-codes')); ?>" class="button"><?php esc_html_e('Cancel', 'twork-rewards'); ?></a>
-                        <?php endif; ?>
-                    </form>
-                </div>
-            </div>
-        </div>
-        <?php
-    }
-
-    /**
-     * Handle code save
-     */
-    public function handle_code_save()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-        check_admin_referer('twork_rewards_save_code', 'twork_rewards_code_nonce');
-
-        $code_id = isset($_POST['code_id']) ? absint($_POST['code_id']) : 0;
-        $code_prefix = isset($_POST['code_prefix']) ? trim(sanitize_text_field(wp_unslash($_POST['code_prefix']))) : '';
-        $points_value = isset($_POST['points_value']) ? trim(sanitize_text_field(wp_unslash($_POST['points_value']))) : '';
-        $description = isset($_POST['description']) ? trim(sanitize_textarea_field(wp_unslash($_POST['description']))) : '';
-        $max_uses = isset($_POST['max_uses']) && !empty($_POST['max_uses']) ? absint($_POST['max_uses']) : null;
-        $is_active = isset($_POST['is_active']) ? 1 : 0;
-
-        if (empty($code_prefix)) {
-            wp_die(__('Code prefix is required.', 'twork-rewards'));
-        }
-
-        global $wpdb;
-        $codes_table = $this->codes_table_name();
-
-        if ($code_id > 0) {
-            // Update existing
-            // Check if code prefix already exists for another code
-            $existing = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM $codes_table WHERE code_prefix = %s AND id != %d",
-                $code_prefix,
-                $code_id
-            ));
-            if ($existing) {
-                wp_die(sprintf(__('Code prefix "%s" already exists. Please use a different code.', 'twork-rewards'), esc_html($code_prefix)));
-            }
-
-            $update_result = $wpdb->update(
-                $codes_table,
-                array(
-                    'code_prefix' => $code_prefix,
-                    'points_value' => $points_value,
-                    'description' => $description,
-                    'max_uses' => $max_uses,
-                    'is_active' => $is_active,
-                    'updated_at' => current_time('mysql'),
-                ),
-                array('id' => $code_id),
-                array('%s', '%s', '%s', '%d', '%d', '%s'),
-                array('%d')
-            );
-
-            if ($update_result === false) {
-                $error_msg = $wpdb->last_error ? $wpdb->last_error : __('Unknown database error occurred.', 'twork-rewards');
-                error_log('T-Work Rewards: Failed to update code. Error: ' . $error_msg);
-                wp_die(sprintf(__('Failed to update code. Error: %s', 'twork-rewards'), esc_html($error_msg)));
-            }
-        } else {
-            // Insert new - Check for duplicate code prefix first
-            $existing = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM $codes_table WHERE code_prefix = %s",
-                $code_prefix
-            ));
-            if ($existing) {
-                wp_die(sprintf(__('Code prefix "%s" already exists. Please use a different code.', 'twork-rewards'), esc_html($code_prefix)));
-            }
-
-            // Insert new - build insert with proper handling of null/empty values
-            $insert_data = array(
-                'code_prefix' => $code_prefix,
-                'current_uses' => 0,
-                'is_active' => $is_active,
-                'created_at' => current_time('mysql'),
-                'updated_at' => current_time('mysql'),
-            );
-
-            $format_array = array('%s', '%d', '%d', '%s', '%s');
-
-            // Add optional fields - use empty string instead of null for better compatibility
-            if (!empty($points_value)) {
-                $insert_data['points_value'] = $points_value;
-            }
-            if (!empty($description)) {
-                $insert_data['description'] = $description;
-            }
-            if ($max_uses !== null && $max_uses > 0) {
-                $insert_data['max_uses'] = $max_uses;
-            }
-
-            // Rebuild arrays in correct order with matching formats
-            $ordered_data = array();
-            $ordered_format = array();
-            $field_order = array('code_prefix', 'points_value', 'description', 'max_uses', 'current_uses', 'is_active', 'created_at', 'updated_at');
-
-            foreach ($field_order as $field) {
-                if (isset($insert_data[$field])) {
-                    $ordered_data[$field] = $insert_data[$field];
-                    // Determine format based on field type
-                    if (in_array($field, array('code_prefix', 'points_value', 'description', 'created_at', 'updated_at'))) {
-                        $ordered_format[] = '%s';
-                    } elseif (in_array($field, array('max_uses', 'current_uses', 'is_active'))) {
-                        $ordered_format[] = '%d';
-                    }
-                }
-            }
-
-            $insert_result = $wpdb->insert(
-                $codes_table,
-                $ordered_data,
-                $ordered_format
-            );
-
-            // Check if insert was successful
-            if ($insert_result === false) {
-                $error_msg = $wpdb->last_error ? $wpdb->last_error : __('Unknown database error occurred.', 'twork-rewards');
-                error_log('T-Work Rewards: Failed to insert code. Error: ' . $error_msg);
-                error_log('T-Work Rewards: Insert data - code_prefix: ' . $code_prefix . ', points_value: ' . $points_value);
-                wp_die(sprintf(__('Failed to save code. Error: %s. Please check the error logs for more details.', 'twork-rewards'), esc_html($error_msg)));
-            }
-        }
-
-        // Get the saved code prefix for redirect
-        $saved_code_prefix = $code_prefix;
-        wp_safe_redirect(add_query_arg(array(
-            'page' => 'twork-rewards-codes',
-            'updated' => 1,
-            'code' => urlencode($saved_code_prefix)
-        ), admin_url('admin.php')));
-        exit;
-    }
-
-    /**
-     * Handle code delete
-     */
-    public function handle_code_delete()
-    {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
-
-        $code_id = isset($_GET['delete']) ? absint($_GET['delete']) : 0;
-        if ($code_id <= 0) {
-            wp_die(__('Invalid code ID.', 'twork-rewards'));
-        }
-
-        check_admin_referer('delete_code_' . $code_id);
-
-        global $wpdb;
-        $codes_table = $this->codes_table_name();
-        $wpdb->delete($codes_table, array('id' => $code_id), array('%d'));
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-codes', 'deleted' => 1), admin_url('admin.php')));
-        exit;
     }
 
     /**
@@ -19104,19 +14656,19 @@ class TWork_Rewards_System
                         <div class="twork-stats-grid">
                             <div class="twork-stat-card blue">
                                 <div class="twork-stat-label">Total Responses</div>
-                                <div class="twork-stat-value"><?php echo (int) $stats->total; ?></div>
+                                <div class="twork-stat-value" id="live-stat-total"><?php echo (int) $stats->total; ?></div>
                             </div>
                             <div class="twork-stat-card green">
                                 <div class="twork-stat-label">Correct Answers</div>
-                                <div class="twork-stat-value"><?php echo (int) $stats->correct_count; ?></div>
+                                <div class="twork-stat-value" id="live-stat-correct"><?php echo (int) $stats->correct_count; ?></div>
                             </div>
                             <div class="twork-stat-card orange">
                                 <div class="twork-stat-label">Incorrect Answers</div>
-                                <div class="twork-stat-value"><?php echo (int) $stats->total - (int) $stats->correct_count; ?></div>
+                                <div class="twork-stat-value" id="live-stat-incorrect"><?php echo (int) $stats->total - (int) $stats->correct_count; ?></div>
                             </div>
                             <div class="twork-stat-card amber">
                                 <div class="twork-stat-label">Total Points Awarded</div>
-                                <div class="twork-stat-value"><?php echo (int) $stats->total_points; ?></div>
+                                <div class="twork-stat-value" id="live-stat-points"><?php echo (int) $stats->total_points; ?></div>
                             </div>
                         </div>
 
@@ -19135,7 +14687,7 @@ class TWork_Rewards_System
                         if ($can_resolve):
                             $options = isset($quiz_data['options']) ? $quiz_data['options'] : array();
                             ?>
-                        <div class="twork-engagement-card" style="margin-top: 25px; border: 2px solid #667eea; background: #f8f9ff;">
+                        <div id="live-resolve-panel" class="twork-engagement-card" style="margin-top: 25px; border: 2px solid #667eea; background: #f8f9ff;">
                             <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 18px; color: #333;">
                                 <span class="dashicons dashicons-awards" style="vertical-align: middle;"></span>
                                 <?php esc_html_e('Resolve Poll – Set Correct Answer', 'twork-rewards'); ?>
@@ -19164,7 +14716,8 @@ class TWork_Rewards_System
                                     <label for="manual_correct_index" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php esc_html_e('Manual – Select winning option:', 'twork-rewards'); ?></label>
                                     <select name="manual_correct_index" id="manual_correct_index" required style="min-width: 200px;">
                                         <option value=""><?php esc_html_e('Choose option...', 'twork-rewards'); ?></option>
-                                        <?php foreach ($options as $idx => $opt):
+                                        <?php
+                                        foreach ($options as $idx => $opt):
                                             $label = is_array($opt) && isset($opt['text']) ? trim($opt['text']) : trim((string) $opt);
                                             $label = $label !== '' ? $label : __('Option', 'twork-rewards') . ' ' . ($idx + 1);
                                             ?>
@@ -19195,11 +14748,11 @@ class TWork_Rewards_System
                                         <th><?php esc_html_e('Date & Time', 'twork-rewards'); ?></th>
                                     </tr>
                                 </thead>
-                                <tbody>
+                                <tbody id="live-results-tbody">
                                     <?php
                                     if ($interactions):
                                         foreach ($interactions as $interaction):
-                                            $quiz_data  = json_decode($item->quiz_data, true);
+                                            $quiz_data = json_decode($item->quiz_data, true);
                                             $answer_text = $this->format_interaction_answer_for_display(
                                                 $interaction->interaction_value,
                                                 is_array($quiz_data) ? $quiz_data : array()
@@ -19262,6 +14815,46 @@ class TWork_Rewards_System
                             </table>
                         </div>
                     </div>
+                    <script>
+                    var poll_sync_nonce = "<?php echo esc_js(wp_create_nonce('twork_poll_sync_nonce')); ?>";
+                    </script>
+                    <script>
+                    jQuery(document).ready(function($) {
+                        var currentItemId = <?php echo (int) $id; ?>;
+
+                        function fetchLivePollResults() {
+                            $.ajax({
+                                url: ajaxurl,
+                                type: 'POST',
+                                data: {
+                                    action: 'twork_rewards_get_poll_results_data',
+                                    item_id: currentItemId,
+                                    security: poll_sync_nonce
+                                },
+                                success: function(response) {
+                                    if (response.success && response.data) {
+                                        // Update Stats seamlessly
+                                        $('#live-stat-total').text(response.data.stats.total);
+                                        $('#live-stat-correct').text(response.data.stats.correct);
+                                        $('#live-stat-incorrect').text(response.data.stats.incorrect);
+                                        $('#live-stat-points').text(response.data.stats.points);
+
+                                        // Update Table Rows
+                                        $('#live-results-tbody').html(response.data.html_rows);
+
+                                        // Hide Resolve Panel dynamically if another admin resolved it
+                                        if (response.data.is_resolved) {
+                                            $('#live-resolve-panel').fadeOut();
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        // Auto sync every 5 seconds without refreshing
+                        setInterval(fetchLivePollResults, 5000);
+                    });
+                    </script>
                     <?php
                 }
             } elseif ($action === 'add' || $action === 'edit') {
@@ -19387,14 +14980,14 @@ class TWork_Rewards_System
                                                             <input type="hidden" name="poll_option_media_url[]" class="poll-option-media-url" value="<?php echo esc_attr($opt_media_url); ?>">
                                                             <input type="hidden" name="poll_option_media_type[]" class="poll-option-media-type" value="<?php echo esc_attr($opt_media_type); ?>">
                                                             <span class="twork-poll-media-preview-wrap"><?php
-                                                            if (!empty($opt_media_url)) {
-                                                                if ($opt_media_type === 'video') {
-                                                                    echo '<div class="twork-poll-media-preview twork-poll-media-preview-video" title="' . esc_attr($opt_media_url) . '"><span class="dashicons dashicons-video-alt3"></span></div>';
-                                                                } else {
-                                                                    echo '<div class="twork-poll-media-preview"><img src="' . esc_url($opt_media_url) . '" alt="" /></div>';
-                                                                }
-                                                            }
-                                                            ?></span>
+                                            if (!empty($opt_media_url)) {
+                                                if ($opt_media_type === 'video') {
+                                                    echo '<div class="twork-poll-media-preview twork-poll-media-preview-video" title="' . esc_attr($opt_media_url) . '"><span class="dashicons dashicons-video-alt3"></span></div>';
+                                                } else {
+                                                    echo '<div class="twork-poll-media-preview"><img src="' . esc_url($opt_media_url) . '" alt="" /></div>';
+                                                }
+                                            }
+                                            ?></span>
                                                             <button type="button" class="button twork-upload-media"><?php esc_html_e('Upload/Select Media', 'twork-rewards'); ?></button>
                                                             <button type="button" class="button poll-option-remove" title="<?php esc_attr_e('Remove option', 'twork-rewards'); ?>">&times;</button>
                                                         </div>
@@ -19405,7 +14998,7 @@ class TWork_Rewards_System
                                     </div>
                                     <button type="button" class="button" id="poll-add-option"><?php esc_html_e('Add Option', 'twork-rewards'); ?></button>
                                     <p class="description" style="margin-top: 10px;">
-                                        <?php esc_html_e('Add option text and optionally attach an image, GIF, or video. The winning option\'s media is shown in the app when the poll ends.', 'twork-rewards'); ?>
+                                        <?php esc_html_e("Add option text and optionally attach an image, GIF, or video. The winning option's media is shown in the app when the poll ends.", 'twork-rewards'); ?>
                                     </p>
                                 </div>
                                 <template id="poll-option-template">
@@ -19505,7 +15098,7 @@ class TWork_Rewards_System
                                             <option value="-1" <?php selected($override_index, -1); ?>><?php esc_html_e('Normal (Pure Random / Equal Chance)', 'twork-rewards'); ?></option>
                                             <?php
                                             $poll_opts = isset($quiz_data['options']) ? $quiz_data['options'] : array();
-                                            foreach ($poll_opts as $idx => $opt) :
+                                            foreach ($poll_opts as $idx => $opt):
                                                 $label = is_array($opt) && isset($opt['text']) ? trim($opt['text']) : trim((string) $opt);
                                                 $label = $label !== '' ? $label : 'Option ' . ($idx + 1);
                                                 ?>
@@ -19536,11 +15129,11 @@ class TWork_Rewards_System
                                 if (!is_array($quiz_data)) {
                                     $quiz_data = array();
                                 }
-                                
+
                                 $poll_voting_start_time = isset($quiz_data['poll_voting_start_time']) ? $quiz_data['poll_voting_start_time'] : '';
                                 $poll_voting_end_time = isset($quiz_data['poll_voting_end_time']) ? $quiz_data['poll_voting_end_time'] : '';
                                 $poll_schedule_enabled = !empty($poll_voting_start_time) || !empty($poll_voting_end_time);
-                                
+
                                 // Convert to local datetime format for input fields (YYYY-MM-DDTHH:mm)
                                 if (!empty($poll_voting_start_time)) {
                                     // If stored in MySQL format, convert to local datetime
@@ -19549,7 +15142,7 @@ class TWork_Rewards_System
                                 } else {
                                     $start_datetime = '';
                                 }
-                                
+
                                 if (!empty($poll_voting_end_time)) {
                                     $end_timestamp = strtotime($poll_voting_end_time);
                                     $end_datetime = $end_timestamp !== false ? date('Y-m-d\TH:i', $end_timestamp) : '';
@@ -19742,7 +15335,14 @@ class TWork_Rewards_System
                             </td>
                         </tr>
                         </table>
-                        
+
+                        <p class="twork-silent-update-fcm" style="margin-top: 16px; margin-bottom: 8px;">
+                            <label for="twork_skip_fcm_notify">
+                                <input type="checkbox" name="twork_skip_fcm_notify" id="twork_skip_fcm_notify" value="1">
+                                <?php esc_html_e('Silent Update (Do not send push notification)', 'twork-rewards'); ?>
+                            </label>
+                        </p>
+
                         <?php submit_button(__('Save Item', 'twork-rewards'), 'primary', 'submit', false, array('style' => 'margin-top: 20px; padding: 10px 20px; font-size: 14px; font-weight: 600;')); ?>
                     </form>
                 </div>
@@ -20254,6 +15854,17 @@ class TWork_Rewards_System
         $table_name = $wpdb->prefix . 'twork_engagement_items';
 
         $id = isset($_POST['item_id']) ? absint($_POST['item_id']) : 0;
+
+        $previous_quiz_data_decoded = null;
+        if ($id > 0) {
+            $prev_quiz_raw = $wpdb->get_var($wpdb->prepare("SELECT quiz_data FROM $table_name WHERE id = %d", $id));
+            if ($prev_quiz_raw !== null && $prev_quiz_raw !== '') {
+                $decoded_prev = json_decode($prev_quiz_raw, true);
+                $previous_quiz_data_decoded = is_array($decoded_prev) ? $decoded_prev : array();
+            } else {
+                $previous_quiz_data_decoded = array();
+            }
+        }
         $type = isset($_POST['type']) ? sanitize_text_field($_POST['type']) : 'banner';
         $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : '';
         $media_url = isset($_POST['media_url']) ? esc_url_raw($_POST['media_url']) : '';
@@ -20283,6 +15894,7 @@ class TWork_Rewards_System
         }
 
         $quiz_data = null;
+        $quiz_data_array = null;
         if ($type === 'quiz' || $type === 'poll') {
             if ($type === 'poll' && isset($_POST['poll_option_text']) && is_array($_POST['poll_option_text'])) {
                 // Poll: extended format with option text + optional media
@@ -20327,13 +15939,19 @@ class TWork_Rewards_System
             }
             $quiz_question = isset($_POST['quiz_question']) ? sanitize_text_field($_POST['quiz_question']) : '';
             // Poll: preserve correct_index if already resolved (>=0); else -1. Quiz: from form.
+            $existing_quiz = null;
             $correct_index = 0;
             if ($type === 'poll' && $id > 0) {
                 $existing_item = $wpdb->get_row($wpdb->prepare("SELECT quiz_data FROM $table_name WHERE id = %d", $id), ARRAY_A);
                 if ($existing_item && !empty($existing_item['quiz_data'])) {
-                    $existing_quiz = json_decode($existing_item['quiz_data'], true);
-                    $existing_correct = isset($existing_quiz['correct_index']) ? (int) $existing_quiz['correct_index'] : -1;
-                    $correct_index = ($existing_correct >= 0) ? $existing_correct : -1;
+                    $decoded_existing = json_decode($existing_item['quiz_data'], true);
+                    if (is_array($decoded_existing)) {
+                        $existing_quiz = $decoded_existing;
+                        $existing_correct = isset($decoded_existing['correct_index']) ? (int) $decoded_existing['correct_index'] : -1;
+                        $correct_index = ($existing_correct >= 0) ? $existing_correct : -1;
+                    } else {
+                        $correct_index = -1;
+                    }
                 } else {
                     $correct_index = -1;
                 }
@@ -20368,7 +15986,7 @@ class TWork_Rewards_System
                     $result_display_duration = 1;
                 }
                 $quiz_data_array['poll_mode'] = $poll_mode;
-                $quiz_data_array['poll_period_minutes'] = $poll_duration; // backward compat
+                $quiz_data_array['poll_period_minutes'] = $poll_duration;  // backward compat
                 $quiz_data_array['poll_duration'] = $poll_duration;
                 $quiz_data_array['result_display_duration'] = $result_display_duration;
 
@@ -20398,18 +16016,37 @@ class TWork_Rewards_System
                         $quiz_data_array['poll_voting_end_time'] = date('Y-m-d H:i:s', $end_ts);
                     }
                 }
-                // Save Live Override Setting (persists whenever poll mode is Auto Run, any status).
+                // Save Live Override ("force winner") — persists whenever poll mode is Auto Run, any status.
                 if ($poll_mode === 'auto_run') {
-                    $quiz_data_array['auto_run_override_index'] = isset($_POST['auto_run_override_index']) ? intval($_POST['auto_run_override_index']) : -1;
+                    if (!is_array($existing_quiz)) {
+                        $existing_quiz = array();
+                    }
+                    $new_override = isset($_POST['auto_run_override_index']) ? intval($_POST['auto_run_override_index']) : -1;
+                    $quiz_data_array['auto_run_override_index'] = $new_override;
+
+                    if ($new_override >= 0) {
+                        // Apply Force Winner immediately
+                        $quiz_data_array['correct_index'] = $new_override;
+                    } else {
+                        // Transitioning to Normal Random
+                        $old_override = isset($existing_quiz['auto_run_override_index']) ? (int) $existing_quiz['auto_run_override_index'] : -1;
+                        if ($old_override >= 0) {
+                            // We just removed a forced winner, reset the poll so it resolves randomly again
+                            $quiz_data_array['correct_index'] = -1;
+                        } else {
+                            // Preserve the existing correct_index (to protect already-resolved random winners)
+                            $quiz_data_array['correct_index'] = isset($existing_quiz['correct_index']) ? (int) $existing_quiz['correct_index'] : -1;
+                        }
+                    }
                 }
             }
-            
+
             // PROFESSIONAL FEATURE: Poll voting schedule (Schedule mode only)
             if ($type === 'poll' && isset($_POST['poll_mode']) && $_POST['poll_mode'] === 'schedule' && isset($_POST['poll_voting_schedule_enabled']) && $_POST['poll_voting_schedule_enabled'] == '1') {
                 // Get and validate poll voting times
                 $poll_voting_start_time = '';
                 $poll_voting_end_time = '';
-                
+
                 if (!empty($_POST['poll_voting_start_time'])) {
                     // Convert datetime-local format to MySQL datetime format
                     $start_time = sanitize_text_field($_POST['poll_voting_start_time']);
@@ -20419,7 +16056,7 @@ class TWork_Rewards_System
                         $poll_voting_start_time = date('Y-m-d H:i:s', $start_timestamp);
                     }
                 }
-                
+
                 if (!empty($_POST['poll_voting_end_time'])) {
                     $end_time = sanitize_text_field($_POST['poll_voting_end_time']);
                     $end_timestamp = strtotime($end_time);
@@ -20427,14 +16064,14 @@ class TWork_Rewards_System
                         $poll_voting_end_time = date('Y-m-d H:i:s', $end_timestamp);
                     }
                 }
-                
+
                 // Validate that end time is after start time if both are set
                 if (!empty($poll_voting_start_time) && !empty($poll_voting_end_time)) {
                     if (strtotime($poll_voting_end_time) <= strtotime($poll_voting_start_time)) {
                         wp_die(__('Error: Voting end time must be after start time.', 'twork-rewards'));
                     }
                 }
-                
+
                 // Store in quiz_data array
                 if (!empty($poll_voting_start_time)) {
                     $quiz_data_array['poll_voting_start_time'] = $poll_voting_start_time;
@@ -20457,7 +16094,7 @@ class TWork_Rewards_System
                 $quiz_data_array['allow_user_amount'] = isset($_POST['allow_user_amount']) && $_POST['allow_user_amount'] === '1';
                 $quiz_data_array['bet_amount_step'] = isset($_POST['bet_amount_step']) ? max(1, absint($_POST['bet_amount_step'])) : 1000;
             }
-            
+
             $quiz_data = json_encode($quiz_data_array);
         }
 
@@ -20490,8 +16127,45 @@ class TWork_Rewards_System
             $id = $wpdb->insert_id;
         }
 
+        $skip_fcm_engagement_broadcast = (
+            isset($_POST['twork_skip_fcm_notify'])
+            && (string) wp_unslash($_POST['twork_skip_fcm_notify']) === '1'
+        );
+
+        if (
+            !$skip_fcm_engagement_broadcast
+            && !$is_new_item
+            && $type === 'poll'
+            && isset($quiz_data_array)
+            && is_array($quiz_data_array)
+            && is_array($previous_quiz_data_decoded)
+        ) {
+            $poll_mode_post = isset($_POST['poll_mode']) ? sanitize_text_field(wp_unslash($_POST['poll_mode'])) : '';
+            if ($poll_mode_post === 'auto_run') {
+                $o = $previous_quiz_data_decoded;
+                $n = $quiz_data_array;
+                $o_cmp = $o;
+                $n_cmp = $n;
+                unset(
+                    $o_cmp['auto_run_override_index'],
+                    $o_cmp['correct_index'],
+                    $n_cmp['auto_run_override_index'],
+                    $n_cmp['correct_index']
+                );
+                if ($o_cmp == $n_cmp) {
+                    $oo = (int) ($o['auto_run_override_index'] ?? -1);
+                    $no = (int) ($n['auto_run_override_index'] ?? -1);
+                    $oc = (int) ($o['correct_index'] ?? -1);
+                    $nc = (int) ($n['correct_index'] ?? -1);
+                    if ($oo !== $no || $oc !== $nc) {
+                        $skip_fcm_engagement_broadcast = true;
+                    }
+                }
+            }
+        }
+
         // PROFESSIONAL ENGAGEMENT NOTIFICATIONS: Notify all users when engagement item is created or updated
-        if ($status === 'active') {
+        if ($status === 'active' && !$skip_fcm_engagement_broadcast) {
             // Prepare notification data with number value if it's a number type
             $notification_data = array();
 
@@ -20683,7 +16357,9 @@ class TWork_Rewards_System
         }
         if (empty($item_ids)) {
             $items = $wpdb->get_results("SELECT id FROM $table_items ORDER BY priority DESC, created_at DESC");
-            $item_ids = $items ? array_map(function ($r) { return (int) $r->id; }, $items) : array();
+            $item_ids = $items ? array_map(function ($r) {
+                return (int) $r->id;
+            }, $items) : array();
         }
         if (empty($item_ids)) {
             wp_send_json_success(array('counts' => array()));
@@ -20715,6 +16391,137 @@ class TWork_Rewards_System
         }
 
         wp_send_json_success(array('counts' => $counts));
+    }
+
+    /**
+     * AJAX: Live sync for View Results page.
+     * Returns updated stats and HTML table rows.
+     */
+    public function ajax_get_poll_results_data()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => 'Insufficient permissions'));
+        }
+
+        check_ajax_referer('twork_poll_sync_nonce', 'security');
+
+        $item_id = isset($_POST['item_id']) ? absint($_POST['item_id']) : 0;
+        if ($item_id <= 0) {
+            wp_send_json_error(array('message' => 'Invalid item ID'));
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'twork_engagement_items';
+        $interactions_table = $wpdb->prefix . 'twork_user_interactions';
+
+        $item = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_name WHERE id = %d", $item_id));
+        if (!$item) {
+            wp_send_json_error(array('message' => 'Item not found'));
+        }
+
+        $interactions = $wpdb->get_results($wpdb->prepare(
+            "SELECT i.*, 
+             u.display_name as user_name, u.user_email,
+             u.ID as user_id
+             FROM $interactions_table i
+             LEFT JOIN {$wpdb->users} u ON i.user_id = u.ID
+             WHERE i.item_id = %d
+             ORDER BY i.created_at DESC",
+            $item_id
+        ));
+        if (!is_array($interactions)) {
+            $interactions = array();
+        }
+
+        $quiz_data = json_decode($item->quiz_data, true);
+        $correct_index = null;
+        if (is_array($quiz_data) && isset($quiz_data['correct_index'])) {
+            $correct_index = (int) $quiz_data['correct_index'];
+        }
+
+        $total = count($interactions);
+        $correct_count = 0;
+        $total_points = 0;
+
+        ob_start();
+        if ($interactions) {
+            foreach ($interactions as $interaction) {
+                $is_correct_display = false;
+                if ($item->type === 'poll' || $item->type === 'quiz') {
+                    if (is_array($quiz_data) && isset($quiz_data['correct_index'])) {
+                        $ci = (int) $quiz_data['correct_index'];
+                        if ($ci >= 0) {
+                            $is_correct_display = $item->type === 'poll'
+                                ? $this->user_answer_contains_correct_index($interaction->interaction_value, $ci)
+                                : ((int) $interaction->interaction_value === $ci);
+                        } else {
+                            $is_correct_display = true;
+                        }
+                    } else {
+                        $is_correct_display = (bool) $interaction->is_correct;
+                    }
+                } else {
+                    $is_correct_display = (bool) $interaction->is_correct;
+                }
+
+                if ($is_correct_display) {
+                    $correct_count++;
+                }
+                $total_points += (int) $interaction->points_awarded;
+
+                $answer_text = $this->format_interaction_answer_for_display(
+                    $interaction->interaction_value,
+                    is_array($quiz_data) ? $quiz_data : array()
+                );
+                ?>
+                <tr>
+                    <td><?php echo esc_html($interaction->id); ?></td>
+                    <td>
+                        <strong><?php echo esc_html($interaction->user_name ?: 'User #' . $interaction->user_id); ?></strong><br>
+                        <small style="color: #666;"><?php echo esc_html($interaction->user_email); ?></small>
+                    </td>
+                    <td><?php echo esc_html($answer_text); ?></td>
+                    <?php if ($item->type === 'poll'): ?>
+                    <td><?php echo wp_kses_post($this->format_bet_amount_for_display($interaction, is_array($quiz_data) ? $quiz_data : array())); ?></td>
+                    <?php endif; ?>
+                    <td>
+                        <?php if ($is_correct_display): ?>
+                            <span style="color: green; font-weight: bold;">✓ <?php esc_html_e('Correct', 'twork-rewards'); ?></span>
+                        <?php else: ?>
+                            <span style="color: red; font-weight: bold;">✗ <?php esc_html_e('Incorrect', 'twork-rewards'); ?></span>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if ($interaction->points_awarded > 0): ?>
+                            <strong style="color: green;">+<?php echo (int) $interaction->points_awarded; ?></strong>
+                        <?php else: ?>
+                            <span style="color: #999;">0</span>
+                        <?php endif; ?>
+                    </td>
+                    <td><?php
+                    $formatted_datetime = $this->format_myanmar_time($interaction->created_at);
+                    echo esc_html($formatted_datetime ?: $interaction->created_at);
+                    ?></td>
+                </tr>
+                <?php
+            }
+        } else {
+            ?>
+            <tr><td colspan="<?php echo ($item->type === 'poll') ? 7 : 6; ?>" style="text-align: center; padding: 40px; color: #999;"><?php esc_html_e('No results found for this item.', 'twork-rewards'); ?></td></tr>
+            <?php
+        }
+        $html_rows = ob_get_clean();
+
+        wp_send_json_success(array(
+            'stats' => array(
+                'total' => $total,
+                'correct' => $correct_count,
+                'incorrect' => $total - $correct_count,
+                'points' => $total_points
+            ),
+            'is_resolved' => ($correct_index !== null && $correct_index >= 0),
+            'html_rows' => $html_rows
+        ));
     }
 
     public function handle_engagement_item_delete()
@@ -20782,7 +16589,7 @@ class TWork_Rewards_System
                             // Use engagement_item_updated so existing client handlers can react,
                             // with a specific reason flag so frontend can distinguish.
                             $data = array(
-                                'type'   => 'engagement_item_updated',
+                                'type' => 'engagement_item_updated',
                                 'reason' => 'global_rotation_settings_changed',
                                 'userId' => (string) $user_id,
                             );
@@ -22753,7 +18560,7 @@ class TWork_Rewards_System
             "SELECT id, status FROM $table WHERE order_id = %s",
             $order_id
         ));
-        
+
         if ($transaction) {
             $txn_status = $new_status === 'approved' ? 'approved' : ($new_status === 'rejected' ? 'rejected' : 'pending');
             $wpdb->update(
@@ -22781,7 +18588,7 @@ class TWork_Rewards_System
                     "SELECT points_value FROM $exchange_table WHERE id = %d",
                     $request_id
                 ), ARRAY_A);
-                
+
                 if ($db_request && !empty($db_request['points_value'])) {
                     $request_points = (float) $db_request['points_value'];
                     error_log(sprintf(
@@ -22801,7 +18608,7 @@ class TWork_Rewards_System
                         $request_points
                     ));
                 }
-                
+
                 // Calculate actual deducted for logging and validation.
                 // IMPORTANT: Only refund if we can confirm that points were actually deducted for this request.
                 $actual_deducted = $this->calculate_actual_deducted_points($user_id, $request_id);
@@ -23123,7 +18930,7 @@ class TWork_Rewards_System
                 "SELECT id, status FROM $table WHERE order_id = %s",
                 $order_id
             ));
-            
+
             if ($transaction) {
                 $txn_status = $new_status === 'approved' ? 'approved' : ($new_status === 'rejected' ? 'rejected' : 'pending');
                 $wpdb->update(
@@ -23148,7 +18955,7 @@ class TWork_Rewards_System
                         "SELECT points_value FROM $exchange_table WHERE id = %d",
                         $request_id
                     ), ARRAY_A);
-                    
+
                     if ($db_request && !empty($db_request['points_value'])) {
                         $request_points = (float) $db_request['points_value'];
                         error_log(sprintf(
@@ -23168,18 +18975,18 @@ class TWork_Rewards_System
                             $request_points
                         ));
                     }
-                    
+
                     // Calculate actual deducted for logging and validation.
                     // IMPORTANT: Only refund if we can confirm that points were actually deducted for this request.
                     $actual_deducted = $this->calculate_actual_deducted_points($user_id, $request_id);
-                    
+
                     // Default to no refund until we positively detect a deduction.
                     $points_to_refund = 0.0;
-                    
+
                     if ($actual_deducted !== false && $actual_deducted > 0) {
                         // Refund at most the original requested amount.
                         $points_to_refund = min((float) $actual_deducted, (float) $request_points);
-                        
+
                         if (abs($actual_deducted - $request_points) > ($request_points * 0.05)) {
                             error_log(sprintf(
                                 'T-Work Rewards: WARNING - Bulk reject: Calculated deducted amount (%s) differs from request amount (%s) by more than 5%%. Using min(deducted,request)=%s for refund. User ID: %d, Request ID: %d',
@@ -24353,10 +20160,10 @@ class TWork_Rewards_System
                 $user_id,
                 'exchange_rejected',
                 array(
-                    'request_id'  => $request_id,
-                    'points'      => $points_for_notification,
-                    'points_value'=> $points_for_notification,
-                    'reason'      => $note ?: 'Exchange request rejected',
+                    'request_id' => $request_id,
+                    'points' => $points_for_notification,
+                    'points_value' => $points_for_notification,
+                    'reason' => $note ?: 'Exchange request rejected',
                     'description' => $note ?: ($points_for_notification > 0
                         ? 'Your exchange request has been rejected. Points have been refunded.'
                         : 'Your exchange request has been rejected. Your PNP balance remains unchanged.'),
