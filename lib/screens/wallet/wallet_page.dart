@@ -81,11 +81,11 @@ class _WalletPageState extends State<WalletPage> with TickerProviderStateMixin {
     super.activate();
     // Called when the route is pushed onto the navigator or becomes active
     // Refresh balance when page becomes active (e.g., after dialog closes)
-    // BUT: Use a longer delay to avoid race condition with addToBalance()
-    // The WalletProvider now protects against overwriting recently updated balances
+    // BUT: Use a longer delay to avoid race with a recent in-app wallet credit
+    // WalletProvider skips overwriting balances updated within the last few seconds
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        // Longer delay to ensure addToBalance() has completed and balance is saved
+        // Longer delay so any pending balance write can finish before refresh
         // The WalletProvider will skip the refresh if balance was recently updated
         Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted) {

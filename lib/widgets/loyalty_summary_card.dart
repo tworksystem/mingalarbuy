@@ -1,31 +1,8 @@
-import 'package:ecommerce_int2/models/point_transaction.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-const Map<PointTier, List<String>> _tierBenefits = {
-  PointTier.basic: [
-    'Earn 1x points on every order',
-    'Birthday surprise bonus',
-  ],
-  PointTier.bronze: [
-    'Earn 1.1x points per purchase',
-    'Priority customer support lane',
-  ],
-  PointTier.silver: [
-    'Earn 1.2x points per purchase',
-    'Exclusive previews and drops',
-  ],
-  PointTier.gold: [
-    'Earn 1.3x points per purchase',
-    'Complimentary expedited shipping',
-  ],
-  PointTier.platinum: [
-    'Earn 1.5x points per purchase',
-    'Dedicated loyalty concierge',
-  ],
-};
-
+/// Profile summary for PNP balance (tier system removed; backend no longer exposes tiers).
 class LoyaltySummaryCard extends StatelessWidget {
   const LoyaltySummaryCard({super.key});
 
@@ -38,20 +15,8 @@ class LoyaltySummaryCard extends StatelessWidget {
           return const SizedBox.shrink();
         }
 
-        final currentTier = balance.tier;
-        final tiers = PointTier.values;
-        final tierIndex = tiers.indexOf(currentTier);
-        final nextTier =
-            tierIndex < tiers.length - 1 ? tiers[tierIndex + 1] : null;
-
-        final lifetimeEarned = balance.lifetimeEarned.toDouble();
-        final nextThreshold =
-            nextTier?.minimumPoints.toDouble() ?? lifetimeEarned;
-        final progress = nextTier == null
-            ? 1.0
-            : (lifetimeEarned / nextThreshold).clamp(0.0, 1.0);
-        final remaining =
-            nextTier == null ? 0 : (nextThreshold - lifetimeEarned).ceil();
+        final earned = balance.lifetimeEarned;
+        final current = balance.currentBalance;
 
         return Container(
           margin: const EdgeInsets.only(bottom: 16),
@@ -68,7 +33,7 @@ class LoyaltySummaryCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
             boxShadow: [
               BoxShadow(
-                color: Colors.deepPurple.withOpacity(0.25),
+                color: Colors.deepPurple.withValues(alpha: 0.25),
                 blurRadius: 12,
                 offset: const Offset(0, 6),
               ),
@@ -79,14 +44,11 @@ class LoyaltySummaryCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Text(
-                    balance.tier.icon,
-                    style: const TextStyle(fontSize: 28),
-                  ),
+                  const Icon(Icons.stars_rounded, color: Colors.amberAccent, size: 28),
                   const SizedBox(width: 8),
-                  Text(
-                    '${balance.tier.name} Tier',
-                    style: const TextStyle(
+                  const Text(
+                    'Rewards balance',
+                    style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
@@ -94,56 +56,23 @@ class LoyaltySummaryCard extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: LinearProgressIndicator(
-                  minHeight: 10,
-                  value: progress,
-                  backgroundColor: Colors.white.withOpacity(0.15),
-                  valueColor:
-                      const AlwaysStoppedAnimation<Color>(Colors.amberAccent),
-                ),
-              ),
               const SizedBox(height: 12),
               Text(
-                nextTier == null
-                    ? 'You unlocked the highest tier!'
-                    : 'Only $remaining points until you reach ${nextTier.name} tier.',
+                '$current PNP',
                 style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 13,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'Benefits',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
-                  fontWeight: FontWeight.w600,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.white,
                 ),
               ),
               const SizedBox(height: 8),
-              ...?_tierBenefits[currentTier]?.map(
-                (benefit) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(Icons.check_circle_outline,
-                          size: 16, color: Colors.white70),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          benefit,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+              Text(
+                earned > 0
+                    ? 'Lifetime earned: $earned PNP'
+                    : 'Earn PNP on purchases and activities.',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
                 ),
               ),
             ],
@@ -153,4 +82,3 @@ class LoyaltySummaryCard extends StatelessWidget {
     );
   }
 }
-
