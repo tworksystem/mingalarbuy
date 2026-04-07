@@ -1,6 +1,9 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import '../utils/network_utils.dart';
@@ -27,18 +30,23 @@ class WalletService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/balance/$userId',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getWalletBalance',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          return null;
+        }
 
         final balance = WalletBalance(
           userId: userId,
@@ -97,23 +105,33 @@ class WalletService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/add',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: json.encode({
+          data: <String, dynamic>{
             'user_id': userId,
             'amount': amount,
             'description': description,
-          }),
+          },
         ),
         context: 'addToWalletBalance',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          Logger.warning('Invalid API response or network error',
+              tag: 'WalletService');
+          return WalletUpdateResult(
+            success: false,
+            message: 'Failed to update balance. Please try again.',
+          );
+        }
 
         Logger.info(
             'API response: success=${data['success']}, new_balance=${data['new_balance']}',

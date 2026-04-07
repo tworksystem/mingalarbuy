@@ -4,9 +4,10 @@ import 'dart:io';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:http/http.dart' as http;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+
+import '../api_service.dart';
 import '../utils/logger.dart';
 import '../utils/app_config.dart';
 import 'in_app_notification_service.dart';
@@ -120,7 +121,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       iOS: iosSettings,
     );
 
-    await localNotifications.initialize(initSettings);
+    await localNotifications.initialize(settings: initSettings);
 
     // Create notification channel for Android
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
@@ -162,10 +163,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     );
 
     await localNotifications.show(
-      message.hashCode,
-      message.notification?.title ?? 'Order Update',
-      message.notification?.body ?? 'Your order has been updated',
-      notificationDetails,
+      id: message.hashCode,
+      title: message.notification?.title ?? 'Order Update',
+      body: message.notification?.body ?? 'Your order has been updated',
+      notificationDetails: notificationDetails,
       payload: json.encode(message.data),
     );
 
@@ -435,30 +436,29 @@ class PushNotificationService {
           return;
         }
 
-        final response = await http
-            .post(
-          Uri.parse('$backendUrl${AppConfig.backendRegisterTokenEndpoint}'),
-          headers: {'Content-Type': 'application/json'},
-          body: json.encode({
-            'userId': userId,
-            'fcmToken': token,
-            'platform': Platform.isAndroid ? 'android' : 'ios',
-          }),
-        )
-            .timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            Logger.warning('Backend token upload timeout',
-                tag: 'PushNotification');
-            throw TimeoutException('Backend request timeout');
-          },
+        final response = await ApiService.executeWithRetry(
+          () => ApiService.post(
+            AppConfig.backendRegisterTokenEndpoint,
+            skipAuth: false,
+            headers: const <String, dynamic>{
+              'Content-Type': 'application/json',
+            },
+            data: <String, dynamic>{
+              'userId': userId,
+              'fcmToken': token,
+              'platform': Platform.isAndroid ? 'android' : 'ios',
+            },
+          ),
+          context: 'registerFcmToken',
+          timeout: const Duration(seconds: 10),
         );
 
-        if (response.statusCode == 200) {
+        if (response != null && ApiService.isSuccessResponse(response)) {
           Logger.info('✅ FCM token uploaded successfully to backend',
               tag: 'PushNotification');
         } else {
-          Logger.warning('Failed to upload FCM token: ${response.statusCode}',
+          Logger.warning(
+              'Failed to upload FCM token: ${response?.statusCode}',
               tag: 'PushNotification');
         }
       } on TimeoutException {
@@ -1043,7 +1043,7 @@ class PushNotificationService {
 
     // Initialize with channel creation
     await _localNotifications.initialize(
-      initSettings,
+      settings: initSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) async {
         Logger.info('Local notification tapped: ${response.payload}',
             tag: 'PushNotification');
@@ -1255,10 +1255,10 @@ class PushNotificationService {
 
       // Show notification with payload containing order data
       await _localNotifications.show(
-        message.hashCode,
-        message.notification?.title ?? 'Order Update',
-        message.notification?.body ?? 'Your order has been updated',
-        details,
+        id: message.hashCode,
+        title: message.notification?.title ?? 'Order Update',
+        body: message.notification?.body ?? 'Your order has been updated',
+        notificationDetails: details,
         payload: json.encode(message.data),
       );
 

@@ -1,5 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import 'api_service.dart';
 import 'models/woocommerce_product.dart';
 import 'models/woocommerce_order.dart';
 import 'utils/logger.dart';
@@ -11,25 +14,31 @@ class WooCommerceServiceSimple {
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
 
+  static Map<String, dynamic> _wcHeaders() => <String, dynamic>{
+        'Content-Type': 'application/json',
+        'Authorization':
+            'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
+      };
+
   /// Test WooCommerce connection
   static Future<bool> testConnection() async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/products?per_page=1'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization':
-              'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-        },
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse('$baseUrl/products?per_page=1'),
+          skipAuth: true,
+          headers: _wcHeaders(),
+        ),
+        context: 'WooCommerceServiceSimple.testConnection',
       );
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (response != null && ApiService.isSuccessResponse(response)) {
         Logger.info('WooCommerce connection test successful',
             tag: 'WooCommerceServiceSimple');
         return true;
       } else {
         Logger.error(
-            'WooCommerce connection test failed: ${response.statusCode}',
+            'WooCommerce connection test failed: ${response?.statusCode}',
             tag: 'WooCommerceServiceSimple');
         return false;
       }
@@ -61,23 +70,27 @@ class WooCommerceServiceSimple {
         url += '&featured=$featured';
       }
 
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization':
-              'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-        },
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse(url),
+          skipAuth: true,
+          headers: _wcHeaders(),
+        ),
+        context: 'WooCommerceServiceSimple.getProducts',
       );
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final List<dynamic> productsData = json.decode(response.body);
+      if (response != null && ApiService.isSuccessResponse(response)) {
+        final List<dynamic>? productsData =
+            ApiService.responseAsJsonList(response);
+        if (productsData == null) {
+          throw Exception('Invalid products JSON');
+        }
         return productsData
             .map((product) => WooCommerceProduct.fromJson(product))
             .toList();
       } else {
         throw Exception(
-            'Failed to fetch products: ${response.statusCode} - ${response.body}');
+            'Failed to fetch products: ${response?.statusCode} - ${response != null ? ApiService.responseBodyString(response) : ''}');
       }
     } catch (e) {
       Logger.error('Error fetching products: $e',
@@ -137,35 +150,36 @@ class WooCommerceServiceSimple {
         'paid': false
       };
 
-      final response = await http.post(
-        Uri.parse('$baseUrl/orders'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization':
-              'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-        },
-        body: json.encode(orderData),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.postUri(
+          Uri.parse('$baseUrl/orders'),
+          skipAuth: true,
+          headers: _wcHeaders(),
+          data: orderData,
+        ),
+        context: 'WooCommerceServiceSimple.createTestOrder',
       );
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final responseData = json.decode(response.body);
-        Logger.info('Raw API response: ${response.body}',
+      if (response != null && ApiService.isSuccessResponse(response)) {
+        final Map<String, dynamic>? responseData =
+            ApiService.responseAsJsonMap(response);
+        final String bodyStr = ApiService.responseBodyString(response);
+        Logger.info('Raw API response: $bodyStr',
             tag: 'WooCommerceServiceSimple');
 
-        if (responseData is Map<String, dynamic>) {
+        if (responseData != null) {
           final createdOrder = WooCommerceOrder.fromJson(responseData);
           Logger.info('Test order created successfully: ${createdOrder.id}',
               tag: 'WooCommerceServiceSimple');
           return createdOrder;
-        } else {
-          Logger.error(
-              'Unexpected response format: ${responseData.runtimeType}',
-              tag: 'WooCommerceServiceSimple');
-          return null;
         }
+        Logger.error(
+            'Unexpected response format',
+            tag: 'WooCommerceServiceSimple');
+        return null;
       } else {
         Logger.error(
-            'Failed to create test order: ${response.statusCode} - ${response.body}',
+            'Failed to create test order: ${response?.statusCode} - ${response != null ? ApiService.responseBodyString(response) : ''}',
             tag: 'WooCommerceServiceSimple');
         return null;
       }

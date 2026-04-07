@@ -1,5 +1,8 @@
 import 'dart:io';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 
 /// Professional Network Image Service with retry mechanism and error handling
 class NetworkImageService {
@@ -11,14 +14,18 @@ class NetworkImageService {
   static Future<bool> testConnectivity() async {
     try {
       // Test with a reliable endpoint
-      final response = await http.get(
-        Uri.parse('https://www.google.com'),
-        headers: {
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
-        },
-      ).timeout(_timeout);
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse('https://www.google.com'),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'User-Agent': 'HomeAid-Flutter-App/1.0',
+          },
+        ),
+        context: 'networkImage.connectivity',
+      );
 
-      return response.statusCode == 200;
+      return response != null && ApiService.isSuccessResponse(response);
     } catch (e) {
       print('❌ Network connectivity test failed: $e');
       return false;
@@ -28,14 +35,19 @@ class NetworkImageService {
   /// Test WooCommerce server connectivity
   static Future<bool> testWooCommerceConnectivity() async {
     try {
-      final response = await http.get(
-        Uri.parse('https://www.homeaid.com.mm'),
-        headers: {
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
-        },
-      ).timeout(_timeout);
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse('https://www.homeaid.com.mm'),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'User-Agent': 'HomeAid-Flutter-App/1.0',
+          },
+        ),
+        context: 'networkImage.wooConnectivity',
+      );
 
-      final isConnected = response.statusCode == 200;
+      final isConnected =
+          response != null && ApiService.isSuccessResponse(response);
       print(
           '🔗 WooCommerce server connectivity: ${isConnected ? "✅ Connected" : "❌ Failed"}');
       return isConnected;
@@ -54,25 +66,40 @@ class NetworkImageService {
       try {
         print('   Attempt $attempt/$maxRetries');
 
-        final response = await http.head(
-          Uri.parse(imageUrl),
-          headers: {
-            'User-Agent': 'HomeAid-Flutter-App/1.0',
-            'Accept': 'image/*',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-          },
-        ).timeout(_timeout);
+        final Response<dynamic>? response = await ApiService.executeWithRetry(
+          () => ApiService.headUri(
+            Uri.parse(imageUrl),
+            skipAuth: true,
+            headers: const <String, dynamic>{
+              'User-Agent': 'HomeAid-Flutter-App/1.0',
+              'Accept': 'image/*',
+              'Accept-Encoding': 'gzip, deflate',
+              'Connection': 'keep-alive',
+            },
+          ),
+          context: 'networkImage.testImageUrl',
+        );
+
+        if (response == null) {
+          print('   ❌ No response');
+          if (attempt < maxRetries) {
+            await Future<void>.delayed(_retryDelay);
+          }
+          continue;
+        }
 
         print('   📊 Status: ${response.statusCode}');
-        print('   📊 Content-Type: ${response.headers['content-type']}');
-        print('   📊 Content-Length: ${response.headers['content-length']}');
+        final String? ct = response.headers.value('content-type');
+        final String? cl = response.headers.value('content-length');
+        print('   📊 Content-Type: $ct');
+        print('   📊 Content-Length: $cl');
 
-        if (response.statusCode == 200) {
-          final contentType = response.headers['content-type'] ?? '';
+        if (ApiService.isSuccessResponse(response)) {
+          final contentType = ct ?? '';
           if (contentType.startsWith('image/')) {
             print('   ✅ Image URL is valid and accessible');
-            return ImageTestResult.success(imageUrl, response.statusCode);
+            return ImageTestResult.success(
+                imageUrl, response.statusCode ?? 200);
           } else {
             print('   ❌ URL returns non-image content: $contentType');
             return ImageTestResult.error(

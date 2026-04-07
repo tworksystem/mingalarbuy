@@ -19,8 +19,6 @@ import '../providers/engagement_provider.dart';
 import '../providers/point_provider.dart';
 import '../services/engagement_service.dart';
 import '../services/point_notification_manager.dart';
-import '../utils/app_config.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 enum PollDisplayState {
@@ -36,6 +34,7 @@ enum AutoPollState {
   loading,
   activeVoting,
   closingCountdown,
+  calculatingResult,
   showingResult,
   restartCountdown,
 }
@@ -120,6 +119,8 @@ class WinningOption {
 class PollResultData {
   final String sessionId;
   final WinningOption winningOption;
+  /// From API `winning_index`; negative means server has not resolved the winner yet.
+  final int winningIndex;
   final bool userWon;
   final int pointsEarned;
   final int currentBalance;
@@ -127,6 +128,7 @@ class PollResultData {
   PollResultData({
     required this.sessionId,
     required this.winningOption,
+    this.winningIndex = -1,
     this.userWon = false,
     this.pointsEarned = 0,
     this.currentBalance = 0,
@@ -138,9 +140,18 @@ class PollResultData {
     final winningMap = winning is Map
         ? Map<String, dynamic>.from(winning)
         : null;
+    int wi = (data['winning_index'] as num?)?.toInt() ?? -1;
+    if (!data.containsKey('winning_index') && winningMap != null) {
+      final text = (winningMap['text'] ?? '').toString().trim();
+      final media = (winningMap['media_url'] ?? '').toString().trim();
+      if (text.isNotEmpty || media.isNotEmpty) {
+        wi = 0;
+      }
+    }
     return PollResultData(
       sessionId: (data['session_id'] ?? '').toString(),
       winningOption: WinningOption.fromJson(winningMap),
+      winningIndex: wi,
       userWon: data['user_won'] == true || data['user_won'] == 1,
       pointsEarned: (data['points_earned'] as num?)?.toInt() ?? 0,
       currentBalance: (data['current_balance'] as num?)?.toInt() ?? 0,
@@ -186,8 +197,11 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
   bool _isLifecycleRunning = false;
   DateTime? _phaseEndsAtUtc;
   int _countdownSeconds = 0;
-  /// Session id for which we've already fetched results — prevents re-fetch and flicker.
+  /// Session id for which we've already fetched **final** results — prevents duplicate win handling.
   String? _resultFetchedForSession;
+
+  /// Stops [_fetchResultsWithRetry] when the widget is disposed.
+  bool _abortResultsPoll = false;
 
   @override
   void initState() {
@@ -198,7 +212,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
       if (state == 'ACTIVE') {
         _runVotingPhase();
       } else if (state == 'SHOWING_RESULTS') {
-        _runResultAndCountdownPhase();
+        if (_state == AutoPollState.showingResult) {
+          _runResultAndCountdownPhase();
+        } else if (_state == AutoPollState.activeVoting) {
+          _runVotingPhase();
+        } else {
+          _isLifecycleRunning = false;
+        }
       } else {
         _isLifecycleRunning = false;
       }
@@ -212,6 +232,7 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
     // CRITICAL: While showing results or in restart countdown,
     // ignore any external data/prop changes from parent refreshes.
     if (_state == AutoPollState.showingResult ||
+        _state == AutoPollState.calculatingResult ||
         _state == AutoPollState.restartCountdown) {
       // Intentionally block any state reset or reload here.
       // This prevents EngagementProvider auto-refresh from
@@ -231,6 +252,7 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
 
   @override
   void dispose() {
+    _abortResultsPoll = true;
     _isLifecycleRunning = false;
     super.dispose();
   }
@@ -258,7 +280,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
     final nextState = await _fetchPollState(internalCall: true);
     if (!mounted) return;
     if (nextState == 'SHOWING_RESULTS') {
-      _runResultAndCountdownPhase();
+      if (_state == AutoPollState.showingResult) {
+        _runResultAndCountdownPhase();
+      } else if (_state == AutoPollState.activeVoting) {
+        _runVotingPhase();
+      } else {
+        _isLifecycleRunning = false;
+      }
     } else if (nextState == 'ACTIVE') {
       _runVotingPhase();
     } else {
@@ -309,7 +337,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
       _runVotingPhase();
     } else if (nextState == 'SHOWING_RESULTS') {
       _isLifecycleRunning = true;
-      _runResultAndCountdownPhase();
+      if (_state == AutoPollState.showingResult) {
+        _runResultAndCountdownPhase();
+      } else if (_state == AutoPollState.activeVoting) {
+        _runVotingPhase();
+      } else {
+        _isLifecycleRunning = false;
+      }
     } else {
       _isLifecycleRunning = false;
     }
@@ -319,26 +353,14 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
   Future<String?> _fetchPollState({bool internalCall = false}) async {
     if (!internalCall && _isLifecycleRunning) return null;
     if (!mounted) return null;
-    setState(() => _state = AutoPollState.loading);
+    if (!internalCall) {
+      setState(() => _state = AutoPollState.loading);
+    }
 
     try {
-      final uri = Uri.parse(
-        '${AppConfig.backendUrl}/wp-json/twork/v1/poll/state/${widget.pollId}',
-      ).replace(queryParameters: {
-        'consumer_key': AppConfig.consumerKey,
-        'consumer_secret': AppConfig.consumerSecret,
-      });
-
-      final response = await http
-          .get(uri, headers: const {'Content-Type': 'application/json'});
-
-      if (response.statusCode != 200) {
-        if (mounted) setState(() => _state = AutoPollState.activeVoting);
-        return null;
-      }
-
-      final json = jsonDecode(response.body) as Map<String, dynamic>;
-      if (json['success'] != true) {
+      final Map<String, dynamic>? json =
+          await EngagementService.fetchPollState(pollId: widget.pollId);
+      if (json == null || json['success'] != true) {
         if (mounted) setState(() => _state = AutoPollState.activeVoting);
         return null;
       }
@@ -353,19 +375,24 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
 
       // Decide local state + timestamps based on backend state.
       if (data.state == 'SHOWING_RESULTS') {
-        _resultData ??= PollResultData(
-          sessionId: data.currentSessionId,
-          winningOption: WinningOption(text: ''),
-        );
-        _fetchResultsAndShow();
         _phaseEndsAtUtc = null;
-        _transitionTo(AutoPollState.showingResult);
+        if (mounted) {
+          setState(() => _state = AutoPollState.calculatingResult);
+        }
         // Pause global engagement auto-polling so the feed
         // does NOT replace this poll while we show result/countdown.
         try {
           context.read<EngagementProvider>().pauseAutoPoll();
         } catch (_) {
           // Provider not found – fail silently; core poll logic still works.
+        }
+        await _fetchResultsWithRetry();
+        if (!mounted) {
+          return 'SHOWING_RESULTS';
+        }
+        // Empty session or aborted poll: avoid infinite "Calculating…" shell.
+        if (_state == AutoPollState.calculatingResult) {
+          setState(() => _state = AutoPollState.activeVoting);
         }
         return 'SHOWING_RESULTS';
       } else if (data.state == 'ACTIVE') {
@@ -397,41 +424,74 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
     }
   }
 
-  Future<void> _fetchResultsAndShow() async {
+  /// Parses [winning_index] from API; if absent, infers readiness from [winning_option] (older servers).
+  static int _resolvedWinningIndexFromPayload(dynamic data) {
+    if (data is! Map) {
+      return -1;
+    }
+    final m = Map<String, dynamic>.from(data);
+    if (m.containsKey('winning_index')) {
+      return (m['winning_index'] as num?)?.toInt() ?? -1;
+    }
+    final wo = m['winning_option'];
+    if (wo is Map) {
+      final text = (wo['text'] ?? '').toString().trim();
+      final media = (wo['media_url'] ?? '').toString().trim();
+      if (text.isNotEmpty || media.isNotEmpty) {
+        return 0;
+      }
+    }
+    return -1;
+  }
+
+  /// Polls `/poll/results` every 2s until `winning_index >= 0` (or legacy winning_option present).
+  Future<void> _fetchResultsWithRetry() async {
     final sessionId = _stateData?.currentSessionId ?? '';
-    if (sessionId.isEmpty) return;
+    if (sessionId.isEmpty) {
+      return;
+    }
 
-    // Single fetch per session: avoid multiple API calls causing result to change.
-    if (_resultFetchedForSession == sessionId) return;
-    _resultFetchedForSession = sessionId;
+    while (mounted && !_abortResultsPoll) {
+      try {
+        final Map<String, dynamic>? json =
+            await EngagementService.fetchPollResults(
+          pollId: widget.pollId,
+          sessionId: sessionId,
+          userId: widget.userId,
+        );
 
-    try {
-      final queryParams = <String, String>{
-        'consumer_key': AppConfig.consumerKey,
-        'consumer_secret': AppConfig.consumerSecret,
-        if (widget.userId > 0) 'user_id': widget.userId.toString(),
-      };
-      final uri = Uri.parse(
-        '${AppConfig.backendUrl}/wp-json/twork/v1/poll/results/${widget.pollId}/$sessionId',
-      ).replace(queryParameters: queryParams);
+        if (!mounted || _abortResultsPoll) {
+          return;
+        }
 
-      final response = await http
-          .get(uri, headers: const {'Content-Type': 'application/json'});
-
-      if (response.statusCode == 200 && mounted) {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        if (json['success'] == true) {
-          final result = PollResultData.fromJson(json);
-          if (!mounted) return;
-          // Update once — do not overwrite if we already have valid data for this session.
-          setState(() => _resultData = result);
-          if (result.userWon && result.pointsEarned > 0) {
-            _handlePollWinPopupAndSync(result);
+        if (json != null && json['success'] == true) {
+          final data = json['data'];
+          final wi = _resolvedWinningIndexFromPayload(data);
+          if (wi >= 0) {
+            final result = PollResultData.fromJson(json);
+            if (!mounted || _abortResultsPoll) {
+              return;
+            }
+            setState(() {
+              _resultData = result;
+              _state = AutoPollState.showingResult;
+              _resultFetchedForSession = sessionId;
+            });
+            if (result.userWon && result.pointsEarned > 0) {
+              _handlePollWinPopupAndSync(result);
+            }
+            return;
           }
         }
+      } catch (_) {
+        // Network blip — keep retrying.
       }
-    } catch (_) {}
-    // Placeholder already set in _fetchPollState; avoid extra setState to prevent flicker.
+
+      if (!mounted || _abortResultsPoll) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
   }
 
   /// When user wins: show point popup immediately (same time as result) + sync balance in background.
@@ -627,6 +687,8 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
           seconds: _countdownSeconds,
           label: 'Closing in...',
         );
+      case AutoPollState.calculatingResult:
+        return const _CalculatingResultUI(key: ValueKey('calculating_result'));
       case AutoPollState.showingResult:
         return WinningResultWidget(
           key: ValueKey('result_${_stateData?.currentSessionId ?? ""}'),
@@ -899,34 +961,10 @@ class _VotingUIState extends State<_VotingUI> {
                         if (!mounted) return;
                         setState(() => _isSubmitting = false);
 
-                        // 3b. Combine API balance with AuthProvider custom fields (my_point / points_balance)
-                        final authProvider =
-                            context.read<AuthProvider>();
-                        int customBalance = 0;
-                        final user = authProvider.user;
-                        if (user != null) {
-                          final myPointValue = user.customFields['my_point'] ??
-                              user.customFields['my_points'] ??
-                              user.customFields['My Point Value'] ??
-                              user.customFields['points_balance'];
-                          if (myPointValue != null &&
-                              myPointValue.trim().isNotEmpty) {
-                            final parsed =
-                                int.tryParse(myPointValue.trim()) ??
-                                    int.tryParse(RegExp(r'\d+')
-                                            .firstMatch(myPointValue)
-                                            ?.group(0) ??
-                                        '');
-                            if (parsed != null) {
-                              customBalance = parsed;
-                            }
-                          }
-                        }
-
                         final apiBalance = pointProvider.currentBalance;
-                        final int userBalance = customBalance > apiBalance
-                            ? customBalance
-                            : apiBalance;
+                        // PROFESSIONAL FIX: Strictly trust the freshly fetched API balance (Single Source of Truth).
+                        // Using an outdated local cache (customBalance) causes insufficient balance errors on the server.
+                        final int userBalance = apiBalance;
 
                         // 4. Calculate cost for Amount multiplier k = 1
                         final int requiredPerAmount = perUnit * selectedCount;
@@ -1261,6 +1299,44 @@ class _CountdownUI extends StatelessWidget {
               label,
               style:
                   TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 16),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown while the server resolves the random winner (`winning_index == -1`).
+class _CalculatingResultUI extends StatelessWidget {
+  const _CalculatingResultUI({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.orange[400]!, Colors.deepOrange[600]!],
+        ),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(color: Colors.white),
+            const SizedBox(height: 20),
+            Text(
+              'Calculating Result...',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.95),
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
             ),
           ],
         ),

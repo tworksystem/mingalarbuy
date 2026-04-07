@@ -59,8 +59,9 @@ class NotificationService {
           iOS: iosSettings,
         );
 
-        final bool? initialized = await _flutterLocalNotificationsPlugin.initialize(
-          initSettings,
+        final bool? initialized =
+            await _flutterLocalNotificationsPlugin.initialize(
+          settings: initSettings,
           onDidReceiveNotificationResponse: _onNotificationTapped,
         );
 
@@ -244,10 +245,10 @@ class NotificationService {
 
         // Show notification
         await _flutterLocalNotificationsPlugin.show(
-          notificationId,
-          title,
-          body,
-          notificationDetails,
+          id: notificationId,
+          title: title,
+          body: body,
+          notificationDetails: notificationDetails,
           payload: 'order_$orderId', // Pass order ID as payload for navigation
         );
       }
@@ -325,10 +326,10 @@ class NotificationService {
 
         // Show notification
         await _flutterLocalNotificationsPlugin.show(
-          notificationId,
-          title,
-          body,
-          notificationDetails,
+          id: notificationId,
+          title: title,
+          body: body,
+          notificationDetails: notificationDetails,
           payload: 'order_$orderId',
         );
       }
@@ -436,7 +437,7 @@ class NotificationService {
   /// Cancel notification by ID
   Future<void> cancelNotification(int notificationId) async {
     try {
-      await _flutterLocalNotificationsPlugin.cancel(notificationId);
+      await _flutterLocalNotificationsPlugin.cancel(id: notificationId);
       Logger.info('Notification cancelled: $notificationId',
           tag: 'NotificationService');
     } catch (e) {

@@ -76,8 +76,9 @@ class WalletProvider with ChangeNotifier {
   /// If forceRefresh is true, will reload even if already loaded for this user
   ///
   /// IMPORTANT: This method will NOT overwrite a balance that was recently updated
-  /// via addToBalance() to prevent race conditions. If balance was updated within
-  /// the last 3 seconds, this method will skip the API call and use the current balance.
+  /// locally (e.g. after a wallet credit) to prevent race conditions. If balance was
+  /// updated within the last 3 seconds, this method will skip the API call and use
+  /// the current balance.
   /// However, if forceRefresh is true, it will still load but will preserve recent updates.
   Future<void> loadBalance(String userId, {bool forceRefresh = false}) async {
     // Skip if already loaded for this user and not forcing refresh
@@ -90,7 +91,7 @@ class WalletProvider with ChangeNotifier {
       return;
     }
 
-    // CRITICAL: Prevent overwriting a balance that was just updated via addToBalance() or updateBalanceFromClaim()
+    // CRITICAL: Prevent overwriting a balance that was just updated locally (credit / server-sync helpers)
     // This prevents race conditions where loadBalance() overwrites a freshly updated balance
     // Exception: If balance is null, always load (we need initial data)
     // Exception: If forceRefresh is true, respect it (caller explicitly wants fresh data)
@@ -162,13 +163,8 @@ class WalletProvider with ChangeNotifier {
     }
   }
 
-  /// Update wallet balance directly from prize claim result
-  /// This method is used when the backend already updated the wallet balance
-  /// and returns the new balance in the claim response
-  ///
-  /// Flow: Prize Code Claim → Backend Updates Balance → Returns new_wallet_balance → This method updates provider
-  ///
-  /// This prevents double-updating the balance (backend already did it)
+  /// Update wallet balance when the backend has already applied a credit and returns
+  /// the new balance (avoids calling the add-to-wallet API again).
   Future<WalletUpdateResult> updateBalanceFromClaim(
       String userId, double newBalanceValue, String description) async {
     if (_currentUserId == null) {
@@ -252,12 +248,9 @@ class WalletProvider with ChangeNotifier {
     }
   }
 
-  /// Add amount to wallet balance
-  /// Used by prize code system to update wallet balance after claiming codes
+  /// Add amount to wallet balance via API (with local fallback).
   ///
-  /// Flow: Prize Code → addToBalance() → Wallet Balance Updated → Profile → Wallet → Payment → Current account balance
-  ///
-  /// Note: This method ONLY affects wallet balance, NOT point system
+  /// Note: This method only affects wallet balance, not the points system.
   /// In test mode or when API fails, updates local balance directly
   /// This method ensures immediate UI updates by calling notifyListeners() multiple times
   Future<WalletUpdateResult> addToBalance(

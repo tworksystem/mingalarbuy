@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+import 'package:ecommerce_int2/api_service.dart';
 import 'package:ecommerce_int2/config/woocommerce_config.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:flutter/foundation.dart';
@@ -12,9 +14,26 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// Handles all API calls to WooCommerce REST API with proper
 /// authentication, error handling, and response parsing.
 class WooCommerceService {
-  final http.Client _client;
+  WooCommerceService();
 
-  WooCommerceService({http.Client? client}) : _client = client ?? http.Client();
+  Future<Response<dynamic>> _getUri(
+    Uri uri, {
+    int? timeoutSeconds,
+  }) async {
+    final int sec = timeoutSeconds ?? WooCommerceConfig.timeout;
+    return ApiService.dio.getUri<dynamic>(
+      uri,
+      options: Options(
+        extra: const <String, Object?>{'skipAuth': true},
+        sendTimeout: Duration(seconds: sec),
+        receiveTimeout: Duration(seconds: sec),
+        headers: const <String, dynamic>{
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      ),
+    );
+  }
 
   /// Fetch products from WooCommerce API
   ///
@@ -70,26 +89,16 @@ class WooCommerceService {
 
       debugPrint('🔗 Request URL: $finalUri');
 
-      // Make HTTP request
-      final response = await _client.get(
-        finalUri,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      ).timeout(
-        Duration(seconds: WooCommerceConfig.timeout),
-        onTimeout: () {
-          throw TimeoutException(
-              'Connection timeout after ${WooCommerceConfig.timeout} seconds');
-        },
-      );
+      final Response<dynamic> response = await _getUri(finalUri);
 
       debugPrint('📡 Response status: ${response.statusCode}');
 
       // Handle response
       if (response.statusCode == 200) {
-        final List<dynamic> jsonList = json.decode(response.body);
+        final List<dynamic>? jsonList = ApiService.responseAsJsonList(response);
+        if (jsonList == null) {
+          throw const FormatException('Products response is not a JSON array');
+        }
         debugPrint('✅ Fetched ${jsonList.length} products successfully');
 
         final products =
@@ -107,9 +116,10 @@ class WooCommerceService {
           statusCode: 404,
         );
       } else {
-        final errorBody = json.decode(response.body);
+        final Map<String, dynamic>? errorBody =
+            ApiService.responseAsJsonMap(response);
         throw WooCommerceException(
-          errorBody['message'] ?? 'Failed to fetch products',
+          errorBody?['message']?.toString() ?? 'Failed to fetch products',
           statusCode: response.statusCode,
         );
       }
@@ -178,16 +188,14 @@ class WooCommerceService {
         queryParameters: WooCommerceConfig.authParams,
       );
 
-      final response = await _client.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      ).timeout(Duration(seconds: WooCommerceConfig.timeout));
+      final Response<dynamic> response = await _getUri(authUri);
 
       if (response.statusCode == 200) {
-        final jsonData = json.decode(response.body);
+        final Map<String, dynamic>? jsonData =
+            ApiService.responseAsJsonMap(response);
+        if (jsonData == null) {
+          throw const FormatException('Product response is not JSON object');
+        }
         debugPrint('✅ Fetched product successfully');
         return WooCommerceProduct.fromJson(jsonData);
       } else if (response.statusCode == 404) {
@@ -274,16 +282,23 @@ class WooCommerceService {
         queryParameters: WooCommerceConfig.authParams,
       );
 
-      final response = await _client.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      ).timeout(Duration(seconds: WooCommerceConfig.timeout));
+      final Response<dynamic> response = await _getUri(authUri);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final List<dynamic>? list = ApiService.responseAsJsonList(response);
+        if (list != null) {
+          return list;
+        }
+        final Object? data = response.data;
+        if (data is String) {
+          final Object? decoded = json.decode(data);
+          if (decoded is List) {
+            return List<dynamic>.from(decoded);
+          }
+        } else if (data is List) {
+          return List<dynamic>.from(data);
+        }
+        throw const FormatException('Categories response is not a JSON array');
       } else {
         throw WooCommerceException(
           'Failed to fetch categories',
@@ -317,13 +332,8 @@ class WooCommerceService {
         queryParameters: WooCommerceConfig.authParams,
       );
 
-      final response = await _client.get(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      ).timeout(Duration(seconds: 10));
+      final Response<dynamic> response =
+          await _getUri(authUri, timeoutSeconds: 10);
 
       if (response.statusCode == 200) {
         debugPrint('✅ API connection successful');
@@ -339,9 +349,7 @@ class WooCommerceService {
   }
 
   /// Dispose resources
-  void dispose() {
-    _client.close();
-  }
+  void dispose() {}
 }
 
 /// Custom exception for WooCommerce API errors

@@ -1,5 +1,6 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import '../utils/network_utils.dart';
@@ -64,18 +65,33 @@ class AppUpdateService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/app/update-settings',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: true,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getUpdateInfo',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body) as Map<String, dynamic>;
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          Logger.warning(
+            'Failed to fetch app update info from backend, using default (no update)',
+            tag: 'AppUpdateService',
+          );
+          _cachedUpdateInfo = AppUpdateInfo(
+            enabled: false,
+            updateLink: '',
+            version: '',
+          );
+          _cacheTimestamp = DateTime.now();
+          return _cachedUpdateInfo!;
+        }
         if (data['success'] == true && data['data'] != null) {
           final settings = data['data'] as Map<String, dynamic>;
           final updateInfo = AppUpdateInfo(

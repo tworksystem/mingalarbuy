@@ -1,6 +1,9 @@
 import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+
+import '../api_service.dart';
 import '../models/withdrawal.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
@@ -89,19 +92,28 @@ class WithdrawalService {
       '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/withdraw',
     ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-    final response = await NetworkUtils.executeRequest(
-      () => http.post(
-        uri,
-        headers: const {
+    final Response<dynamic>? response = await ApiService.executeWithRetry(
+      () => ApiService.post(
+        uri.path,
+        queryParameters: uri.queryParameters,
+        skipAuth: false,
+        headers: const <String, dynamic>{
           'Content-Type': 'application/json',
         },
-        body: json.encode(request.toJson()),
+        data: request.toJson(),
       ),
       context: 'requestWithdrawal',
     );
 
-    if (NetworkUtils.isValidResponse(response)) {
-      final data = json.decode(response!.body);
+    if (NetworkUtils.isValidDioResponse(response)) {
+      final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+      if (data == null) {
+        return WithdrawalResult.failure(
+          message: 'Invalid response from server. Please try again.',
+          errorCode: 'INVALID_RESPONSE',
+          request: request,
+        );
+      }
 
       if (data['success'] == true) {
         return WithdrawalResult.success(
@@ -239,23 +251,32 @@ class WithdrawalService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/withdrawals/$userId',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getWithdrawalHistory',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Object? raw = response!.data;
+        dynamic data;
+        if (raw is String) {
+          data = json.decode(raw);
+        } else {
+          data = raw;
+        }
         if (data is List) {
           return data
               .map((entry) => WithdrawalHistoryEntry.fromJson(entry))
               .toList();
-        } else if (data['withdrawals'] is List) {
+        }
+        if (data is Map && data['withdrawals'] is List) {
           return (data['withdrawals'] as List)
               .map((entry) => WithdrawalHistoryEntry.fromJson(entry))
               .toList();
@@ -284,18 +305,26 @@ class WithdrawalService {
         'amount': amount.toString(),
       });
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'checkWithdrawalEligibility',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          return {
+            'eligible': true,
+            'message': '',
+          };
+        }
         return {
           'eligible': data['eligible'] == true,
           'message': data['message']?.toString() ?? '',

@@ -1,5 +1,6 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import '../utils/network_utils.dart';
@@ -55,18 +56,29 @@ class RewardExchangeService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-settings',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getMinExchangePoints',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body) as Map<String, dynamic>;
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          Logger.warning(
+            'Failed to fetch minimum exchange points from backend, using default: 100',
+            tag: 'RewardExchangeService',
+          );
+          _cachedMinExchangePoints = 100;
+          _cacheTimestamp = DateTime.now();
+          return 100;
+        }
         if (data['success'] == true && data['data'] != null) {
           final settings = data['data'] as Map<String, dynamic>;
           final minPoints =
@@ -134,41 +146,50 @@ class RewardExchangeService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-request',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final body = json.encode({
+      final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
         'type': 'rewards',
         'reward_value': rewardValue,
         'phone': phone,
         if (note != null && note.isNotEmpty) 'note': note,
-      });
+      };
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: body,
+          data: body,
         ),
         context: 'createRewardExchangeRequest',
       );
 
-      if (!NetworkUtils.isValidResponse(response)) {
-        final errorBody = response?.body ?? 'No response body';
+      if (!NetworkUtils.isValidDioResponse(response)) {
+        final String errorBody = ApiService.responseBodyString(response);
         Logger.warning(
-          'Failed to submit reward exchange request. Status: ${response?.statusCode}, Body: $errorBody',
+          'Failed to submit reward exchange request. Status: ${response?.statusCode}, Body: ${errorBody.isEmpty ? 'No response body' : errorBody}',
           tag: 'RewardExchangeService',
         );
         return false;
       }
 
-      final responseBody = response!.body;
+      final String responseBody = ApiService.responseBodyString(response);
       Logger.info(
         'Reward exchange API response: $responseBody',
         tag: 'RewardExchangeService',
       );
 
-      final data = json.decode(responseBody) as Map<String, dynamic>;
+      final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+      if (data == null) {
+        Logger.warning(
+          'Reward exchange: invalid JSON response',
+          tag: 'RewardExchangeService',
+        );
+        return false;
+      }
       final success = data['success'] == true;
 
       if (success) {
@@ -223,41 +244,50 @@ class RewardExchangeService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-request',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final body = json.encode({
+      final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
         'type': 'points',
         'points_value': pointsValue,
         'phone': phone,
         if (note != null && note.isNotEmpty) 'note': note,
-      });
+      };
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: body,
+          data: body,
         ),
         context: 'createPointExchangeRequest',
       );
 
-      if (!NetworkUtils.isValidResponse(response)) {
-        final errorBody = response?.body ?? 'No response body';
+      if (!NetworkUtils.isValidDioResponse(response)) {
+        final String errorBody = ApiService.responseBodyString(response);
         Logger.warning(
-          'Failed to submit point exchange request. Status: ${response?.statusCode}, Body: $errorBody',
+          'Failed to submit point exchange request. Status: ${response?.statusCode}, Body: ${errorBody.isEmpty ? 'No response body' : errorBody}',
           tag: 'RewardExchangeService',
         );
         return false;
       }
 
-      final responseBody = response!.body;
+      final String responseBody = ApiService.responseBodyString(response);
       Logger.info(
         'Point exchange API response: $responseBody',
         tag: 'RewardExchangeService',
       );
 
-      final data = json.decode(responseBody) as Map<String, dynamic>;
+      final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+      if (data == null) {
+        Logger.warning(
+          'Point exchange: invalid JSON response',
+          tag: 'RewardExchangeService',
+        );
+        return false;
+      }
       final success = data['success'] == true;
 
       if (success) {

@@ -356,6 +356,24 @@ class EngagementProvider with ChangeNotifier {
     );
   }
 
+  /// GET `/twork/v1/poll/state/{pollId}` via [EngagementService] — **auth required** (`skipAuth: false`).
+  Future<Map<String, dynamic>?> fetchPollState({required int pollId}) {
+    return EngagementService.fetchPollState(pollId: pollId);
+  }
+
+  /// GET `/twork/v1/poll/results/{pollId}/{sessionId}` — **auth required** (`skipAuth: false`).
+  Future<Map<String, dynamic>?> fetchPollResults({
+    required int pollId,
+    required String sessionId,
+    int userId = 0,
+  }) {
+    return EngagementService.fetchPollResults(
+      pollId: pollId,
+      sessionId: sessionId,
+      userId: userId,
+    );
+  }
+
   /// Immediately refresh feed (for app resume, etc.)
   /// This triggers an instant refresh without waiting for polling interval
   Future<void> refreshImmediately({

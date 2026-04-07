@@ -1,5 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import 'api_service.dart';
 import 'models/woocommerce_product.dart';
 import 'models/woocommerce_order.dart';
 import 'models/woocommerce_category.dart';
@@ -17,6 +20,12 @@ class WooCommerceService {
   static const String baseUrl = AppConfig.baseUrl;
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
+
+  static Map<String, dynamic> _wcHeaders() => <String, dynamic>{
+        'Content-Type': 'application/json',
+        'Authorization':
+            'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
+      };
 
   static Future<List<WooCommerceProduct>> getProducts({
     int perPage = 20,
@@ -59,20 +68,20 @@ class WooCommerceService {
               url += '&min_rating=$minRating';
             }
 
-            final response = await NetworkUtils.executeRequest(
-              () => http.get(
+            final Response<dynamic>? response = await ApiService.executeWithRetry(
+              () => ApiService.getUri(
                 Uri.parse(url),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization':
-                      'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-                },
+                skipAuth: true,
+                headers: _wcHeaders(),
               ),
               context: 'getProducts',
             );
 
-            if (NetworkUtils.isValidResponse(response)) {
-              List<dynamic> data = json.decode(response!.body);
+            if (NetworkUtils.isValidDioResponse(response)) {
+              final List<dynamic>? data = ApiService.responseAsJsonList(response);
+              if (data == null) {
+                throw Exception('Failed to load products: invalid JSON');
+              }
               List<WooCommerceProduct> products = data
                   .map((json) => WooCommerceProduct.fromJson(json))
                   .toList();
@@ -133,20 +142,20 @@ class WooCommerceService {
               url += '&order=$order';
             }
 
-            final response = await NetworkUtils.executeRequest(
-              () => http.get(
+            final Response<dynamic>? response = await ApiService.executeWithRetry(
+              () => ApiService.getUri(
                 Uri.parse(url),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization':
-                      'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-                },
+                skipAuth: true,
+                headers: _wcHeaders(),
               ),
               context: 'getCategories',
             );
 
-            if (NetworkUtils.isValidResponse(response)) {
-              List<dynamic> data = json.decode(response!.body);
+            if (NetworkUtils.isValidDioResponse(response)) {
+              final List<dynamic>? data = ApiService.responseAsJsonList(response);
+              if (data == null) {
+                throw Exception('Failed to load categories: invalid JSON');
+              }
               List<WooCommerceCategory> categories = data
                   .map((json) => WooCommerceCategory.fromJson(
                       json as Map<String, dynamic>))
@@ -172,20 +181,20 @@ class WooCommerceService {
   static Future<WooCommerceProduct?> getProductById(int id) async {
     return await SafeAsync.execute<WooCommerceProduct?>(
       () async {
-        final response = await NetworkUtils.executeRequest(
-          () => http.get(
+        final Response<dynamic>? response = await ApiService.executeWithRetry(
+          () => ApiService.getUri(
             Uri.parse('$baseUrl/products/$id'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization':
-                  'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-            },
+            skipAuth: true,
+            headers: _wcHeaders(),
           ),
           context: 'getProductById',
         );
 
-        if (NetworkUtils.isValidResponse(response)) {
-          Map<String, dynamic> data = json.decode(response!.body);
+        if (NetworkUtils.isValidDioResponse(response)) {
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            throw Exception('Failed to load product: invalid JSON');
+          }
           return WooCommerceProduct.fromJson(data);
         } else {
           final statusCode = response?.statusCode ?? 0;
@@ -480,15 +489,12 @@ class WooCommerceService {
           tag: 'WooCommerceService');
 
       // Send to WooCommerce API
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.postUri(
           Uri.parse('$baseUrl/orders'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization':
-                'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-          },
-          body: json.encode(wooOrder.toJson()),
+          skipAuth: true,
+          headers: _wcHeaders(),
+          data: wooOrder.toJson(),
         ),
         context: 'createOrder',
       );
@@ -497,24 +503,32 @@ class WooCommerceService {
         throw Exception('No response received from WooCommerce API');
       }
 
+      final String bodyStr = ApiService.responseBodyString(response);
+
       Logger.info('WooCommerce API response status: ${response.statusCode}',
           tag: 'WooCommerceService');
       Logger.info(
-          'WooCommerce API response body length: ${response.body.length}',
+          'WooCommerce API response body length: ${bodyStr.length}',
           tag: 'WooCommerceService');
 
       // Log response body for debugging (first 1000 chars to avoid huge logs)
-      if (response.body.isNotEmpty) {
-        final previewBody = response.body.length > 1000
-            ? '${response.body.substring(0, 1000)}...'
-            : response.body;
+      if (bodyStr.isNotEmpty) {
+        final previewBody = bodyStr.length > 1000
+            ? '${bodyStr.substring(0, 1000)}...'
+            : bodyStr;
         Logger.debug('WooCommerce API response body: $previewBody',
             tag: 'WooCommerceService');
       }
 
-      if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (response.statusCode != null &&
+          response.statusCode! >= 200 &&
+          response.statusCode! < 300) {
         try {
-          final responseData = json.decode(response.body);
+          final Map<String, dynamic>? responseData =
+              ApiService.responseAsJsonMap(response);
+          if (responseData == null) {
+            throw const FormatException('Order response is not a JSON object');
+          }
           Logger.info('Successfully parsed WooCommerce API response',
               tag: 'WooCommerceService');
 
@@ -522,7 +536,7 @@ class WooCommerceService {
 
           if (createdOrder.id == null) {
             Logger.warning(
-                'WooCommerce order created but ID is null. Response: ${response.body.substring(0, 200)}',
+                'WooCommerce order created but ID is null. Response: ${bodyStr.length > 200 ? bodyStr.substring(0, 200) : bodyStr}',
                 tag: 'WooCommerceService');
           }
 
@@ -537,13 +551,13 @@ class WooCommerceService {
               error: parseError,
               stackTrace: parseStackTrace);
           Logger.error(
-              'Response body that failed to parse: ${response.body.substring(0, 500)}',
+              'Response body that failed to parse: ${bodyStr.length > 500 ? bodyStr.substring(0, 500) : bodyStr}',
               tag: 'WooCommerceService');
           throw Exception(
               'Failed to parse WooCommerce order response: $parseError');
         }
       } else {
-        final errorBody = response.body;
+        final errorBody = bodyStr;
         Logger.error(
             'WooCommerce API error response - Status: ${response.statusCode}',
             tag: 'WooCommerceService');
@@ -599,20 +613,20 @@ class WooCommerceService {
 
     return await SafeAsync.execute<List<WooCommerceOrder>>(
           () async {
-            final response = await NetworkUtils.executeRequest(
-              () => http.get(
+            final Response<dynamic>? response = await ApiService.executeWithRetry(
+              () => ApiService.getUri(
                 Uri.parse('$baseUrl/orders?customer=$customerId'),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization':
-                      'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-                },
+                skipAuth: true,
+                headers: _wcHeaders(),
               ),
               context: 'getCustomerOrders',
             );
 
-            if (NetworkUtils.isValidResponse(response)) {
-              List<dynamic> data = json.decode(response!.body);
+            if (NetworkUtils.isValidDioResponse(response)) {
+              final List<dynamic>? data = ApiService.responseAsJsonList(response);
+              if (data == null) {
+                throw Exception('Failed to load customer orders: invalid JSON');
+              }
               List<WooCommerceOrder> orders =
                   data.map((json) => WooCommerceOrder.fromJson(json)).toList();
 
@@ -642,20 +656,17 @@ class WooCommerceService {
 
     return await SafeAsync.execute<bool>(
           () async {
-            final response = await NetworkUtils.executeRequest(
-              () => http.put(
+            final Response<dynamic>? response = await ApiService.executeWithRetry(
+              () => ApiService.putUri(
                 Uri.parse('$baseUrl/orders/$orderId'),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization':
-                      'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-                },
-                body: json.encode({'status': status}),
+                skipAuth: true,
+                headers: _wcHeaders(),
+                data: <String, dynamic>{'status': status},
               ),
               context: 'updateOrderStatus',
             );
 
-            if (NetworkUtils.isValidResponse(response)) {
+            if (NetworkUtils.isValidDioResponse(response)) {
               Logger.info(
                 'Order status updated successfully: $orderId to $status',
                 tag: 'WooCommerceService',
@@ -801,21 +812,16 @@ class WooCommerceService {
   /// Test WooCommerce connection
   static Future<bool> testConnection() async {
     try {
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
           Uri.parse('$baseUrl/products?per_page=1'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization':
-                'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-          },
+          skipAuth: true,
+          headers: _wcHeaders(),
         ),
         context: 'testConnection',
       );
 
-      if (response != null &&
-          response.statusCode >= 200 &&
-          response.statusCode < 300) {
+      if (response != null && ApiService.isSuccessResponse(response)) {
         Logger.info('WooCommerce connection test successful',
             tag: 'WooCommerceService');
         return true;

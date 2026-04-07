@@ -1,5 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../models/page_content.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart' as app_logger;
@@ -44,19 +47,25 @@ class PageContentService {
           tag: 'PageContentService');
       app_logger.Logger.info('Page content URL: $uri', tag: 'PageContentService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: true,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getPageContent',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = jsonDecode(response!.body) as Map<String, dynamic>;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            _lastError = 'Invalid page content response';
+            return null;
+          }
 
           app_logger.Logger.info(
               'Page content response: success=${data['success']}, hasData=${data['data'] != null}',
@@ -78,9 +87,10 @@ class PageContentService {
         } catch (e, stackTrace) {
           _lastError =
               'Failed to parse response: ${NetworkUtils.getErrorMessage(e)}';
-          final responsePreview = response!.body.length > 500
-              ? '${response.body.substring(0, 500)}...'
-              : response.body;
+          final String full = ApiService.responseBodyString(response);
+          final responsePreview = full.length > 500
+              ? '${full.substring(0, 500)}...'
+              : full;
           app_logger.Logger.error(
               'Page content JSON parse error: $_lastError',
               tag: 'PageContentService',
@@ -92,9 +102,10 @@ class PageContentService {
         }
       } else {
         _lastError = 'Invalid response from server. Status: ${response?.statusCode}';
-        final responsePreview = response?.body != null && response!.body.length > 500
-            ? '${response.body.substring(0, 500)}...'
-            : response?.body ?? 'No response body';
+        final String full = ApiService.responseBodyString(response);
+        final responsePreview = full.length > 500
+            ? '${full.substring(0, 500)}...'
+            : (full.isEmpty ? 'No response body' : full);
         app_logger.Logger.error('Page content failed: $_lastError',
             tag: 'PageContentService');
         app_logger.Logger.error('Response body preview: $responsePreview',
@@ -121,19 +132,25 @@ class PageContentService {
       app_logger.Logger.info('Fetching FAQ items', tag: 'PageContentService');
       app_logger.Logger.info('FAQ URL: $uri', tag: 'PageContentService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: true,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getFaqItems',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = jsonDecode(response!.body) as Map<String, dynamic>;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            _lastError = 'Invalid FAQ response';
+            return [];
+          }
 
           app_logger.Logger.info(
               'FAQ response: success=${data['success']}, hasData=${data['data'] != null}',
@@ -180,9 +197,10 @@ class PageContentService {
         } catch (e, stackTrace) {
           _lastError =
               'Failed to parse response: ${NetworkUtils.getErrorMessage(e)}';
-          final responsePreview = response!.body.length > 500
-              ? '${response.body.substring(0, 500)}...'
-              : response.body;
+          final String full = ApiService.responseBodyString(response);
+          final responsePreview = full.length > 500
+              ? '${full.substring(0, 500)}...'
+              : full;
           app_logger.Logger.error(
               'FAQ JSON parse error: $_lastError',
               tag: 'PageContentService',
@@ -194,9 +212,10 @@ class PageContentService {
         }
       } else {
         _lastError = 'Invalid response from server. Status: ${response?.statusCode}';
-        final responsePreview = response?.body != null && response!.body.length > 500
-            ? '${response.body.substring(0, 500)}...'
-            : response?.body ?? 'No response body';
+        final String full = ApiService.responseBodyString(response);
+        final responsePreview = full.length > 500
+            ? '${full.substring(0, 500)}...'
+            : (full.isEmpty ? 'No response body' : full);
         app_logger.Logger.error('FAQ failed: $_lastError',
             tag: 'PageContentService');
         app_logger.Logger.error('Response body preview: $responsePreview',
@@ -223,19 +242,25 @@ class PageContentService {
       app_logger.Logger.info('Fetching all pages', tag: 'PageContentService');
       app_logger.Logger.info('Pages URL: $uri', tag: 'PageContentService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: true,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getAllPages',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = jsonDecode(response!.body) as Map<String, dynamic>;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            _lastError = 'Invalid pages list response';
+            return [];
+          }
 
           app_logger.Logger.info(
               'Pages response: success=${data['success']}, hasData=${data['data'] != null}',
@@ -286,9 +311,10 @@ class PageContentService {
         } catch (e, stackTrace) {
           _lastError =
               'Failed to parse response: ${NetworkUtils.getErrorMessage(e)}';
-          final responsePreview = response!.body.length > 500
-              ? '${response.body.substring(0, 500)}...'
-              : response.body;
+          final String full = ApiService.responseBodyString(response);
+          final responsePreview = full.length > 500
+              ? '${full.substring(0, 500)}...'
+              : full;
           app_logger.Logger.error(
               'Pages JSON parse error: $_lastError',
               tag: 'PageContentService',
@@ -300,9 +326,10 @@ class PageContentService {
         }
       } else {
         _lastError = 'Invalid response from server. Status: ${response?.statusCode}';
-        final responsePreview = response?.body != null && response!.body.length > 500
-            ? '${response.body.substring(0, 500)}...'
-            : response?.body ?? 'No response body';
+        final String full = ApiService.responseBodyString(response);
+        final responsePreview = full.length > 500
+            ? '${full.substring(0, 500)}...'
+            : (full.isEmpty ? 'No response body' : full);
         app_logger.Logger.error('Pages failed: $_lastError',
             tag: 'PageContentService');
         app_logger.Logger.error('Response body preview: $responsePreview',
@@ -329,19 +356,25 @@ class PageContentService {
       app_logger.Logger.info('Fetching About Us content', tag: 'PageContentService');
       app_logger.Logger.info('About Us URL: $uri', tag: 'PageContentService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: true,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getAboutUsContent',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = jsonDecode(response!.body) as Map<String, dynamic>;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            _lastError = 'Invalid About Us response';
+            return null;
+          }
 
           app_logger.Logger.info(
               'About Us response: success=${data['success']}, hasData=${data['data'] != null}',
@@ -363,9 +396,10 @@ class PageContentService {
         } catch (e, stackTrace) {
           _lastError =
               'Failed to parse response: ${NetworkUtils.getErrorMessage(e)}';
-          final responsePreview = response!.body.length > 500
-              ? '${response.body.substring(0, 500)}...'
-              : response.body;
+          final String full = ApiService.responseBodyString(response);
+          final responsePreview = full.length > 500
+              ? '${full.substring(0, 500)}...'
+              : full;
           app_logger.Logger.error(
               'About Us JSON parse error: $_lastError',
               tag: 'PageContentService',
@@ -377,9 +411,10 @@ class PageContentService {
         }
       } else {
         _lastError = 'Invalid response from server. Status: ${response?.statusCode}';
-        final responsePreview = response?.body != null && response!.body.length > 500
-            ? '${response.body.substring(0, 500)}...'
-            : response?.body ?? 'No response body';
+        final String full = ApiService.responseBodyString(response);
+        final responsePreview = full.length > 500
+            ? '${full.substring(0, 500)}...'
+            : (full.isEmpty ? 'No response body' : full);
         app_logger.Logger.error('About Us failed: $_lastError',
             tag: 'PageContentService');
         app_logger.Logger.error('Response body preview: $responsePreview',

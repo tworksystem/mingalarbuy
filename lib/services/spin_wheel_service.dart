@@ -1,7 +1,6 @@
-import 'dart:convert';
+import 'package:dio/dio.dart';
 
-import 'package:http/http.dart' as http;
-
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import '../utils/network_utils.dart';
@@ -58,15 +57,20 @@ class SpinWheelService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/luckybox/config/$userId',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () =>
-            http.get(uri, headers: const {'Content-Type': 'application/json'}),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
+        ),
         context: 'luckybox.getConfig',
       );
 
-      if (!NetworkUtils.isValidResponse(response)) return null;
+      if (!NetworkUtils.isValidDioResponse(response)) return null;
 
-      final data = json.decode(response!.body) as Map<String, dynamic>;
+      final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+      if (data == null) return null;
 
       // Handle WordPress REST API response format
       // Response might be wrapped in 'data' or directly contain the fields
@@ -101,11 +105,13 @@ class SpinWheelService {
       Logger.debug('Opening Lucky Box for user: $userId',
           tag: 'SpinWheelService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {'Content-Type': 'application/json'},
-          body: json.encode({'user_id': int.tryParse(userId) ?? 0}),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
+          data: <String, dynamic>{'user_id': int.tryParse(userId) ?? 0},
         ),
         context: 'luckybox.open',
       );
@@ -118,16 +124,17 @@ class SpinWheelService {
         return false;
       }
 
-      if (!NetworkUtils.isValidResponse(response)) {
+      if (!NetworkUtils.isValidDioResponse(response)) {
         Logger.error('Invalid response status: ${response.statusCode}',
             tag: 'SpinWheelService');
-        Logger.error('Response body: ${response.body}',
+        final String bodyStr = ApiService.responseBodyString(response);
+        Logger.error('Response body: $bodyStr',
             tag: 'SpinWheelService');
 
-        // Try to extract error message from response body
         try {
-          final errorData = json.decode(response.body) as Map<String, dynamic>;
-          _lastError = errorData['message'] ??
+          final Map<String, dynamic>? errorData =
+              ApiService.responseAsJsonMap(response);
+          _lastError = errorData?['message']?.toString() ??
               'Server error occurred. Please try again.';
         } catch (e) {
           _lastError =
@@ -137,7 +144,10 @@ class SpinWheelService {
       }
 
       try {
-        final data = json.decode(response.body) as Map<String, dynamic>;
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          throw const FormatException('Not JSON');
+        }
         final success = data['success'] == true;
 
         if (!success) {
@@ -156,7 +166,7 @@ class SpinWheelService {
       } catch (e) {
         Logger.error('Error parsing response body: $e',
             tag: 'SpinWheelService');
-        Logger.error('Response body: ${response.body}',
+        Logger.error('Response body: ${ApiService.responseBodyString(response)}',
             tag: 'SpinWheelService');
         _lastError = 'Failed to parse server response';
         return false;
@@ -178,15 +188,20 @@ class SpinWheelService {
 
       Logger.debug('Fetching Lucky Box banner', tag: 'SpinWheelService');
 
-      final response = await NetworkUtils.executeRequest(
-        () =>
-            http.get(uri, headers: const {'Content-Type': 'application/json'}),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
+        ),
         context: 'luckybox.banner',
       );
 
-      if (!NetworkUtils.isValidResponse(response)) return null;
+      if (!NetworkUtils.isValidDioResponse(response)) return null;
 
-      final data = json.decode(response!.body) as Map<String, dynamic>;
+      final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+      if (data == null) return null;
 
       // Handle WordPress REST API response format
       final bannerData = data.containsKey('data') ? data['data'] : data;

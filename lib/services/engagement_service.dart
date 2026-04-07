@@ -1,5 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/network_utils.dart';
@@ -362,19 +365,25 @@ class EngagementService {
       app_logger.Logger.info('Engagement feed URL: $uri',
           tag: 'EngagementService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getEngagementFeed',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = jsonDecode(response!.body) as Map<String, dynamic>;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            _lastError = 'Failed to parse engagement feed response';
+            return [];
+          }
 
           app_logger.Logger.info(
               'Engagement feed response: success=${data['success']}, hasData=${data['data'] != null}, dataType=${data['data']?.runtimeType}',
@@ -426,9 +435,10 @@ class EngagementService {
         } catch (e, stackTrace) {
           _lastError =
               'Failed to parse response: ${NetworkUtils.getErrorMessage(e)}';
-          final responsePreview = response!.body.length > 500
-              ? '${response.body.substring(0, 500)}...'
-              : response.body;
+          final String full = ApiService.responseBodyString(response);
+          final responsePreview = full.length > 500
+              ? '${full.substring(0, 500)}...'
+              : full;
           app_logger.Logger.error(
               'Engagement feed JSON parse error: $_lastError',
               tag: 'EngagementService',
@@ -472,14 +482,22 @@ class EngagementService {
           },
         );
       }
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(uri, headers: const {'Content-Type': 'application/json'}),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
+        ),
         context: 'getEngagementUpdates',
       );
-      if (response == null || !NetworkUtils.isValidResponse(response)) {
+      if (response == null || !NetworkUtils.isValidDioResponse(response)) {
         return [];
       }
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+      if (data == null) {
+        return [];
+      }
       if (data['success'] != true) return [];
       final raw = data['updates'];
       if (raw is! List) return [];
@@ -495,6 +513,102 @@ class EngagementService {
           .toList();
     } catch (e) {
       return [];
+    }
+  }
+
+  /// GET `/twork/v1/poll/state/{pollId}` — requires auth (same as engagement feed).
+  /// Returns the full JSON body (`success`, `data`, …) or null on failure.
+  static Future<Map<String, dynamic>?> fetchPollState({
+    required int pollId,
+  }) async {
+    _lastError = null;
+    if (pollId <= 0) {
+      _lastError = 'Invalid poll id';
+      return null;
+    }
+    try {
+      final uri = Uri.parse(
+        '${AppConfig.backendUrl}/wp-json/twork/v1/poll/state/$pollId',
+      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
+            'Content-Type': 'application/json',
+          },
+        ),
+        context: 'fetchPollState',
+      );
+
+      if (!NetworkUtils.isValidDioResponse(response)) {
+        _lastError =
+            'Poll state: invalid response (HTTP ${response?.statusCode})';
+        return null;
+      }
+
+      return ApiService.responseAsJsonMap(response);
+    } catch (e) {
+      _lastError = NetworkUtils.getErrorMessage(e);
+      app_logger.Logger.error(
+        'fetchPollState failed: $_lastError',
+        tag: 'EngagementService',
+        error: e,
+      );
+      return null;
+    }
+  }
+
+  /// GET `/twork/v1/poll/results/{pollId}/{sessionId}` — requires auth.
+  /// [userId] is sent as `user_id` when > 0 (per-session vote / win resolution).
+  static Future<Map<String, dynamic>?> fetchPollResults({
+    required int pollId,
+    required String sessionId,
+    int userId = 0,
+  }) async {
+    _lastError = null;
+    if (pollId <= 0 || sessionId.isEmpty) {
+      _lastError = 'Invalid poll id or session';
+      return null;
+    }
+    try {
+      final query = <String, String>{
+        ..._getWooCommerceAuthQueryParams(),
+        if (userId > 0) 'user_id': userId.toString(),
+      };
+      final uri = Uri.parse(
+        '${AppConfig.backendUrl}/wp-json/twork/v1/poll/results/$pollId/${Uri.encodeComponent(sessionId)}',
+      ).replace(queryParameters: query);
+
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
+            'Content-Type': 'application/json',
+          },
+        ),
+        context: 'fetchPollResults',
+      );
+
+      if (!NetworkUtils.isValidDioResponse(response)) {
+        _lastError =
+            'Poll results: invalid response (HTTP ${response?.statusCode})';
+        return null;
+      }
+
+      return ApiService.responseAsJsonMap(response);
+    } catch (e) {
+      _lastError = NetworkUtils.getErrorMessage(e);
+      app_logger.Logger.error(
+        'fetchPollResults failed: $_lastError',
+        tag: 'EngagementService',
+        error: e,
+      );
+      return null;
     }
   }
 
@@ -542,15 +656,15 @@ class EngagementService {
       } else if (betAmount != null && betAmount > 0) {
         bodyMap['bet_amount'] = betAmount;
       }
-      final body = jsonEncode(bodyMap);
-
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: body,
+          data: bodyMap,
         ),
         context: 'submitInteraction',
       );
@@ -567,7 +681,18 @@ class EngagementService {
 
       // PROFESSIONAL FIX: Parse JSON even on non-2xx responses (e.g. 400 already-voted)
       try {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        data ??= () {
+          try {
+            final Object? d = jsonDecode(ApiService.responseBodyString(response));
+            if (d is Map<String, dynamic>) return d;
+            if (d is Map) return Map<String, dynamic>.from(d);
+          } catch (_) {}
+          return null;
+        }();
+        if (data == null) {
+          throw const FormatException('Response is not JSON object');
+        }
 
         if (data['success'] == true) {
           // Handle new response format with nested 'data' object
@@ -617,7 +742,7 @@ class EngagementService {
         }
 
         app_logger.Logger.error(
-            'Interaction error: $_lastError (status=${response.statusCode})',
+            'Interaction error: $_lastError (status=${response?.statusCode})',
             tag: 'EngagementService');
         return {
           'success': false,
@@ -631,10 +756,11 @@ class EngagementService {
       } catch (e, stackTrace) {
         // Not JSON (or unexpected). Fall back to status-based error.
         _lastError =
-            'Invalid response from server. Status: ${response.statusCode}';
-        final responsePreview = response.body.length > 500
-            ? '${response.body.substring(0, 500)}...'
-            : response.body;
+            'Invalid response from server. Status: ${response?.statusCode}';
+        final String full = ApiService.responseBodyString(response);
+        final responsePreview = full.length > 500
+            ? '${full.substring(0, 500)}...'
+            : full;
         app_logger.Logger.error('Interaction parse failed: $_lastError',
             tag: 'EngagementService', error: e, stackTrace: stackTrace);
         app_logger.Logger.error('Response body preview: $responsePreview',

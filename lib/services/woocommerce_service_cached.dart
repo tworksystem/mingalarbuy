@@ -1,5 +1,6 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../config/woocommerce_config.dart';
 import '../models/woocommerce_product.dart';
 import '../models/cached_product.dart';
@@ -74,18 +75,23 @@ class WooCommerceServiceCached {
 
         print('🌐 Fetching products from API...');
 
-        final response = await http.get(
-          Uri.parse(url),
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-        ).timeout(
-          const Duration(seconds: 30),
+        final Response<dynamic>? response = await ApiService.executeWithRetry(
+          () => ApiService.getUri(
+            Uri.parse(url),
+            skipAuth: true,
+            headers: const <String, dynamic>{
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+          ),
+          context: 'wooCached.getProducts',
         );
 
-        if (response.statusCode == 200) {
-          final List<dynamic> data = json.decode(response.body);
+        if (response != null && response.statusCode == 200) {
+          final List<dynamic>? data = ApiService.responseAsJsonList(response);
+          if (data == null) {
+            throw Exception('Invalid products JSON');
+          }
           final products = data
               .map((product) => WooCommerceProduct.fromJson(product))
               .toList();
@@ -97,7 +103,7 @@ class WooCommerceServiceCached {
 
           return products;
         } else {
-          throw Exception('Failed to load products: ${response.statusCode}');
+          throw Exception('Failed to load products: ${response?.statusCode}');
         }
       } catch (e) {
         print('❌ API Error: $e');
@@ -140,18 +146,24 @@ class WooCommerceServiceCached {
           '${WooCommerceConfig.productsEndpoint}/$productId',
         );
 
-        final response = await http.get(
-          Uri.parse(url),
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-          },
-        ).timeout(
-          const Duration(seconds: 30),
+        final Response<dynamic>? response = await ApiService.executeWithRetry(
+          () => ApiService.getUri(
+            Uri.parse(url),
+            skipAuth: true,
+            headers: const <String, dynamic>{
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+          ),
+          context: 'wooCached.getProduct',
         );
 
-        if (response.statusCode == 200) {
-          final data = json.decode(response.body);
+        if (response != null && response.statusCode == 200) {
+          final Map<String, dynamic>? data =
+              ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            throw Exception('Invalid product JSON');
+          }
           final product = WooCommerceProduct.fromJson(data);
 
           // Cache the result
@@ -159,7 +171,7 @@ class WooCommerceServiceCached {
 
           return product;
         } else {
-          throw Exception('Failed to load product: ${response.statusCode}');
+          throw Exception('Failed to load product: ${response?.statusCode}');
         }
       } catch (e) {
         print('❌ API Error: $e');
@@ -252,21 +264,26 @@ class WooCommerceServiceCached {
         queryParameters: queryParams,
       );
 
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      ).timeout(
-        const Duration(seconds: 30),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse(url),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+        ),
+        context: 'wooCached.getCategories',
       );
 
-      if (response.statusCode == 200) {
-        final List<dynamic> data = json.decode(response.body);
+      if (response != null && response.statusCode == 200) {
+        final List<dynamic>? data = ApiService.responseAsJsonList(response);
+        if (data == null) {
+          throw Exception('Invalid categories JSON');
+        }
         return data.cast<Map<String, dynamic>>();
       } else {
-        throw Exception('Failed to load categories: ${response.statusCode}');
+        throw Exception('Failed to load categories: ${response?.statusCode}');
       }
     } catch (e) {
       print('❌ Error fetching categories: $e');

@@ -1,5 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import 'api_service.dart';
 import 'models/woocommerce_product.dart';
 import 'models/woocommerce_order.dart';
 import 'models/order.dart';
@@ -7,7 +10,6 @@ import 'models/address.dart';
 import 'models/cart_item.dart';
 import 'models/product.dart';
 import 'utils/error_handler.dart';
-import 'utils/network_utils.dart';
 import 'utils/logger.dart';
 import 'utils/retry_manager.dart';
 import 'utils/app_config.dart';
@@ -18,6 +20,12 @@ class WooCommerceServiceFixed {
   static const String baseUrl = AppConfig.baseUrl;
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
+
+  static Map<String, dynamic> _wcHeaders() => <String, dynamic>{
+        'Content-Type': 'application/json',
+        'Authorization':
+            'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
+      };
 
   /// Create order with comprehensive error handling and validation
   static Future<WooCommerceOrder?> createOrder({
@@ -183,16 +191,12 @@ class WooCommerceServiceFixed {
           Logger.debug('Order data: ${json.encode(wooOrder.toJson())}',
               tag: 'WooCommerceServiceFixed');
 
-          // Send to WooCommerce API with proper error handling
-          final response = await NetworkUtils.executeRequest(
-            () => http.post(
+          final Response<dynamic>? response = await ApiService.executeWithRetry(
+            () => ApiService.postUri(
               Uri.parse('$baseUrl/orders'),
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization':
-                    'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-              },
-              body: json.encode(wooOrder.toJson()),
+              skipAuth: true,
+              headers: _wcHeaders(),
+              data: wooOrder.toJson(),
             ),
             context: 'createOrder',
           );
@@ -204,8 +208,14 @@ class WooCommerceServiceFixed {
           Logger.info('WooCommerce API response status: ${response.statusCode}',
               tag: 'WooCommerceServiceFixed');
 
-          if (response.statusCode >= 200 && response.statusCode < 300) {
-            final responseData = json.decode(response.body);
+          if (response.statusCode != null &&
+              response.statusCode! >= 200 &&
+              response.statusCode! < 300) {
+            final Map<String, dynamic>? responseData =
+                ApiService.responseAsJsonMap(response);
+            if (responseData == null) {
+              throw Exception('Invalid order JSON from WooCommerce');
+            }
             final createdOrder = WooCommerceOrder.fromJson(responseData);
 
             Logger.info(
@@ -213,19 +223,24 @@ class WooCommerceServiceFixed {
                 tag: 'WooCommerceServiceFixed');
             return createdOrder;
           } else {
-            final errorBody = response.body;
+            final errorBody = ApiService.responseBodyString(response);
             Logger.error(
                 'WooCommerce API error: ${response.statusCode} - $errorBody',
                 tag: 'WooCommerceServiceFixed');
 
-            // Parse error details for better debugging
             try {
-              final errorData = json.decode(errorBody);
-              final errorMessage = errorData['message'] ?? 'Unknown error';
-              final errorCode = errorData['code'] ?? 'unknown';
+              final Map<String, dynamic>? errorData =
+                  ApiService.responseAsJsonMap(response);
+              final errorMessage =
+                  errorData?['message']?.toString() ?? 'Unknown error';
+              final errorCode = errorData?['code']?.toString() ?? 'unknown';
               throw Exception(
                   'WooCommerce API Error ($errorCode): $errorMessage');
             } catch (e) {
+              if (e is Exception &&
+                  e.toString().contains('WooCommerce API Error')) {
+                rethrow;
+              }
               throw Exception(
                   'WooCommerce API Error (${response.statusCode}): $errorBody');
             }
@@ -300,14 +315,11 @@ class WooCommerceServiceFixed {
               url += '&featured=$featured';
             }
 
-            final response = await NetworkUtils.executeRequest(
-              () => http.get(
+            final Response<dynamic>? response = await ApiService.executeWithRetry(
+              () => ApiService.getUri(
                 Uri.parse(url),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization':
-                      'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-                },
+                skipAuth: true,
+                headers: _wcHeaders(),
               ),
               context: 'getProducts',
             );
@@ -316,14 +328,20 @@ class WooCommerceServiceFixed {
               throw Exception('No response received from WooCommerce API');
             }
 
-            if (response.statusCode >= 200 && response.statusCode < 300) {
-              final List<dynamic> productsData = json.decode(response.body);
+            if (response.statusCode != null &&
+                response.statusCode! >= 200 &&
+                response.statusCode! < 300) {
+              final List<dynamic>? productsData =
+                  ApiService.responseAsJsonList(response);
+              if (productsData == null) {
+                throw Exception('Invalid products JSON');
+              }
               return productsData
                   .map((product) => WooCommerceProduct.fromJson(product))
                   .toList();
             } else {
               throw Exception(
-                  'Failed to fetch products: ${response.statusCode} - ${response.body}');
+                  'Failed to fetch products: ${response.statusCode} - ${ApiService.responseBodyString(response)}');
             }
           },
           context: 'getProducts',
@@ -408,21 +426,16 @@ class WooCommerceServiceFixed {
   /// Test WooCommerce connection
   static Future<bool> testConnection() async {
     try {
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
           Uri.parse('$baseUrl/products?per_page=1'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization':
-                'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
-          },
+          skipAuth: true,
+          headers: _wcHeaders(),
         ),
         context: 'testConnection',
       );
 
-      if (response != null &&
-          response.statusCode >= 200 &&
-          response.statusCode < 300) {
+      if (response != null && ApiService.isSuccessResponse(response)) {
         Logger.info('WooCommerce connection test successful',
             tag: 'WooCommerceServiceFixed');
         return true;

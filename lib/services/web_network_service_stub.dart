@@ -1,4 +1,6 @@
-import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 
 /// Stub implementation for non-web platforms
 class WebNetworkService {
@@ -44,32 +46,42 @@ class WebNetworkService {
     return originalUrl;
   }
 
-  static Future<http.Response> get(
+  static Future<Response<dynamic>?> get(
     Uri url, {
     Map<String, String>? headers,
     Duration? timeout,
   }) async {
-    return http
-        .get(
-          url,
-          headers: headers,
-        )
-        .timeout(timeout ?? _timeout);
+    return ApiService.executeWithRetry(
+      () => ApiService.getUri(
+        url,
+        skipAuth: true,
+        headers: headers != null
+            ? Map<String, dynamic>.from(headers)
+            : null,
+      ),
+      context: 'webNetworkStub.get',
+      timeout: timeout ?? _timeout,
+    );
   }
 
-  static Future<http.Response> post(
+  static Future<Response<dynamic>?> post(
     Uri url, {
     Map<String, String>? headers,
     Object? body,
     Duration? timeout,
   }) async {
-    return http
-        .post(
-          url,
-          headers: headers,
-          body: body,
-        )
-        .timeout(timeout ?? _timeout);
+    return ApiService.executeWithRetry(
+      () => ApiService.postUri(
+        url,
+        skipAuth: true,
+        headers: headers != null
+            ? Map<String, dynamic>.from(headers)
+            : null,
+        data: body,
+      ),
+      context: 'webNetworkStub.post',
+      timeout: timeout ?? _timeout,
+    );
   }
 
   static String getUserAgent() {
@@ -98,8 +110,12 @@ class WebNetworkService {
 
   static Future<bool> testServerAccessibility(String url) async {
     try {
-      final response = await http.get(Uri.parse(url)).timeout(_timeout);
-      return response.statusCode == 200;
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(Uri.parse(url), skipAuth: true),
+        context: 'webNetworkStub.testServerAccessibility',
+        timeout: _timeout,
+      );
+      return response != null && ApiService.isSuccessResponse(response);
     } catch (e) {
       return false;
     }

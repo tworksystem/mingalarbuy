@@ -1,7 +1,9 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../api_service.dart';
 import '../models/point_transaction.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
@@ -73,26 +75,29 @@ class PointService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/points/balance/$userId',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getPointBalance',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final raw = json.decode(response!.body);
-        // Handle wrapped response: { "data": { "current_balance": 18200 } } or direct { "current_balance": 18200 }
-        Map<String, dynamic> data;
-        if (raw is Map && raw.containsKey('data') && raw['data'] is Map) {
-          data = Map<String, dynamic>.from(raw['data'] as Map);
-        } else if (raw is Map) {
-          data = Map<String, dynamic>.from(raw);
-        } else {
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? raw = ApiService.responseAsJsonMap(response);
+        if (raw == null) {
           return null;
+        }
+        // Handle wrapped response: { "data": { "current_balance": 18200 } } or direct
+        final Map<String, dynamic> data;
+        if (raw.containsKey('data') && raw['data'] is Map) {
+          data = Map<String, dynamic>.from(raw['data'] as Map);
+        } else {
+          data = raw;
         }
 
         final balance = PointBalance(
@@ -152,18 +157,23 @@ class PointService {
               '${AppConfig.backendUrl}/wp-json/twork/v1/points/transactions/$userId')
           .replace(queryParameters: queryParams);
 
-      final firstResponse = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? firstResponse = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getAllPointTransactions',
       );
 
-      if (NetworkUtils.isValidResponse(firstResponse)) {
-        final firstData = json.decode(firstResponse!.body);
+      Map<String, dynamic>? firstData;
+      if (NetworkUtils.isValidDioResponse(firstResponse)) {
+        firstData = ApiService.responseAsJsonMap(firstResponse);
+      }
+      if (firstData != null) {
         totalPages = firstData['total_pages'] as int? ?? 1;
         final firstTransactionsData =
             firstData['transactions'] as List<dynamic>? ?? [];
@@ -302,30 +312,35 @@ class PointService {
           tag: 'PointService');
       Logger.info('API URL: $uri', tag: 'PointService');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getPointTransactions',
       );
 
+      final String bodyStr = ApiService.responseBodyString(response);
       // DEBUG: Log response status and body BEFORE validation
       Logger.info(
-          'API Response Status: ${response?.statusCode}, Body length: ${response?.body.length ?? 0}',
+          'API Response Status: ${response?.statusCode}, Body length: ${bodyStr.length}',
           tag: 'PointService');
 
-      if (response != null && response.body.isNotEmpty) {
+      if (response != null && bodyStr.isNotEmpty) {
         Logger.info(
-            'Raw API response (first 500 chars): ${response.body.substring(0, response.body.length > 500 ? 500 : response.body.length)}',
+            'Raw API response (first 500 chars): ${bodyStr.substring(0, bodyStr.length > 500 ? 500 : bodyStr.length)}',
             tag: 'PointService');
       }
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = json.decode(response!.body);
+          final dynamic data = response!.data is Map || response.data is List
+              ? response.data
+              : json.decode(bodyStr);
 
           // DEBUG: Log parsed data structure
           Logger.info('Parsed data type: ${data.runtimeType}',
@@ -442,7 +457,9 @@ class PointService {
               tag: 'PointService',
               error: parseError,
               stackTrace: parseStackTrace);
-          Logger.error('Response body: ${response?.body}', tag: 'PointService');
+          Logger.error(
+              'Response body: ${ApiService.responseBodyString(response)}',
+              tag: 'PointService');
           // Fall through to return cached transactions
         }
       }
@@ -466,8 +483,9 @@ class PointService {
 
       String backendMessage = '';
       try {
-        if (response != null && response.body.isNotEmpty) {
-          final decoded = json.decode(response.body);
+        final String errBody = ApiService.responseBodyString(response);
+        if (errBody.isNotEmpty) {
+          final decoded = json.decode(errBody);
           if (decoded is Map) {
             backendMessage = (decoded['message']?.toString() ??
                     decoded['error']?.toString() ??
@@ -716,28 +734,31 @@ class PointService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-request',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final body = json.encode({
+      final Map<String, dynamic> bodyMap = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
         'type': 'points',
         'points_value': points.toString(),
         'phone': phone,
         if (note != null && note.isNotEmpty) 'note': note,
-      });
+      };
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: body,
+          data: bodyMap,
         ),
         context: 'createClaimRequest',
       );
 
+      final String respStr = ApiService.responseBodyString(response);
       // Log response for debugging
       Logger.info(
-        'Exchange request response - Status: ${response?.statusCode}, Body: ${response?.body}',
+        'Exchange request response - Status: ${response?.statusCode}, Body: $respStr',
         tag: 'PointService',
       );
 
@@ -750,21 +771,16 @@ class PointService {
       }
 
       // CRITICAL: Always parse the response body first to check for success flag
-      // Don't rely on status code alone - the body is the source of truth
-      // Some APIs return 200 with success:false, or 400 with success:true
       Map<String, dynamic> data;
       try {
-        // Check if response body is empty
-        if (response.body.isEmpty) {
-          // If body is empty, check status code as fallback
-          if (!NetworkUtils.isValidResponse(response)) {
+        if (respStr.isEmpty) {
+          if (!NetworkUtils.isValidDioResponse(response)) {
             Logger.error(
               'Exchange request failed: Empty response body and invalid status code ${response.statusCode}',
               tag: 'PointService',
             );
             return false;
           }
-          // Empty body but valid status code - treat as success
           Logger.warning(
             'Exchange request: Empty response body but status code ${response.statusCode} is valid. Treating as success.',
             tag: 'PointService',
@@ -772,21 +788,24 @@ class PointService {
           return true;
         }
 
-        // Try to decode JSON - handle any parsing errors gracefully
-        final decoded = json.decode(response.body);
+        final Map<String, dynamic>? asMap = ApiService.responseAsJsonMap(response);
+        final Object? decodedRaw = asMap ?? json.decode(respStr);
+        final Map<String, dynamic>? decoded = decodedRaw is Map<String, dynamic>
+            ? decodedRaw
+            : decodedRaw is Map
+                ? Map<String, dynamic>.from(decodedRaw)
+                : null;
 
-        // Ensure it's a Map
-        if (decoded is! Map<String, dynamic>) {
+        if (decoded == null) {
           Logger.error(
-            'Exchange request response is not a JSON object. Type: ${decoded.runtimeType}',
+            'Exchange request response is not a JSON object. Type: ${decodedRaw.runtimeType}',
             tag: 'PointService',
           );
           Logger.error(
-            'Response body: ${response.body}',
+            'Response body: $respStr',
             tag: 'PointService',
           );
-          // If not a map but status code is valid, treat as success
-          if (NetworkUtils.isValidResponse(response)) {
+          if (NetworkUtils.isValidDioResponse(response)) {
             Logger.warning(
               'Exchange request: Invalid JSON but status code ${response.statusCode} is valid. Treating as success.',
               tag: 'PointService',
@@ -798,20 +817,17 @@ class PointService {
 
         data = decoded;
 
-        // Log parsed data for debugging
         Logger.info(
           'Exchange request parsed response: $data',
           tag: 'PointService',
         );
       } catch (e, stackTrace) {
-        // JSON parsing failed - check status code as fallback
         Logger.warning(
           'Failed to parse exchange request response: $e',
           tag: 'PointService',
         );
 
-        // If status code is valid, treat as success despite parsing error
-        if (NetworkUtils.isValidResponse(response)) {
+        if (NetworkUtils.isValidDioResponse(response)) {
           Logger.warning(
             'Exchange request: JSON parse error but status code ${response.statusCode} is valid. Treating as success.',
             tag: 'PointService',
@@ -819,7 +835,6 @@ class PointService {
           return true;
         }
 
-        // Both parsing and status code indicate failure
         Logger.error(
           'Exchange request failed: JSON parse error and invalid status code ${response.statusCode}',
           tag: 'PointService',
@@ -827,7 +842,7 @@ class PointService {
           stackTrace: stackTrace,
         );
         Logger.error(
-          'Response body (raw): ${response.body}',
+          'Response body (raw): $respStr',
           tag: 'PointService',
         );
         return false;
@@ -921,7 +936,7 @@ class PointService {
     await _enqueuePointAdjustment(userId, transaction);
   }
 
-  /// Calculate points earned from order total (with tier multiplier)
+  /// Calculate points earned from order total ([multiplier] for promotions/campaigns).
   static int calculatePointsFromOrder(double orderTotal,
       {double multiplier = 1.0}) {
     return ((orderTotal * pointsPerDollar) * multiplier).round();
@@ -1300,22 +1315,28 @@ class PointService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/points/sync',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: json.encode({
+          data: <String, dynamic>{
             'user_id': userId,
-            'transactions': transactionsToSync.map((t) => t.toJson()).toList(),
-          }),
+            'transactions':
+                transactionsToSync.map((t) => t.toJson()).toList(),
+          },
         ),
         context: 'syncAllTransactions',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          return false;
+        }
         Logger.info(
             'Synced ${data['synced']} transactions to backend (${transactionsToSync.length} attempted)',
             tag: 'PointService');
@@ -1391,13 +1412,15 @@ class PointService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/points/${transaction.type == PointTransactionType.redeem ? "redeem" : "earn"}';
     final uri = Uri.parse(endpoint)
         .replace(queryParameters: _getWooCommerceAuthQueryParams());
-    final response = await NetworkUtils.executeRequest(
-      () => http.post(
-        uri,
-        headers: const {
+    final Response<dynamic>? response = await ApiService.executeWithRetry(
+      () => ApiService.post(
+        uri.path,
+        queryParameters: uri.queryParameters,
+        skipAuth: false,
+        headers: const <String, dynamic>{
           'Content-Type': 'application/json',
         },
-        body: json.encode({
+        data: <String, dynamic>{
           'user_id': userId,
           'points': transaction.points,
           'type': transaction.type.toValue(),
@@ -1406,17 +1429,18 @@ class PointService {
           if (transaction.expiresAt != null)
             'expires_at': transaction.expiresAt!.toIso8601String(),
           'status': transaction.status.toValue(),
-        }),
+        },
       ),
       context: context,
     );
 
-    if (!NetworkUtils.isValidResponse(response)) {
+    if (!NetworkUtils.isValidDioResponse(response)) {
       String msg =
           'Invalid response while syncing points (status: ${response?.statusCode ?? 'null'})';
-      if (response != null && response.body.isNotEmpty) {
+      final String b = ApiService.responseBodyString(response);
+      if (b.isNotEmpty) {
         try {
-          final body = json.decode(response.body);
+          final Object? body = json.decode(b);
           if (body is Map && body['message'] != null) {
             msg = body['message'].toString();
           }
@@ -1424,10 +1448,9 @@ class PointService {
       }
       throw Exception(msg);
     }
-    // CRITICAL: Parse body — backend returns success: false when insert failed.
     try {
-      final body = json.decode(response!.body);
-      if (body is Map && body['success'] == false) {
+      final Map<String, dynamic>? body = ApiService.responseAsJsonMap(response);
+      if (body != null && body['success'] == false) {
         final msg = body['message']?.toString() ?? 'Duplicate or failed';
         throw Exception('Backend did not credit points: $msg');
       }

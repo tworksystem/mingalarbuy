@@ -1,13 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
+import 'package:ecommerce_int2/services/engagement_service.dart';
 import 'package:ecommerce_int2/services/point_notification_manager.dart';
-import 'package:ecommerce_int2/utils/app_config.dart';
 
 /// Surfaces poll winner credit as an **in-app notification** (not a blocking modal)
 /// for **feed-based** polls (Engagement Carousel).
@@ -31,10 +29,6 @@ class PollWinnerPopupService {
     if (!context.mounted) return;
 
     try {
-      final base = AppConfig.backendUrl.replaceAll(RegExp(r'/$'), '');
-      final ck = AppConfig.consumerKey;
-      final cs = AppConfig.consumerSecret;
-
       Map<String, dynamic>? data;
       String sessionId = '';
       String state = '';
@@ -46,26 +40,14 @@ class PollWinnerPopupService {
         }
         if (!context.mounted) return;
 
-        final stateUri =
-            Uri.parse('$base/wp-json/twork/v1/poll/state/$pollId').replace(
-          queryParameters: {
-            'consumer_key': ck,
-            'consumer_secret': cs,
-          },
-        );
-
-        final stateResp = await http.get(
-          stateUri,
-          headers: const {'Content-Type': 'application/json'},
-        );
-        if (stateResp.statusCode != 200) {
+        final Map<String, dynamic>? stateJson =
+            await EngagementService.fetchPollState(pollId: pollId);
+        if (stateJson == null) {
           debugPrint(
-            '[PollWinnerPopup] poll/state HTTP ${stateResp.statusCode} pollId=$pollId',
+            '[PollWinnerPopup] poll/state failed pollId=$pollId err=${EngagementService.lastError}',
           );
           return;
         }
-
-        final stateJson = jsonDecode(stateResp.body) as Map<String, dynamic>;
         if (stateJson['success'] != true) return;
 
         data = stateJson['data'] as Map<String, dynamic>?;
@@ -112,28 +94,18 @@ class PollWinnerPopupService {
       final dedupeKey = '${pollId}_$dedupeSessionKey';
       if (_shownKeys.contains(dedupeKey)) return;
 
-      final resultsUri =
-          Uri.parse('$base/wp-json/twork/v1/poll/results/$pollId/$sessionId')
-              .replace(
-        queryParameters: {
-          'consumer_key': ck,
-          'consumer_secret': cs,
-          'user_id': userId.toString(),
-        },
+      final Map<String, dynamic>? resJson =
+          await EngagementService.fetchPollResults(
+        pollId: pollId,
+        sessionId: sessionId,
+        userId: userId,
       );
-
-      final resResp = await http.get(
-        resultsUri,
-        headers: const {'Content-Type': 'application/json'},
-      );
-      if (resResp.statusCode != 200) {
+      if (resJson == null) {
         debugPrint(
-          '[PollWinnerPopup] poll/results HTTP ${resResp.statusCode} pollId=$pollId session=$sessionId',
+          '[PollWinnerPopup] poll/results failed pollId=$pollId session=$sessionId err=${EngagementService.lastError}',
         );
         return;
       }
-
-      final resJson = jsonDecode(resResp.body) as Map<String, dynamic>;
       if (resJson['success'] != true) return;
 
       final rd = resJson['data'] as Map<String, dynamic>?;

@@ -1,9 +1,10 @@
-import 'dart:convert';
 import 'dart:io';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import '../utils/network_utils.dart';
@@ -100,30 +101,39 @@ class UsageTrackingService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/usage/start',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final body = json.encode({
+      final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
         'device_info': deviceInfo,
         'app_version': appVersion,
-      });
+      };
 
       Logger.info(
         'Starting usage session for user: $userId',
         tag: 'UsageTrackingService',
       );
       
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: body,
+          data: body,
         ),
         context: 'startUsageSession',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          Logger.warning(
+            'Failed to start usage session: invalid JSON',
+            tag: 'UsageTrackingService',
+          );
+          return false;
+        }
         
         if (data['success'] == true && data['data'] != null) {
           final sessionId = data['data']['session_id'] as int;
@@ -142,13 +152,13 @@ class UsageTrackingService {
           return true;
         } else {
           Logger.warning(
-            'API returned success=false. Response: ${response?.body ?? 'null'}',
+            'API returned success=false. Response: ${ApiService.responseBodyString(response)}',
             tag: 'UsageTrackingService',
           );
         }
       } else {
         Logger.warning(
-          'Failed to start usage session. Status: ${response?.statusCode}, Body: ${response?.body}',
+          'Failed to start usage session. Status: ${response?.statusCode}, Body: ${ApiService.responseBodyString(response)}',
           tag: 'UsageTrackingService',
         );
       }
@@ -194,24 +204,36 @@ class UsageTrackingService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/usage/end',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final body = json.encode({
+      final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
         'session_id': sessionIdToEnd,
-      });
+      };
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: body,
+          data: body,
         ),
         context: 'endUsageSession',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          Logger.warning(
+            'Failed to end usage session: invalid JSON',
+            tag: 'UsageTrackingService',
+          );
+          _currentSessionId = null;
+          await prefs.remove(_sessionIdKey);
+          await prefs.remove(_sessionStartKey);
+          return false;
+        }
         
         if (data['success'] == true && data['data'] != null) {
           final duration = data['data']['duration_seconds'] as int? ?? 0;
@@ -230,13 +252,13 @@ class UsageTrackingService {
           return true;
         } else {
           Logger.warning(
-            'API returned success=false. Response: ${response?.body ?? 'null'}',
+            'API returned success=false. Response: ${ApiService.responseBodyString(response)}',
             tag: 'UsageTrackingService',
           );
         }
       } else {
         Logger.warning(
-          'Failed to end usage session. Status: ${response?.statusCode}, Body: ${response?.body}',
+          'Failed to end usage session. Status: ${response?.statusCode}, Body: ${ApiService.responseBodyString(response)}',
           tag: 'UsageTrackingService',
         );
       }
@@ -272,18 +294,23 @@ class UsageTrackingService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/usage/stats/$userId',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
         ),
         context: 'getUsageStats',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
-        final data = json.decode(response!.body);
+      if (NetworkUtils.isValidDioResponse(response)) {
+        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+        if (data == null) {
+          return null;
+        }
         
         if (data['success'] == true && data['data'] != null) {
           return data['data'] as Map<String, dynamic>;

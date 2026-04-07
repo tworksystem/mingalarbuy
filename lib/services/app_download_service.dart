@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+
+import '../api_service.dart';
 import '../utils/logger.dart';
 import 'connectivity_service.dart';
 
@@ -15,8 +17,18 @@ class AppDownloadService {
   factory AppDownloadService() => _instance;
   AppDownloadService._internal();
 
-  final Dio _dio = Dio();
   bool _isDownloading = false;
+
+  static Options _externalOptions(Options? merge) {
+    const Map<String, Object?> skip = <String, Object?>{'skipAuth': true};
+    if (merge == null) {
+      return Options(extra: skip);
+    }
+    final Map<String, Object?> ex = Map<String, Object?>.from(
+      merge.extra ?? const <String, Object?>{},
+    )..addAll(skip);
+    return merge.copyWith(extra: ex);
+  }
 
   /// Check if currently downloading
   bool get isDownloading => _isDownloading;
@@ -91,14 +103,16 @@ class AppDownloadService {
       Logger.info('Downloading to: $filePath', tag: 'AppDownloadService');
 
       // Step 6: Download file with progress tracking
-      await _dio.download(
+      await ApiService.dio.download(
         processedUrl,
         filePath,
-        options: Options(
-          receiveTimeout: const Duration(minutes: 10),
-          sendTimeout: const Duration(minutes: 10),
-          followRedirects: true,
-          maxRedirects: 10,
+        options: _externalOptions(
+          Options(
+            receiveTimeout: const Duration(minutes: 10),
+            sendTimeout: const Duration(minutes: 10),
+            followRedirects: true,
+            maxRedirects: 10,
+          ),
         ),
         onReceiveProgress: (received, total) {
           if (total > 0) {
@@ -247,13 +261,15 @@ class AppDownloadService {
                 'https://drive.google.com/uc?export=download&id=$fileId';
 
             // Step 2: Make a GET request to check if we get the actual file or warning page
-            final testResponse = await _dio.get(
+            final testResponse = await ApiService.dio.get<dynamic>(
               directUrl,
-              options: Options(
-                followRedirects: false, // Don't follow redirects yet
-                validateStatus: (status) => status! < 500,
-                responseType:
-                    ResponseType.plain, // Get as text to check content
+              options: _externalOptions(
+                Options(
+                  followRedirects: false, // Don't follow redirects yet
+                  validateStatus: (status) => status! < 500,
+                  responseType:
+                      ResponseType.plain, // Get as text to check content
+                ),
               ),
             );
 
@@ -336,12 +352,14 @@ class AppDownloadService {
 
           for (final format in fallbackFormats) {
             try {
-              final response = await _dio.head(
+              final response = await ApiService.dio.head(
                 format,
-                options: Options(
-                  followRedirects: true,
-                  maxRedirects: 5,
-                  validateStatus: (status) => status! < 500,
+                options: _externalOptions(
+                  Options(
+                    followRedirects: true,
+                    maxRedirects: 5,
+                    validateStatus: (status) => status! < 500,
+                  ),
                 ),
               );
 
@@ -377,12 +395,14 @@ class AppDownloadService {
 
       // Verify URL is accessible
       try {
-        final response = await _dio.head(
+        final response = await ApiService.dio.head(
           processedUrl,
-          options: Options(
-            followRedirects: true,
-            maxRedirects: 5,
-            validateStatus: (status) => status! < 500,
+          options: _externalOptions(
+            Options(
+              followRedirects: true,
+              maxRedirects: 5,
+              validateStatus: (status) => status! < 500,
+            ),
           ),
         );
 

@@ -1,6 +1,9 @@
 import 'dart:html' as html;
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+
+import '../api_service.dart';
 
 /// Web-specific network service to handle CORS and connectivity issues
 class WebNetworkService {
@@ -12,15 +15,20 @@ class WebNetworkService {
 
     try {
       // Test with a reliable endpoint that supports CORS
-      final response = await http.get(
-        Uri.parse('https://httpbin.org/get'),
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
-        },
-      ).timeout(_timeout);
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse('https://httpbin.org/get'),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'Accept': 'application/json',
+            'User-Agent': 'HomeAid-Flutter-App/1.0',
+          },
+        ),
+        context: 'webNetwork.browserConnectivity',
+      );
 
-      final isConnected = response.statusCode == 200;
+      final isConnected =
+          response != null && ApiService.isSuccessResponse(response);
       print(
           '🌐 Browser connectivity test: ${isConnected ? "✅ Connected" : "❌ Failed"}');
       return isConnected;
@@ -36,19 +44,24 @@ class WebNetworkService {
 
     try {
       // Use a CORS proxy or direct test
-      final response = await http.get(
-        Uri.parse('https://www.homeaid.com.mm'),
-        headers: {
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Accept-Encoding': 'gzip, deflate',
-          'Connection': 'keep-alive',
-        },
-      ).timeout(_timeout);
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse('https://www.homeaid.com.mm'),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+          },
+        ),
+        context: 'webNetwork.wooWebAccess',
+      );
 
-      final isAccessible = response.statusCode == 200;
+      final isAccessible =
+          response != null && ApiService.isSuccessResponse(response);
       print(
           '🌐 WooCommerce web access: ${isAccessible ? "✅ Accessible" : "❌ Failed"}');
       return isAccessible;
@@ -65,23 +78,28 @@ class WebNetworkService {
     try {
       print('🖼️ Testing image URL from web: $imageUrl');
 
-      final response = await http.head(
-        Uri.parse(imageUrl),
-        headers: {
-          'Accept': 'image/*',
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
-          'Accept-Encoding': 'gzip, deflate',
-          'Connection': 'keep-alive',
-          'Cache-Control': 'no-cache',
-        },
-      ).timeout(_timeout);
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.headUri(
+          Uri.parse(imageUrl),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'Accept': 'image/*',
+            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+          },
+        ),
+        context: 'webNetwork.testImageUrl',
+      );
 
-      final isAccessible = response.statusCode == 200;
+      final isAccessible =
+          response != null && ApiService.isSuccessResponse(response);
       print(
-          '🖼️ Image URL web test: ${isAccessible ? "✅ Accessible" : "❌ Failed"} (${response.statusCode})');
+          '🖼️ Image URL web test: ${isAccessible ? "✅ Accessible" : "❌ Failed"} (${response?.statusCode})');
 
       if (isAccessible) {
-        final contentType = response.headers['content-type'] ?? '';
+        final contentType = response?.headers.value('content-type') ?? '';
         print('📊 Content-Type: $contentType');
       }
 
@@ -142,16 +160,20 @@ class WebNetworkService {
 
     try {
       final testUrl = 'https://$domain/wp-json/wp/v2/';
-      final response = await http.get(
-        Uri.parse(testUrl),
-        headers: {
-          'Origin': html.window.location.origin,
-          'User-Agent': userAgent,
-        },
-      ).timeout(_timeout);
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse(testUrl),
+          skipAuth: true,
+          headers: <String, dynamic>{
+            'Origin': html.window.location.origin,
+            'User-Agent': userAgent,
+          },
+        ),
+        context: 'webNetwork.corsPolicy',
+      );
 
-      final hasCORS =
-          response.headers.containsKey('access-control-allow-origin');
+      final hasCORS = response?.headers.value('access-control-allow-origin') !=
+          null;
       print(
           '🌐 CORS policy for $domain: ${hasCORS ? "✅ Allowed" : "❌ Restricted"}');
       return hasCORS;

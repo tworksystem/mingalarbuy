@@ -1,5 +1,6 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/network_utils.dart';
@@ -49,17 +50,23 @@ class PointVerificationService {
         tag: 'PointVerification',
       );
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          uri,
-          headers: const {'Content-Type': 'application/json'},
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'verifyBalance',
       );
 
-      if (NetworkUtils.isValidResponse(response)) {
+      if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final data = jsonDecode(response!.body) as Map<String, dynamic>;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          if (data == null) {
+            _lastError = 'Invalid verification response';
+            return null;
+          }
 
           if (data['success'] == true) {
             final verification = BalanceVerification.fromJson(data);

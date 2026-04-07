@@ -1,5 +1,8 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:dio/dio.dart';
+
+import '../api_service.dart';
 import '../config/woocommerce_config.dart';
 import '../models/product.dart';
 import 'woocommerce_service.dart';
@@ -21,25 +24,36 @@ class WooCommerceServiceDebug {
 
       print('📡 API URL: $url\n');
 
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
-        },
-      ).timeout(
-        const Duration(seconds: 30),
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.getUri(
+          Uri.parse(url),
+          skipAuth: true,
+          headers: const <String, dynamic>{
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'HomeAid-Flutter-App/1.0',
+          },
+        ),
+        context: 'wooDebug.testAPI',
       );
+
+      if (response == null) {
+        print('❌ No API response');
+        return;
+      }
+
+      final String bodyStr = ApiService.responseBodyString(response);
 
       print('📊 Response Status: ${response.statusCode}');
       print('📊 Response Headers: ${response.headers}');
-      print('📊 Response Body Length: ${response.body.length}');
+      print('📊 Response Body Length: ${bodyStr.length}');
 
       if (response.statusCode == 200) {
         print('✅ API Response Success\n');
 
-        final data = json.decode(response.body);
+        final Object? data = response.data is String
+            ? json.decode(response.data as String)
+            : response.data;
         print('📦 Response Type: ${data.runtimeType}');
         print('📦 Items Count: ${data is List ? data.length : 'Not a list'}');
 
@@ -82,7 +96,7 @@ class WooCommerceServiceDebug {
         }
       } else {
         print('❌ API Response Error');
-        print('Response Body: ${response.body}');
+        print('Response Body: $bodyStr');
       }
     } catch (e) {
       print('❌ API Test Error: $e');
@@ -101,13 +115,23 @@ class WooCommerceServiceDebug {
       print('   📋 Path: ${uri.path}');
 
       // Test if URL is accessible
-      final response = await http.head(Uri.parse(imageUrl)).timeout(
-            const Duration(seconds: 10),
-          );
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.headUri(
+          Uri.parse(imageUrl),
+          skipAuth: true,
+        ),
+        context: 'wooDebug.testImageUrl',
+        timeout: const Duration(seconds: 10),
+      );
+
+      if (response == null) {
+        print('   ❌ No response');
+        return;
+      }
 
       print('   📊 Image Response Status: ${response.statusCode}');
-      print('   📊 Content Type: ${response.headers['content-type']}');
-      print('   📊 Content Length: ${response.headers['content-length']}');
+      print('   📊 Content Type: ${response.headers.value('content-type')}');
+      print('   📊 Content Length: ${response.headers.value('content-length')}');
 
       if (response.statusCode == 200) {
         print('   ✅ Image URL is accessible');

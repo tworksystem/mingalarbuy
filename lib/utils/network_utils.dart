@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+
+import '../api_service.dart';
 
 /// Professional network utilities for robust API communication
 class NetworkUtils {
@@ -10,19 +13,23 @@ class NetworkUtils {
   static const int _maxRetries = 3;
   static const Duration _retryDelay = Duration(seconds: 2);
 
-  /// Execute HTTP request with retry logic and error handling
-  static Future<http.Response?> executeRequest(
-    Future<http.Response> Function() request, {
+  /// Execute a [Dio] request (typically via [ApiService]) with retry logic.
+  ///
+  /// Retries on socket issues, timeouts, and transient [DioException]s (same
+  /// policy as [ApiService.executeWithRetry]). Non-retryable [DioException]s
+  /// are rethrown immediately.
+  static Future<Response<dynamic>?> executeRequest(
+    Future<Response<dynamic>> Function() request, {
     Duration timeout = _defaultTimeout,
     int maxRetries = _maxRetries,
     String? context,
   }) async {
     int attempts = 0;
-    Exception? lastException;
+    Object? lastError;
 
     while (attempts < maxRetries) {
       try {
-        final response = await request().timeout(timeout);
+        final Response<dynamic> response = await request().timeout(timeout);
 
         if (kDebugMode) {
           print('🌐 Network request successful (attempt ${attempts + 1})');
@@ -30,17 +37,35 @@ class NetworkUtils {
 
         return response;
       } on SocketException catch (e) {
-        lastException = e;
+        lastError = e;
         if (kDebugMode) {
           print('🔌 Socket error (attempt ${attempts + 1}): ${e.message}');
         }
+      } on TimeoutException catch (e) {
+        lastError = e;
+        if (kDebugMode) {
+          print('⏱️ Timeout (attempt ${attempts + 1}): $e');
+        }
+      } on DioException catch (e) {
+        final DioExceptionType t = e.type;
+        if (t == DioExceptionType.connectionTimeout ||
+            t == DioExceptionType.sendTimeout ||
+            t == DioExceptionType.receiveTimeout ||
+            t == DioExceptionType.connectionError) {
+          lastError = e;
+          if (kDebugMode) {
+            print('🔌 Dio connection error (attempt ${attempts + 1}): $e');
+          }
+        } else {
+          rethrow;
+        }
       } on HttpException catch (e) {
-        lastException = e;
+        lastError = e;
         if (kDebugMode) {
           print('🌐 HTTP error (attempt ${attempts + 1}): ${e.message}');
         }
       } on Exception catch (e) {
-        lastException = e;
+        lastError = e;
         if (kDebugMode) {
           print('❌ Network error (attempt ${attempts + 1}): $e');
         }
@@ -57,8 +82,11 @@ class NetworkUtils {
 
     if (kDebugMode) {
       print('💥 Network request failed after $maxRetries attempts');
-      if (lastException != null) {
-        print('📍 Last error: $lastException');
+      if (context != null) {
+        print('📍 Context: $context');
+      }
+      if (lastError != null) {
+        print('📍 Last error: $lastError');
       }
     }
 
@@ -81,6 +109,17 @@ class NetworkUtils {
       return 'No internet connection. Please check your network settings.';
     } else if (error is TimeoutException) {
       return 'Request timeout. Server may be busy. Please try again.';
+    } else if (error is DioException) {
+      final DioExceptionType t = error.type;
+      if (t == DioExceptionType.connectionTimeout ||
+          t == DioExceptionType.sendTimeout ||
+          t == DioExceptionType.receiveTimeout) {
+        return 'Request timeout. Server may be busy. Please try again.';
+      }
+      if (t == DioExceptionType.connectionError) {
+        return 'No internet connection. Please check your network settings.';
+      }
+      return error.message ?? 'Network error. Please try again.';
     } else if (error is HttpException) {
       return 'Server error. Please try again later.';
     } else if (error is FormatException) {
@@ -92,11 +131,14 @@ class NetworkUtils {
     }
   }
 
-  /// Validate HTTP response
-  static bool isValidResponse(http.Response? response) {
-    if (response == null) return false;
+  /// Validate [Dio] response (2xx). Prefer [isValidDioResponse] for new code.
+  static bool isValidResponse(Response<dynamic>? response) {
+    return isValidDioResponse(response);
+  }
 
-    return response.statusCode >= 200 && response.statusCode < 300;
+  /// Validate Dio response (central [ApiService] client).
+  static bool isValidDioResponse(Response<dynamic>? response) {
+    return ApiService.isSuccessResponse(response);
   }
 
   /// Get response status message

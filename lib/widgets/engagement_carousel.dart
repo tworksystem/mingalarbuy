@@ -3342,7 +3342,7 @@ class _PollDialogState extends State<_PollDialog> {
     return _effectiveBaseCost;
   }
 
-  /// Minimum tier total (Amount multiplier = 1).
+  /// Total PNP for current selection (per-option cost × number of options).
   int get _totalCost => _perUnitPollPnp * _selectedIndices.length;
 
   /// Balance from user custom fields (my_point / My Point Value / points_balance from /users/me).

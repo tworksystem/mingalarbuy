@@ -1,4 +1,4 @@
-import 'package:http/http.dart' as http;
+import '../api_service.dart';
 
 /// Image URL Validator
 /// Validates and fixes image URLs for WooCommerce products
@@ -67,11 +67,13 @@ class ImageUrlValidator {
   /// Test if image URL is accessible
   static Future<bool> testImageAccess(String url) async {
     try {
-      final response = await http.head(Uri.parse(url)).timeout(
-            const Duration(seconds: 10),
-          );
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.headUri(Uri.parse(url)),
+        context: 'imageUrlValidator.head',
+        timeout: const Duration(seconds: 10),
+      );
 
-      return response.statusCode == 200;
+      return response != null && ApiService.isSuccessResponse(response);
     } catch (e) {
       print('❌ Image access test failed: $e');
       return false;
