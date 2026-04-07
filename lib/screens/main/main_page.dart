@@ -69,6 +69,8 @@ class _MainPageState extends State<MainPage>
   Timer? _pointChangeCheckTimer;
   String? _lastShownTransactionId; // Track last transaction we showed modal for
   DateTime? _lastModalShownTime; // Track when we last showed a modal
+  /// After login, skip one balance baseline when [PointProvider] finishes first hydrate.
+  bool _initialPointHydrationSyncHandled = false;
 
   @override
   void initState() {
@@ -180,6 +182,7 @@ class _MainPageState extends State<MainPage>
         if (!authProvider.isAuthenticated || authProvider.user == null) {
           _lastKnownBalance = null;
           _lastKnownUserId = null;
+          _initialPointHydrationSyncHandled = false;
           return;
         }
 
@@ -188,6 +191,24 @@ class _MainPageState extends State<MainPage>
 
         // If user changed, reset tracking
         if (_lastKnownUserId != null && _lastKnownUserId != currentUserId) {
+          _lastKnownBalance = currentBalance;
+          _lastKnownUserId = currentUserId;
+          _initialPointHydrationSyncHandled = false;
+          return;
+        }
+
+        // Cold start / login: when the first server/cache sync completes, align baseline
+        // so we do not treat "0 → real balance" as points earned in this session.
+        if (pointProvider.hasCompletedSessionInitialBalanceLoad &&
+            !_initialPointHydrationSyncHandled) {
+          _initialPointHydrationSyncHandled = true;
+          _lastKnownBalance = currentBalance;
+          _lastKnownUserId = currentUserId;
+          return;
+        }
+
+        // Until first hydrate completes, only track balance — do not show "earned" modal.
+        if (!pointProvider.hasCompletedSessionInitialBalanceLoad) {
           _lastKnownBalance = currentBalance;
           _lastKnownUserId = currentUserId;
           return;

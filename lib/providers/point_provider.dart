@@ -52,6 +52,10 @@ class PointProvider with ChangeNotifier {
   /// lower API value until this time (server read replicas / meta lag).
   DateTime? _balanceNonDowngradeUntil;
 
+  /// True after the first successful balance hydrate for this session (API or cache).
+  /// Used so UI does not treat "0 → server balance" on cold start as points earned.
+  bool _sessionInitialBalanceLoadComplete = false;
+
   // Getters
   PointBalance? get balance => _balance;
   List<PointTransaction> get transactions => List.unmodifiable(_transactions);
@@ -61,6 +65,10 @@ class PointProvider with ChangeNotifier {
   bool get hasPoints => currentBalance > 0;
   String get formattedBalance => _balance?.formattedBalance ?? '0 points';
   DateTime? get lastPushBalanceSnapshotAt => _lastPushBalanceSnapshotAt;
+
+  /// Whether the first balance sync for this login session has finished (server or cache).
+  bool get hasCompletedSessionInitialBalanceLoad =>
+      _sessionInitialBalanceLoadComplete;
 
   /// Initialize point provider
   Future<void> _initialize() async {
@@ -95,6 +103,7 @@ class PointProvider with ChangeNotifier {
         _lastTransactionsHash = null;
         _lastPushBalanceSnapshotAt = null;
         _balanceNonDowngradeUntil = null;
+        _sessionInitialBalanceLoadComplete = false;
         notifyListeners(); // Notify UI immediately that data is cleared
       }
 
@@ -122,6 +131,7 @@ class PointProvider with ChangeNotifier {
       _lastTransactionsHash = null;
       _lastPushBalanceSnapshotAt = null;
       _balanceNonDowngradeUntil = null;
+      _sessionInitialBalanceLoadComplete = false;
       notifyListeners();
       Logger.info(
           'User logged out (previous user: $previousUserId), cleared point data',
@@ -139,6 +149,9 @@ class PointProvider with ChangeNotifier {
   /// If forceRefresh is true, will reload even if already loaded for this user
   /// PROFESSIONAL FIX: Validates user ID and clears old data on user change
   Future<void> loadBalance(String userId, {bool forceRefresh = false}) async {
+    // First successful hydrate for this session (startup / login sync), not an in-session earn.
+    final bool isInitialLoad = !_sessionInitialBalanceLoadComplete;
+
     // PROFESSIONAL FIX: Check if userId matches before skipping
     // If userId changed, we need to reload even if balance exists
     // CRITICAL: Always reload if userId doesn't match, even if balance exists
@@ -146,6 +159,9 @@ class PointProvider with ChangeNotifier {
       if (_currentUserId == userId && _hasLoadedForCurrentUser) {
         Logger.info('Balance already loaded for user $userId, skipping',
             tag: 'PointProvider');
+        if (isInitialLoad) {
+          _sessionInitialBalanceLoadComplete = true;
+        }
         return;
       } else if (_currentUserId != null && _currentUserId != userId) {
         // User ID mismatch - this should not happen if handleAuthStateChange is called correctly
@@ -218,6 +234,9 @@ class PointProvider with ChangeNotifier {
       await _loadCachedBalance(userId: userId);
     } finally {
       _setLoading(false);
+      if (_balance != null && isInitialLoad) {
+        _sessionInitialBalanceLoadComplete = true;
+      }
     }
   }
 
@@ -564,7 +583,7 @@ class PointProvider with ChangeNotifier {
         Logger.info('Points earned successfully: $points points',
             tag: 'PointProvider');
 
-        // Notify user about points earned
+        // Notify user about points earned (explicit API success — not cold-start hydrate).
         if (_balance != null) {
           // PROFESSIONAL FIX: Detect engagement points by checking orderId pattern
           // Engagement points have orderId starting with 'engagement:' (e.g., 'engagement:quiz:123:timestamp')
@@ -587,7 +606,7 @@ class PointProvider with ChangeNotifier {
             orderId: earnOrderId,
             userId: userId,
             additionalData: isEngagementPoints
-                ? _extractEngagementDataFromOrderId(earnOrderId!)
+                ? _extractEngagementDataFromOrderId(earnOrderId)
                 : null,
             showModalPopup: !isPollEngagement,
             showInAppNotification: true,
@@ -722,6 +741,7 @@ class PointProvider with ChangeNotifier {
       final cached = await PointService.getCachedBalance(id);
       if (cached != null) {
         _balance = cached;
+        _hasLoadedForCurrentUser = true;
         _notifyListenersDebounced();
         Logger.info(
           'Cached point balance loaded: ${_balance?.currentBalance} points',
