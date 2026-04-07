@@ -1,12 +1,15 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import '../models/auth_user.dart';
+
+import '../api_service.dart';
 import '../models/auth_response.dart';
+import '../models/auth_user.dart';
 import '../models/login_request.dart';
 import '../models/register_request.dart';
 import '../utils/app_config.dart';
 import '../utils/network_utils.dart';
+import 'auth_header_provider.dart';
 
 class AuthService {
   static const String baseUrl = AppConfig.baseUrl;
@@ -23,13 +26,17 @@ class AuthService {
   static const String _phoneKey = 'user_phone';
 
   /// Login user with email and password
-  /// Uses NetworkUtils.executeRequest for retry logic (3 attempts, 30s timeout)
+  /// Uses ApiService.executeWithRetry for retry logic (3 attempts, 30s timeout)
   static Future<AuthResponse> login(LoginRequest request) async {
     try {
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          Uri.parse('$wpBaseUrl/users/me'),
-          headers: {
+      final Uri uri = Uri.parse('$wpBaseUrl/users/me');
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          uri.path,
+          queryParameters:
+              uri.queryParameters.isEmpty ? null : uri.queryParameters,
+          skipAuth: true,
+          headers: <String, dynamic>{
             'Content-Type': 'application/json',
             'Authorization':
                 'Basic ${base64Encode(utf8.encode('${request.email}:${request.password}'))}',
@@ -46,7 +53,10 @@ class AuthService {
       }
 
       if (response.statusCode == 200) {
-        final userData = json.decode(response.body);
+        final Map<String, dynamic>? userData = ApiService.responseAsJsonMap(response);
+        if (userData == null) {
+          return AuthResponse.error(message: 'Login failed. Invalid response.');
+        }
         print(
             'DEBUG: Login - Raw API response: ${userData['first_name']} ${userData['last_name']}, Meta: ${userData['meta']}');
         final user = AuthUser.fromJson(userData);
@@ -99,25 +109,29 @@ class AuthService {
       }
 
       // Create user via WooCommerce customers endpoint
-      // Uses NetworkUtils.executeRequest for retry logic (3 attempts, 30s timeout)
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          Uri.parse('$baseUrl/customers'),
-          headers: {
+      // Uses ApiService.executeWithRetry for retry logic (3 attempts, 30s timeout)
+      final Uri regUri = Uri.parse('$baseUrl/customers');
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          regUri.path,
+          queryParameters:
+              regUri.queryParameters.isEmpty ? null : regUri.queryParameters,
+          skipAuth: true,
+          headers: <String, dynamic>{
             'Content-Type': 'application/json',
             'Authorization':
                 'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
           },
-          body: json.encode({
+          data: <String, dynamic>{
             'email': request.email,
             'first_name': request.firstName,
             'last_name': request.lastName,
             'username': request.username ?? request.email.split('@')[0],
             'password': request.password,
-            'billing': {
+            'billing': <String, dynamic>{
               'phone': request.phone,
             },
-          }),
+          },
         ),
         timeout: AppConfig.networkTimeout,
         context: 'register',
@@ -130,10 +144,13 @@ class AuthService {
       }
 
       print('Registration response status: ${response.statusCode}');
-      print('Registration response body: ${response.body}');
+      print('Registration response body: ${ApiService.responseBodyString(response)}');
 
       if (response.statusCode == 201) {
-        final userData = json.decode(response.body);
+        final Map<String, dynamic>? userData = ApiService.responseAsJsonMap(response);
+        if (userData == null) {
+          return AuthResponse.error(message: 'Registration failed. Invalid response.');
+        }
         print(
             'DEBUG: Registration - Raw API response: ${userData['first_name']} ${userData['last_name']}, Billing: ${userData['billing']}');
         final user = AuthUser.fromJson(userData);
@@ -148,7 +165,12 @@ class AuthService {
           user: user,
         );
       } else if (response.statusCode == 400) {
-        final errorData = json.decode(response.body);
+        final Map<String, dynamic>? errorData = ApiService.responseAsJsonMap(response) ??
+            (json.decode(ApiService.responseBodyString(response))
+                as Map<String, dynamic>?);
+        if (errorData == null) {
+          return AuthResponse.error(message: 'Registration failed');
+        }
         String errorMessage = 'Registration failed';
 
         if (errorData['message'] != null) {
@@ -189,19 +211,22 @@ class AuthService {
   }
 
   /// Get current user data
-  /// Uses NetworkUtils.executeRequest for retry logic (3 attempts, 30s timeout)
+  /// Uses ApiService.executeWithRetry for retry logic (3 attempts, 30s timeout)
   static Future<AuthUser?> getCurrentUser() async {
     try {
       final token = await _secureStorage.read(key: _tokenKey);
       print('DEBUG: getCurrentUser - Token exists: ${token != null}');
       if (token == null) return null;
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.get(
-          Uri.parse('$wpBaseUrl/users/me'),
-          headers: {
+      final Uri meUri = Uri.parse('$wpBaseUrl/users/me');
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          meUri.path,
+          queryParameters:
+              meUri.queryParameters.isEmpty ? null : meUri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
-            'Authorization': 'Basic $token',
           },
         ),
         timeout: AppConfig.networkTimeout,
@@ -214,7 +239,10 @@ class AuthService {
       }
 
       if (response.statusCode == 200) {
-        final userData = json.decode(response.body);
+        final Map<String, dynamic>? userData = ApiService.responseAsJsonMap(response);
+        if (userData == null) {
+          return null;
+        }
         String? debugMetaPhone;
         final metaDyn = userData['meta'];
         if (metaDyn is Map<String, dynamic>) {
@@ -317,7 +345,8 @@ class AuthService {
       } else {
         print(
             'DEBUG: getCurrentUser - API call failed with status: ${response.statusCode}');
-        print('DEBUG: getCurrentUser - Response body: ${response.body}');
+        print(
+            'DEBUG: getCurrentUser - Response body: ${ApiService.responseBodyString(response)}');
         // Don't automatically logout - let the caller decide
         return null;
       }
@@ -330,21 +359,27 @@ class AuthService {
   /// Fetch WooCommerce customer by id using consumer credentials
   static Future<Map<String, dynamic>?> _fetchWooCustomer(int customerId) async {
     final uri = Uri.parse('$baseUrl/customers/$customerId');
-    final headers = {
+    final Map<String, dynamic> headers = <String, dynamic>{
       'Content-Type': 'application/json',
       'Authorization':
           'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
     };
-    final resp = await NetworkUtils.executeRequest(
-      () => http.get(uri, headers: headers),
+    final resp = await ApiService.executeWithRetry(
+      () => ApiService.get(
+        uri.path,
+        queryParameters:
+            uri.queryParameters.isEmpty ? null : uri.queryParameters,
+        skipAuth: true,
+        headers: headers,
+      ),
       timeout: AppConfig.networkTimeout,
       context: '_fetchWooCustomer',
     );
     if (resp != null && resp.statusCode == 200) {
-      return json.decode(resp.body) as Map<String, dynamic>;
+      return ApiService.responseAsJsonMap(resp);
     }
     print(
-        'DEBUG: _fetchWooCustomer - status=${resp?.statusCode} body=${resp?.body}');
+        'DEBUG: _fetchWooCustomer - status=${resp?.statusCode} body=${ApiService.responseBodyString(resp)}');
     return null;
   }
 
@@ -353,24 +388,38 @@ class AuthService {
       String email) async {
     final uri = Uri.parse(
         '$baseUrl/customers?email=${Uri.encodeQueryComponent(email)}');
-    final headers = {
+    final Map<String, dynamic> headers = <String, dynamic>{
       'Content-Type': 'application/json',
       'Authorization':
           'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
     };
-    final resp = await NetworkUtils.executeRequest(
-      () => http.get(uri, headers: headers),
+    final resp = await ApiService.executeWithRetry(
+      () => ApiService.get(
+        uri.path,
+        queryParameters: uri.queryParameters,
+        skipAuth: true,
+        headers: headers,
+      ),
       timeout: AppConfig.networkTimeout,
       context: '_findWooCustomerByEmail',
     );
     if (resp != null && resp.statusCode == 200) {
-      final list = json.decode(resp.body);
-      if (list is List && list.isNotEmpty) {
-        return (list.first as Map).cast<String, dynamic>();
+      final Object? data = resp.data;
+      if (data is List && data.isNotEmpty) {
+        final Object? first = data.first;
+        if (first is Map) {
+          return Map<String, dynamic>.from(first);
+        }
+      }
+      if (data is String) {
+        final Object? decoded = json.decode(data);
+        if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+          return Map<String, dynamic>.from(decoded.first as Map);
+        }
       }
     }
     print(
-        'DEBUG: _findWooCustomerByEmail - status=${resp?.statusCode} body=${resp?.body}');
+        'DEBUG: _findWooCustomerByEmail - status=${resp?.statusCode} body=${ApiService.responseBodyString(resp)}');
     return null;
   }
 
@@ -412,14 +461,17 @@ class AuthService {
       };
       print('DEBUG: updateProfile - Sending update data: $updateData');
 
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          Uri.parse('$wpBaseUrl/users/me'),
-          headers: {
+      final Uri meUri = Uri.parse('$wpBaseUrl/users/me');
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          meUri.path,
+          queryParameters:
+              meUri.queryParameters.isEmpty ? null : meUri.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
-            'Authorization': 'Basic $token',
           },
-          body: json.encode(updateData),
+          data: updateData,
         ),
         timeout: AppConfig.networkTimeout,
         context: 'updateProfile',
@@ -432,10 +484,14 @@ class AuthService {
       }
 
       print('Update profile response status: ${response.statusCode}');
-      print('Update profile response body: ${response.body}');
+      print(
+          'Update profile response body: ${ApiService.responseBodyString(response)}');
 
       if (response.statusCode == 200) {
-        final userData = json.decode(response.body);
+        final Map<String, dynamic>? userData = ApiService.responseAsJsonMap(response);
+        if (userData == null) {
+          return AuthResponse.error(message: 'Invalid profile response');
+        }
         var updatedUser = AuthUser.fromJson(userData);
 
         // 2) Persist phone (and names) to WooCommerce customer as well
@@ -474,11 +530,14 @@ class AuthService {
           user: updatedUser,
         );
       } else {
-        final errorData = json.decode(response.body);
+        final Map<String, dynamic>? errorData = ApiService.responseAsJsonMap(response);
+        if (errorData == null) {
+          return AuthResponse.error(message: 'Failed to update profile');
+        }
         String errorMessage = 'Failed to update profile';
 
         if (errorData['message'] != null) {
-          errorMessage = errorData['message'];
+          errorMessage = errorData['message'].toString();
         } else if (errorData['code'] != null) {
           switch (errorData['code']) {
             case 'rest_user_invalid_id':
@@ -514,7 +573,7 @@ class AuthService {
     Map<String, dynamic>? billingExtra,
   }) async {
     final uri = Uri.parse('$baseUrl/customers/$customerId');
-    final headers = {
+    final Map<String, dynamic> headers = <String, dynamic>{
       'Content-Type': 'application/json',
       'Authorization':
           'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
@@ -531,13 +590,20 @@ class AuthService {
     };
 
     print('DEBUG: _updateWooCustomer - PUT $uri body=$body');
-    final resp = await NetworkUtils.executeRequest(
-      () => http.put(uri, headers: headers, body: json.encode(body)),
+    final resp = await ApiService.executeWithRetry(
+      () => ApiService.put(
+        uri.path,
+        queryParameters:
+            uri.queryParameters.isEmpty ? null : uri.queryParameters,
+        skipAuth: true,
+        headers: headers,
+        data: body,
+      ),
       timeout: AppConfig.networkTimeout,
       context: '_updateWooCustomer',
     );
     print(
-        'DEBUG: _updateWooCustomer - status=${resp?.statusCode} body=${resp?.body}');
+        'DEBUG: _updateWooCustomer - status=${resp?.statusCode} body=${ApiService.responseBodyString(resp)}');
 
     if (resp == null || resp.statusCode != 200) {
       String msg;
@@ -545,8 +611,8 @@ class AuthService {
         msg = 'Request timeout - Woo update failed';
       } else {
         try {
-          final data = json.decode(resp.body);
-          msg = data['message']?.toString() ?? resp.body;
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(resp);
+          msg = data?['message']?.toString() ?? ApiService.responseBodyString(resp);
         } catch (_) {
           msg = 'Status ${resp.statusCode}';
         }
@@ -607,10 +673,14 @@ class AuthService {
       }
 
       // First verify current password by trying to authenticate
-      final verifyResponse = await NetworkUtils.executeRequest(
-        () => http.get(
-          Uri.parse('$wpBaseUrl/users/me'),
-          headers: {
+      final Uri meUri = Uri.parse('$wpBaseUrl/users/me');
+      final verifyResponse = await ApiService.executeWithRetry(
+        () => ApiService.get(
+          meUri.path,
+          queryParameters:
+              meUri.queryParameters.isEmpty ? null : meUri.queryParameters,
+          skipAuth: true,
+          headers: <String, dynamic>{
             'Content-Type': 'application/json',
             'Authorization':
                 'Basic ${base64Encode(utf8.encode('${currentUser.email}:$currentPassword'))}',
@@ -627,16 +697,20 @@ class AuthService {
       }
 
       // Update password via WordPress user endpoint
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          Uri.parse('$wpBaseUrl/users/me'),
-          headers: {
+      final Uri meUriPost = Uri.parse('$wpBaseUrl/users/me');
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          meUriPost.path,
+          queryParameters: meUriPost.queryParameters.isEmpty
+              ? null
+              : meUriPost.queryParameters,
+          skipAuth: false,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
-            'Authorization': 'Basic $token',
           },
-          body: json.encode({
+          data: <String, dynamic>{
             'password': newPassword,
-          }),
+          },
         ),
         timeout: AppConfig.networkTimeout,
         context: 'changePassword',
@@ -649,7 +723,8 @@ class AuthService {
       }
 
       print('Change password response status: ${response.statusCode}');
-      print('Change password response body: ${response.body}');
+      print(
+          'Change password response body: ${ApiService.responseBodyString(response)}');
 
       if (response.statusCode == 200) {
         // Update stored token with new password
@@ -661,11 +736,14 @@ class AuthService {
           message: 'Password changed successfully',
         );
       } else {
-        final errorData = json.decode(response.body);
+        final Map<String, dynamic>? errorData = ApiService.responseAsJsonMap(response);
+        if (errorData == null) {
+          return AuthResponse.error(message: 'Failed to change password');
+        }
         String errorMessage = 'Failed to change password';
 
         if (errorData['message'] != null) {
-          errorMessage = errorData['message'];
+          errorMessage = errorData['message'].toString();
         } else if (errorData['code'] != null) {
           switch (errorData['code']) {
             case 'rest_user_invalid_password':
@@ -711,6 +789,11 @@ class AuthService {
   /// Get stored authentication token
   static Future<String?> getStoredToken() async {
     return await _secureStorage.read(key: _tokenKey);
+  }
+
+  /// Headers for REST calls: [Authorization] when a token exists.
+  static Future<Map<String, String>> getAuthorizationHeaders() async {
+    return AuthHeaderProvider.buildHeaders();
   }
 
   /// Get stored user data
@@ -832,15 +915,19 @@ class AuthService {
   /// Forgot password
   static Future<AuthResponse> forgotPassword(String email) async {
     try {
-      final response = await NetworkUtils.executeRequest(
-        () => http.post(
-          Uri.parse('$wpBaseUrl/users/lost-password'),
-          headers: {
+      final Uri lostUri = Uri.parse('$wpBaseUrl/users/lost-password');
+      final response = await ApiService.executeWithRetry(
+        () => ApiService.post(
+          lostUri.path,
+          queryParameters:
+              lostUri.queryParameters.isEmpty ? null : lostUri.queryParameters,
+          skipAuth: true,
+          headers: const <String, dynamic>{
             'Content-Type': 'application/json',
           },
-          body: json.encode({
+          data: <String, dynamic>{
             'user_login': email,
-          }),
+          },
         ),
         timeout: AppConfig.networkTimeout,
         context: 'forgotPassword',
