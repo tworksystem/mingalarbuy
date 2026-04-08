@@ -431,6 +431,21 @@ class TWork_Poll_Auto_Run {
             }
         }
 
+        // PROFESSIONAL FIX: Eliminate Race Conditions & Ghost Balances
+        // 1. Force the core system to award points BEFORE we calculate the response.
+        if ($winning_index >= 0 && class_exists('TWork_Rewards_System')) {
+            // Idempotent check inside ensures this only pays out once
+            TWork_Rewards_System::get_instance()->award_poll_winner_points($poll_id);
+            
+            // Re-fetch interactions to get the EXACT 'points_awarded' from the database
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM $table_interactions WHERE item_id = %d AND session_id = %s",
+                $poll_id,
+                $session_id
+            ), ARRAY_A);
+            if (!is_array($rows)) $rows = array();
+        }
+
         $winning_option = null;
         if ($winning_index >= 0 && isset($raw_options[$winning_index])) {
             $opt = self::normalize_option($raw_options[$winning_index]);
@@ -441,196 +456,35 @@ class TWork_Poll_Auto_Run {
             );
         }
 
-        // User Amount mode: reward = (user's bet on winning option, in PNP) × multiplier
-        //   e.g. User bet 4,000 PNP on Option B, multiplier 4 → 4,000 × 4 = 16,000 PNP
-        //   user_bet_amount = units (e.g. 4); user_bet_pnp = bet_amount_step × user_bet_amount = 4,000
-        // Base Cost mode: fixed reward = poll_base_cost × reward_multiplier
-        $effective_base = class_exists('TWork_Poll_PNP') ? TWork_Poll_PNP::get_effective_reward_base($quiz_data) : 0;
-        $reward_multiplier = isset($quiz_data['reward_multiplier']) ? max(0, (float) $quiz_data['reward_multiplier']) : 4;
-        $bet_amount_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
-        $allow_amt_res = $quiz_data['allow_user_amount'] ?? null;
-        $allow_user_amount = $allow_amt_res === null || $allow_amt_res === true
-            || $allow_amt_res === 1 || $allow_amt_res === '1';
-        $reward_amount = ($effective_base > 0 && $reward_multiplier > 0) ? (int) round($effective_base * $reward_multiplier) : 0;
-        $item_title = isset($item['title']) && (string) $item['title'] !== ''
-            ? (string) $item['title']
-            : ('Poll #' . $poll_id);
-
         $user_won = false;
         $points_earned = 0;
         $current_balance = 0;
 
-        if ($is_auto_run && $reward_amount > 0 && $winning_index >= 0 && class_exists('TWork_Rewards_System')) {
-            $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
-            $already_distributed = $wpdb->get_var($wpdb->prepare(
-                "SELECT rewards_distributed FROM $table_rewards WHERE poll_id = %d AND session_id = %s",
-                $poll_id,
-                $session_id
-            ));
-            if ($already_distributed === null || (int) $already_distributed !== 1) {
-                    $rewards = TWork_Rewards_System::get_instance();
-                foreach ($rows as $row) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    $value = trim((string) ($row['interaction_value'] ?? ''));
-                    if ($value === '') {
-                        continue;
-                    }
-                    $voted_winning = false;
-                    foreach (array_map('trim', explode(',', $value)) as $part) {
-                        if ($part !== '' && is_numeric($part) && (int) $part === $winning_index) {
-                            $voted_winning = true;
-                            break;
+        if ($requesting_user_id > 0 && $winning_index >= 0) {
+            foreach ($rows as $row) {
+                if (!is_array($row)) continue;
+                if ((int) ($row['user_id'] ?? 0) !== $requesting_user_id) continue;
+                
+                $value = trim((string) ($row['interaction_value'] ?? ''));
+                if ($value === '') continue;
+                
+                foreach (array_map('trim', explode(',', $value)) as $part) {
+                    if ($part !== '' && is_numeric($part) && (int) $part === $winning_index) {
+                        $user_won = true;
+                        
+                        // Fetch EXACT points awarded from DB (No manual recalculation)
+                        $points_earned = isset($row['points_awarded']) ? (int) $row['points_awarded'] : 0;
+                            
+                        // Fetch TRUE real-time balance
+                        if (class_exists('TWork_Points_System')) {
+                            $pts = TWork_Points_System::get_instance();
+                            $current_balance = method_exists($pts, 'get_user_point_balance') ? (int) $pts->get_user_point_balance($requesting_user_id) : 0;
+                        } else if (class_exists('TWork_Poll_PNP')) {
+                            $current_balance = (int) TWork_Poll_PNP::get_user_pnp($requesting_user_id);
+                        } else {
+                            $current_balance = (int) get_user_meta($requesting_user_id, 'points_balance', true);
                         }
-                    }
-                    if ($voted_winning) {
-                        $uid = (int) ($row['user_id'] ?? 0);
-                        if ($uid > 0) {
-                            // User Amount: reward = (PNP user bet on winning option) × multiplier
-                            // user_bet_amount = units; user_bet_pnp = bet_amount_step × user_bet_amount
-                            $user_bet_amount = self::resolve_bet_amount_for_winner($row, $winning_index);
-                            $user_bet_pnp = $bet_amount_step * $user_bet_amount;
-                            $user_reward = $allow_user_amount
-                                ? (int) round($user_bet_pnp * $reward_multiplier)
-                                : $reward_amount;
-
-                            $order_id = 'engagement:poll:' . $poll_id . ':session:' . $session_id . ':' . $uid;
-                            $description = sprintf('Poll winner: %s (+%d PNP)', $item_title, $user_reward);
-                            $new_bal = $rewards->award_engagement_points_to_user(
-                                $uid,
-                                $user_reward,
-                                $order_id,
-                                $description,
-                                'poll',
-                                $item_title
-                            );
-                            if ($uid === $requesting_user_id) {
-                                $user_won = true;
-                                $points_earned = $user_reward;
-                                $current_balance = $new_bal;
-                            }
-                        }
-                    }
-                }
-                $wpdb->replace(
-                    $table_rewards,
-                    array(
-                        'poll_id' => $poll_id,
-                        'session_id' => $session_id,
-                        'rewards_distributed' => 1,
-                        'distributed_at' => current_time('mysql'),
-                    ),
-                    array('%d', '%s', '%d', '%s')
-                );
-            } elseif ($requesting_user_id > 0) {
-                // Award already done (by main plugin); still return user_won for client popup + sync
-                foreach ($rows as $row) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    if ((int) ($row['user_id'] ?? 0) !== $requesting_user_id) {
-                        continue;
-                    }
-                    $value = trim((string) ($row['interaction_value'] ?? ''));
-                    if ($value === '') continue;
-                        foreach (array_map('trim', explode(',', $value)) as $part) {
-                        if ($part !== '' && is_numeric($part) && (int) $part === $winning_index) {
-                            $user_won = true;
-                            $user_bet_amount = self::resolve_bet_amount_for_winner($row, $winning_index);
-                            $user_bet_pnp = $bet_amount_step * $user_bet_amount;
-                            $points_earned = $allow_user_amount
-                                ? (int) round($user_bet_pnp * $reward_multiplier)
-                                : $reward_amount;
-                            $current_balance = class_exists('TWork_Poll_PNP') ? (int) TWork_Poll_PNP::get_user_pnp($requesting_user_id) : 0;
-                            break 2;
-                        }
-                    }
-                }
-            }
-        } elseif (!$is_auto_run && $reward_amount > 0) {
-            $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
-            $already_distributed = $wpdb->get_var($wpdb->prepare(
-                "SELECT rewards_distributed FROM $table_rewards WHERE poll_id = %d AND session_id = %s",
-                $poll_id,
-                $session_id
-            ));
-            $use_rewards_system = class_exists('TWork_Rewards_System');
-            $use_pnp_fallback = class_exists('TWork_Poll_PNP');
-
-            if (($use_rewards_system || $use_pnp_fallback) &&
-                ($already_distributed === null || (int) $already_distributed !== 1)) {
-                foreach ($rows as $row) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    $value = trim((string) ($row['interaction_value'] ?? ''));
-                    if ($value === '') continue;
-                    $voted_winning = false;
-                    foreach (array_map('trim', explode(',', $value)) as $part) {
-                        if ($part !== '' && is_numeric($part) && (int) $part === $winning_index) {
-                            $voted_winning = true;
-                            break;
-                        }
-                    }
-                    if ($voted_winning) {
-                        $uid = (int) ($row['user_id'] ?? 0);
-                        if ($uid > 0) {
-                            $user_bet_amount = self::resolve_bet_amount_for_winner($row, $winning_index);
-                            $user_bet_pnp = $bet_amount_step * $user_bet_amount;
-                            $user_reward = $allow_user_amount
-                                ? (int) round($user_bet_pnp * $reward_multiplier)
-                                : $reward_amount;
-
-                            if ($use_rewards_system) {
-                                $rewards = TWork_Rewards_System::get_instance();
-                                $order_id = 'engagement:poll:' . $poll_id . ':session:' . $session_id . ':' . $uid;
-                                $description = sprintf('Poll winner: %s (+%d PNP)', $item_title, $user_reward);
-                                $rewards->award_engagement_points_to_user(
-                                    $uid,
-                                    $user_reward,
-                                    $order_id,
-                                    $description,
-                                    'poll',
-                                    $item_title
-                                );
-                            } else {
-                                TWork_Poll_PNP::update_user_pnp($uid, $user_reward);
-                            }
-                        }
-                    }
-                }
-                $wpdb->replace($table_rewards, array(
-                    'poll_id' => $poll_id, 'session_id' => $session_id,
-                    'rewards_distributed' => 1, 'distributed_at' => current_time('mysql'),
-                ), array('%d', '%s', '%d', '%s'));
-            }
-            // Manual/schedule: award path never set user_won for JSON — client needs it for winner popup.
-            if ( $requesting_user_id > 0 && $reward_amount > 0 && ! $user_won ) {
-                foreach ( $rows as $row ) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    if ( (int) ( $row['user_id'] ?? 0 ) !== $requesting_user_id ) {
-                        continue;
-                    }
-                    $value = trim( (string) ( $row['interaction_value'] ?? '' ) );
-                    if ( $value === '' ) {
-                        continue;
-                    }
-                    foreach ( array_map( 'trim', explode( ',', $value ) ) as $part ) {
-                        if ( $part !== '' && is_numeric( $part ) && (int) $part === $winning_index ) {
-                            $user_won     = true;
-                            $user_bet_amount = self::resolve_bet_amount_for_winner($row, $winning_index);
-                            $user_bet_pnp = $bet_amount_step * $user_bet_amount;
-                            $points_earned = $allow_user_amount
-                                ? (int) round($user_bet_pnp * $reward_multiplier)
-                                : $reward_amount;
-                            $current_balance = class_exists( 'TWork_Poll_PNP' )
-                                ? (int) TWork_Poll_PNP::get_user_pnp( $requesting_user_id )
-                                : 0;
-                            break 2;
-                        }
+                        break 2;
                     }
                 }
             }
