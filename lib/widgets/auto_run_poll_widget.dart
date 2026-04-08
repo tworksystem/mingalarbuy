@@ -504,21 +504,21 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
       // Balance = SUM(type='earn') - SUM(type='redeem') from wp_twork_point_transactions
       // ============================================================================
       
-      // PROFESSIONAL FIX: Always ensure balance reflects the win.
-      // API current_balance can be stale. Use max(API, prev + earned) so we never
-      // show less than what user just won in popup and My PNP card.
-      final fromPointProvider = PointProvider.instance.currentBalance;
-      final fromAuth = AuthProvider().userPointsBalance;
-      final prev = fromPointProvider > fromAuth ? fromPointProvider : fromAuth;
-      final localWithEarned = prev + result.pointsEarned;
-      final effectiveBalance = (result.currentBalance > 0 &&
-              result.currentBalance >= localWithEarned)
+      // ============================================================================
+      // CRITICAL PROFESSIONAL FIX: ELIMINATE GHOST BALANCE (16200 BUG)
+      // ============================================================================
+      // The backend has been upgraded to resolve points synchronously.
+      // The API's result.currentBalance is now the 100% accurate Single Source of Truth.
+      // We MUST NOT add pointsEarned to the local cache (prev) because the local cache
+      // does not know about the bet deduction yet (it's stale). Adding to a stale cache
+      // artificially inflates the balance, causing the "Ghost Balance" flash!
+      final effectiveBalance = result.currentBalance > 0
           ? result.currentBalance
-          : localWithEarned;
+          : result.pointsEarned;
 
       debugPrint(
         '[AutoRunPoll] ✓ WINNER REWARD SYNC — Poll: ${widget.pollId}, Session: ${result.sessionId}, '
-        'Earned: +${result.pointsEarned}, Balance: $prev → $effectiveBalance (API: ${result.currentBalance})',
+        'Earned: +${result.pointsEarned}, Effective Balance: $effectiveBalance (API: ${result.currentBalance})',
       );
 
       // Winner points are already credited by /poll/results backend flow.
@@ -607,6 +607,17 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget> {
       );
 
       if (result['success'] == true) {
+        // INSTANT BALANCE DEDUCTION FIX
+        // Immediately sync the deducted balance to the UI so it updates instantly instead of waiting.
+        if (result['data'] != null && result['data']['new_balance'] != null) {
+          final newBalance = result['data']['new_balance'] as int;
+          AuthProvider().applyPointsBalanceSnapshot(newBalance);
+          PointProvider.instance.applyRemoteBalanceSnapshot(
+            userId: widget.userId.toString(),
+            currentBalance: newBalance,
+          );
+        }
+
         widget.onVoteSubmitted?.call();
         final points = result['points_earned'] as int? ?? 0;
         if (points > 0) widget.onPointsEarned?.call();
