@@ -3990,10 +3990,26 @@ class TWork_Rewards_System
         // Auto Run: If no end time set (e.g. legacy poll, or first load), initialize now
         if ($end_ts <= 0) {
             $now = current_time('mysql');
-            $now_ts = strtotime($now);
-            $new_end_ts = $now_ts + ($period_minutes * 60);
-            $quiz_data['poll_actual_start_at'] = $now;
-            $quiz_data['poll_voting_start_time'] = $now;
+            
+            // CRITICAL FIX: Eliminate Time Drift!
+            // Calculate the exact mathematical boundaries of the current cycle
+            // based on 'started_at' so it perfectly matches the App's rest_poll_state logic.
+            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? $now;
+            $start_ts = strtotime($started_at);
+            if (!$start_ts) {
+                $start_ts = strtotime($now);
+            }
+            
+            $cycle_seconds = ($period_minutes + $result_duration_min) * 60;
+            $current_ts = strtotime($now);
+            $elapsed = max(0, $current_ts - $start_ts);
+            $iteration = (int) floor($elapsed / $cycle_seconds);
+            
+            $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
+            $new_end_ts = $cycle_start_ts + ($period_minutes * 60);
+
+            $quiz_data['poll_actual_start_at'] = date('Y-m-d H:i:s', $cycle_start_ts);
+            $quiz_data['poll_voting_start_time'] = date('Y-m-d H:i:s', $cycle_start_ts);
             $quiz_data['poll_voting_end_time'] = date('Y-m-d H:i:s', $new_end_ts);
             $wpdb->update(
                 $table_items,
@@ -4131,7 +4147,7 @@ class TWork_Rewards_System
      * @param int $item_id Engagement item ID (must be poll type)
      * @return array{ awarded: int, total_points: int, error?: string }
      */
-    private function award_poll_winner_points($item_id)
+    public function award_poll_winner_points($item_id)
     {
         global $wpdb;
 
@@ -4187,7 +4203,7 @@ class TWork_Rewards_System
         $item_title = $item['title'] ?? 'Poll #' . $item_id;
 
         $interactions = $wpdb->get_results($wpdb->prepare(
-            "SELECT id, user_id, interaction_value, bet_amount, bet_amount_per_option FROM $table_interactions WHERE item_id = %d",
+            "SELECT id, user_id, interaction_value, bet_amount, bet_amount_per_option, is_correct, points_awarded FROM $table_interactions WHERE item_id = %d",
             $item_id
         ), ARRAY_A);
 
@@ -4195,6 +4211,11 @@ class TWork_Rewards_System
         $total_points = 0;
 
         foreach ($interactions as $row) {
+            // IDEMPOTENCY FIX: Prevent double awarding points to the same interaction
+            if (isset($row['is_correct']) && (int)$row['is_correct'] === 1) {
+                continue;
+            }
+
             if (!$this->user_answer_contains_correct_index($row['interaction_value'], $correct_index)) {
                 continue;
             }
@@ -15992,52 +16013,45 @@ class TWork_Rewards_System
 
                 if ($poll_mode === 'auto_run' && $status === 'active') {
                     $now = current_time('mysql');
-                    $now_ts = strtotime($now);
                     $should_set_times = true;
                     if ($id > 0) {
                         $existing = $wpdb->get_row($wpdb->prepare("SELECT quiz_data FROM $table_name WHERE id = %d", $id), ARRAY_A);
                         if ($existing && !empty($existing['quiz_data'])) {
                             $eq = json_decode($existing['quiz_data'], true);
-                            if (is_array($eq) && !empty($eq['poll_voting_end_time'])) {
-                                $end_ts_existing = strtotime($eq['poll_voting_end_time']);
-                                if ($now_ts < $end_ts_existing) {
-                                    $should_set_times = false;
-                                    $quiz_data_array['poll_actual_start_at'] = $eq['poll_actual_start_at'] ?? $eq['poll_voting_start_time'] ?? $now;
-                                    $quiz_data_array['poll_voting_start_time'] = $eq['poll_voting_start_time'] ?? $now;
-                                    $quiz_data_array['poll_voting_end_time'] = $eq['poll_voting_end_time'];
+                            // PRESERVE BASE TIMING: If it's an existing Auto Run poll, do not reset its base time.
+                            // Let process_auto_run_poll() handle the automated cycle resets.
+                            if (is_array($eq) && (!empty($eq['started_at']) || !empty($eq['poll_actual_start_at']))) {
+                                $should_set_times = false;
+                                $quiz_data_array['started_at'] = $eq['started_at'] ?? $eq['poll_actual_start_at'];
+                                $quiz_data_array['poll_actual_start_at'] = $eq['poll_actual_start_at'] ?? $quiz_data_array['started_at'];
+                                $quiz_data_array['poll_voting_start_time'] = $eq['poll_voting_start_time'] ?? $quiz_data_array['started_at'];
+                                $quiz_data_array['poll_voting_end_time'] = $eq['poll_voting_end_time'] ?? '';
+
+                                // Preserve resolution state so it doesn't blink out of "Showing Results"
+                                if (isset($eq['poll_resolved_at'])) {
+                                    $quiz_data_array['poll_resolved_at'] = $eq['poll_resolved_at'];
+                                }
+                                if (isset($eq['poll_correct_answer_mode'])) {
+                                    $quiz_data_array['poll_correct_answer_mode'] = $eq['poll_correct_answer_mode'];
                                 }
                             }
                         }
                     }
                     if ($should_set_times) {
-                        $end_ts = $now_ts + ($poll_duration * 60);
+                        $end_ts = strtotime($now) + ($poll_duration * 60);
+                        $quiz_data_array['started_at'] = $now;
                         $quiz_data_array['poll_actual_start_at'] = $now;
                         $quiz_data_array['poll_voting_start_time'] = $now;
                         $quiz_data_array['poll_voting_end_time'] = date('Y-m-d H:i:s', $end_ts);
                     }
                 }
                 // Save Live Override ("force winner") — persists whenever poll mode is Auto Run, any status.
+                // Never copy the override into correct_index here: resolution runs in process_auto_run_poll()
+                // when voting ends (correct_index must stay < 0 until then). Setting correct_index early
+                // makes correct_index >= 0 and skips the end-of-poll branch that awards points.
                 if ($poll_mode === 'auto_run') {
-                    if (!is_array($existing_quiz)) {
-                        $existing_quiz = array();
-                    }
                     $new_override = isset($_POST['auto_run_override_index']) ? intval($_POST['auto_run_override_index']) : -1;
                     $quiz_data_array['auto_run_override_index'] = $new_override;
-
-                    if ($new_override >= 0) {
-                        // Apply Force Winner immediately
-                        $quiz_data_array['correct_index'] = $new_override;
-                    } else {
-                        // Transitioning to Normal Random
-                        $old_override = isset($existing_quiz['auto_run_override_index']) ? (int) $existing_quiz['auto_run_override_index'] : -1;
-                        if ($old_override >= 0) {
-                            // We just removed a forced winner, reset the poll so it resolves randomly again
-                            $quiz_data_array['correct_index'] = -1;
-                        } else {
-                            // Preserve the existing correct_index (to protect already-resolved random winners)
-                            $quiz_data_array['correct_index'] = isset($existing_quiz['correct_index']) ? (int) $existing_quiz['correct_index'] : -1;
-                        }
-                    }
                 }
             }
 
