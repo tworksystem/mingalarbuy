@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -538,7 +539,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Unable to load engagement',
+                    // Old Code: 'Unable to load engagement',
+                    // New Code:
+                    (error.trim().isNotEmpty)
+                        ? error
+                        : 'Network အခက်အခဲရှိနေပါသည်',
                     style: TextStyle(
                       color: Colors.orange[900],
                       fontSize: 14,
@@ -1362,14 +1367,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                       // This ensures "Your Choice" section is always visible and not clipped
                       IntrinsicHeight(
                         child: _VoteSubmittedCelebration(
-                          key: ValueKey(
-                              'vote_submitted_${item.id}'), // PROFESSIONAL FIX: Stable key preserves state across rebuilds
-                          itemId: item.id.toString(),
-                          constraints: BoxConstraints(
-                            maxWidth: double.infinity,
-                            maxHeight: double.infinity,
-                          ),
-                          selectedOption: _getSelectedOptionText(item),
+                          key: ValueKey('vote_submitted_${item.id}'),
+                          detailedBets: pollUserDetailedBets(item),
                         ),
                       ),
                     ] else
@@ -1521,12 +1520,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                 ),
                                 child: IntrinsicHeight(
                                   child: _VoteSubmittedCelebration(
-                                    key: ValueKey(
-                                        'vote_submitted_${item.id}'), // PROFESSIONAL FIX: Stable key preserves state across rebuilds
-                                    itemId: item.id.toString(),
-                                    constraints: constraints,
-                                    selectedOption:
-                                        _getSelectedOptionText(item),
+                                    key: ValueKey('vote_submitted_${item.id}'),
+                                    detailedBets: pollUserDetailedBets(item),
                                   ),
                                 ),
                               ),
@@ -1593,11 +1588,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                               // PROFESSIONAL FIX: Use IntrinsicHeight to ensure proper space allocation
                               IntrinsicHeight(
                                 child: _VoteSubmittedCelebration(
-                                  key: ValueKey(
-                                      'vote_submitted_${item.id}'), // PROFESSIONAL FIX: Stable key preserves state across rebuilds
-                                  itemId: item.id.toString(),
-                                  constraints: constraints,
-                                  selectedOption: _getSelectedOptionText(item),
+                                  key: ValueKey('vote_submitted_${item.id}'),
+                                  detailedBets: pollUserDetailedBets(item),
                                 ),
                               ),
                             ] else
@@ -2131,34 +2123,6 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     );
   }
 
-  /// Get selected option text from engagement item.
-  /// Maps index/indices (e.g. "0" or "0,1,2") to option values; never shows raw indices.
-  String? _getSelectedOptionText(EngagementItem item) {
-    if (item.userAnswer == null || item.userAnswer!.trim().isEmpty) {
-      return null;
-    }
-    final options = item.quizData?.options;
-    if (options == null || options.isEmpty) {
-      return item.userAnswer!.trim();
-    }
-    final raw = item.userAnswer!.trim();
-    final parts = raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty);
-    final texts = <String>[];
-    for (final part in parts) {
-      final idx = int.tryParse(part);
-      if (idx != null && idx >= 0 && idx < options.length) {
-        final text = options[idx].trim();
-        if (text.isNotEmpty && !texts.contains(text)) {
-          texts.add(text);
-        }
-      }
-    }
-    if (texts.isEmpty) {
-      return raw;
-    }
-    return texts.join(', ');
-  }
-
   /// Show Poll Dialog - Distinct from Quiz with voting terminology and orange theme
   /// Allow opening dialog even if already voted (view-only, one-time vote)
   void _showPollDialog(EngagementItem item) {
@@ -2366,6 +2330,368 @@ int _stableFallbackOptionIndex(EngagementItem item, int optionCount) {
   return h % optionCount;
 }
 
+/// Library helpers for poll UI (used by [_EngagementCarouselState] and [_PollResultCard]).
+int pollSelectedOptionCountFromUserAnswer(EngagementItem item) {
+  final ua = item.userAnswer?.trim();
+  if (ua == null || ua.isEmpty) return 0;
+  final optLen = item.quizData?.options.length ?? 0;
+  var c = 0;
+  for (final part in ua.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty)) {
+    final idx = int.tryParse(part);
+    if (idx != null && idx >= 0 && idx < optLen) {
+      c++;
+    }
+  }
+  if (c == 0 && ua.isNotEmpty) return 1;
+  return c;
+}
+
+/// Total **Amount** unit count for receipt fallback (sum of per-option multipliers; not PNP).
+int? pollVoteTotalAmountUnits(EngagementItem item) {
+  final n = pollSelectedOptionCountFromUserAnswer(item);
+  if (n <= 0) return null;
+  final allowUser = item.quizData?.allowUserAmount ?? true;
+  if (!allowUser) {
+    return n;
+  }
+  final bet = item.userBetAmount;
+  if (bet != null && bet > 0) {
+    return bet * n;
+  }
+  return n;
+}
+
+String? pollUserChoiceDisplayLabel(EngagementItem item) {
+  if (item.userAnswer == null || item.userAnswer!.trim().isEmpty) {
+    return null;
+  }
+  final options = item.quizData?.options;
+  if (options == null || options.isEmpty) {
+    return item.userAnswer!.trim();
+  }
+  final raw = item.userAnswer!.trim();
+  final parts = raw.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty);
+  final texts = <String>[];
+  for (final part in parts) {
+    final idx = int.tryParse(part);
+    if (idx != null && idx >= 0 && idx < options.length) {
+      final text = options[idx].trim();
+      if (text.isNotEmpty && !texts.contains(text)) {
+        texts.add(text);
+      }
+    }
+  }
+  if (texts.isEmpty) {
+    return raw;
+  }
+  return texts.join(', ');
+}
+
+// --- Poll per-option unit overlay (client persistence when API omits keys 3+, etc.) ---
+
+/// Storage key: engagement item + stable option id string.
+String pollUserLocalUnitStorageKey(int engagementItemId, String optionUniqueId) =>
+    '$engagementItemId|$optionUniqueId';
+
+/// Last-known units per option; synced from API when present, else from dialog edits.
+/// Survives widget rebuilds before feed returns full [user_bet_amount_per_option].
+final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
+
+/// Writes the same field [pollUserSeparatedBetStates] reads for fallback.
+void recordPollUserLocalUnitOverride(
+  int engagementItemId,
+  String optionUniqueId,
+  int units,
+) {
+  if (units <= 0) return;
+  _pollUserLocalUnitOverlay[
+      pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)] = units;
+}
+
+/// Single key format for dialog state and receipt: `index::label` (index disambiguates).
+String pollOptionUniqueId(List<dynamic> options, int idx) {
+  if (idx < 0) {
+    return 'i$idx';
+  }
+  if (idx >= options.length) {
+    return 'i$idx|oob';
+  }
+  final label = options[idx].toString().trim();
+  return '$idx::${label.isEmpty ? '?' : label}';
+}
+
+int _resolvePollOptionUnits({
+  required int itemId,
+  required List<dynamic> options,
+  required int idx,
+  required int? fromApi,
+  required int? declaredBet,
+  required bool isSingleSelection,
+  required bool allowUser,
+}) {
+  if (fromApi != null && fromApi > 0) return fromApi;
+  if (!allowUser) {
+    return 1;
+  }
+  final uid = pollOptionUniqueId(options, idx);
+  final fromLocal =
+      _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(itemId, uid)];
+  if (fromLocal != null && fromLocal > 0) return fromLocal;
+  if (isSingleSelection && declaredBet != null && declaredBet > 0) {
+    return declaredBet;
+  }
+  return 1;
+}
+
+/// Builds two-lane poll states (display and calculated use the same resolved units;
+/// no separate normalization—integer passthrough only).
+({
+  Map<String, int?>? displayBets,
+  Map<String, int?>? calculatedTotals,
+})? pollUserSeparatedBetStates(EngagementItem item) {
+  if (!item.hasInteracted) return null;
+  final ua = item.userAnswer?.trim();
+  if (ua == null || ua.isEmpty) return null;
+  final q = item.quizData;
+  final options = q?.options ?? [];
+  if (options.isEmpty) return null;
+  final allowUser = q?.allowUserAmount ?? true;
+  final perMap = item.userBetUnitsPerOption;
+  final int? declaredBet = item.userBetAmount;
+
+  // Isolated per-option units from API (index -> units).
+  final isolatedUnitsByOption = <int, int>{};
+  if (perMap != null && perMap.isNotEmpty) {
+    perMap.forEach((k, v) {
+      if (k >= 0 && v > 0) {
+        isolatedUnitsByOption[k] = v;
+      }
+    });
+  }
+
+  final validIndices = <int>[];
+  for (final part
+      in ua.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty)) {
+    final i = int.tryParse(part);
+    if (i != null && i >= 0 && i < options.length) {
+      validIndices.add(i);
+    }
+  }
+  final isSingleSelection = validIndices.length == 1;
+
+  final selectedOptionDisplay = <String, int>{};
+  final calculatedTotal = <String, int>{};
+  void addLineForOption(String label, int units) {
+    if (label.isEmpty || units <= 0) return;
+    selectedOptionDisplay[label] = units;
+    calculatedTotal[label] = units;
+  }
+
+  var parsedAnyIndex = false;
+  for (final part
+      in ua.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty)) {
+    final idx = int.tryParse(part);
+    if (idx == null || idx < 0 || idx >= options.length) continue;
+    parsedAnyIndex = true;
+    final rawLabel = options[idx].toString().trim();
+    if (rawLabel.isEmpty) continue;
+
+    final match = RegExp(r'-\s*([^+]+?)\s*\+').firstMatch(rawLabel);
+    final cleanLabel =
+        match != null && match.group(1) != null ? match.group(1)!.trim() : rawLabel;
+
+    final fromApi = isolatedUnitsByOption[idx];
+    final units = _resolvePollOptionUnits(
+      itemId: item.id,
+      options: options,
+      idx: idx,
+      fromApi: fromApi,
+      declaredBet: declaredBet,
+      isSingleSelection: isSingleSelection,
+      allowUser: allowUser,
+    );
+
+    addLineForOption(cleanLabel, units);
+  }
+
+  if (selectedOptionDisplay.isNotEmpty) {
+    return (
+      displayBets: Map<String, int?>.from(selectedOptionDisplay),
+      calculatedTotals: Map<String, int?>.from(calculatedTotal),
+    );
+  }
+
+  if (!parsedAnyIndex) {
+    final label = pollUserChoiceDisplayLabel(item)?.trim();
+    final display = (label != null && label.isNotEmpty) ? label : ua;
+    final total = pollVoteTotalAmountUnits(item);
+    return (
+      displayBets: {display: 1},
+      calculatedTotals: {display: (total != null && total > 0) ? total : 1},
+    );
+  }
+
+  return null;
+}
+
+/// UI-only map for "Your choice" receipt. Must never consume calc lane directly.
+Map<String, int?>? pollUserDetailedBets(EngagementItem item) {
+  final separated = pollUserSeparatedBetStates(item);
+  return separated?.displayBets;
+}
+
+/// Calculation-only map for multiplier/reward debugging and backend math tracking.
+Map<String, int?>? pollUserCalculatedTotals(EngagementItem item) {
+  final separated = pollUserSeparatedBetStates(item);
+  return separated?.calculatedTotals;
+}
+
+/// Compact inline receipt: `Option A : 2` (omits value if null).
+List<InlineSpan> _pollReceiptInlineSpans(Map<String, int?> detailedBets) {
+  const shadow = [
+    Shadow(
+      color: Color(0x73000000),
+      offset: Offset(0, 1),
+      blurRadius: 2,
+    ),
+  ];
+  final spans = <InlineSpan>[];
+  var i = 0;
+  for (final e in detailedBets.entries) {
+    if (i > 0) {
+      spans.add(TextSpan(
+        text: ', ',
+        style: TextStyle(
+          color: Colors.white.withOpacity(0.55),
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          height: 1.35,
+          shadows: shadow,
+        ),
+      ));
+    }
+    spans.add(TextSpan(
+      text: e.key,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        height: 1.35,
+        shadows: shadow,
+      ),
+    ));
+    if (e.value != null) {
+      spans.add(TextSpan(
+        text: ' : ${e.value}',
+        style: TextStyle(
+          color: Colors.amber.shade100,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          height: 1.35,
+          shadows: shadow,
+        ),
+      ));
+    }
+    i++;
+  }
+  return spans;
+}
+
+Widget _pollDetailedReceiptSection(
+  BuildContext context, {
+  required Map<String, int?>? detailedBets,
+  Map<String, int?>? calculatedBets,
+  String heading = 'Your choice',
+  bool wrapInGlass = false,
+}) {
+  if (detailedBets == null || detailedBets.isEmpty) {
+    return const SizedBox.shrink();
+  }
+
+  final headingStyle = TextStyle(
+    fontSize: 11,
+    fontWeight: FontWeight.w600,
+    letterSpacing: 0.9,
+    color: Colors.white.withOpacity(0.9),
+    shadows: const [
+      Shadow(
+        color: Color(0x73000000),
+        offset: Offset(0, 1),
+        blurRadius: 2,
+      ),
+    ],
+  );
+
+  final body = Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Row(
+        children: [
+          Icon(
+            Icons.receipt_long_rounded,
+            size: 18,
+            color: Colors.white.withOpacity(0.95),
+          ),
+          const SizedBox(width: 8),
+          Text(heading, style: headingStyle),
+        ],
+      ),
+      const SizedBox(height: 8),
+      // Separation proof log right before UI render:
+      // Display lane (receipt) vs Calculation lane (multiplier math).
+      Builder(
+        builder: (_) {
+          print(
+            '[PollReceiptSeparatedState] Display: ${detailedBets.toString()}, '
+            'Total: ${calculatedBets?.toString() ?? 'n/a'}',
+          );
+          return const SizedBox.shrink();
+        },
+      ),
+      RichText(
+        text: TextSpan(
+          style: const TextStyle(fontSize: 14, height: 1.35),
+          children: _pollReceiptInlineSpans(detailedBets),
+        ),
+        maxLines: 4,
+        overflow: TextOverflow.ellipsis,
+      ),
+    ],
+  );
+
+  if (!wrapInGlass) {
+    return body;
+  }
+
+  return ClipRRect(
+    borderRadius: BorderRadius.circular(16),
+    child: BackdropFilter(
+      filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withOpacity(0.14),
+              Colors.white.withOpacity(0.05),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.28),
+            width: 1,
+          ),
+        ),
+        child: body,
+      ),
+    ),
+  );
+}
+
 /// Wraps [_PollResultCard]. Poll winner API + popup are triggered centrally by
 /// [_triggerWinnerChecksForVisibleFeedPolls] to avoid duplicate API calls when
 /// 2+ polls run in parallel (per-card triggers caused duplicate point awards).
@@ -2428,9 +2754,16 @@ class _PollResultCard extends StatelessWidget {
       }
     }
 
+    final userDetailed =
+        item.hasInteracted ? pollUserDetailedBets(item) : null;
+    final userCalculated =
+        item.hasInteracted ? pollUserCalculatedTotals(item) : null;
+
     return _CompactPollResultCard(
       text: winning.text,
       mediaUrl: winning.mediaUrl,
+      userDetailedBets: userDetailed,
+      userCalculatedTotals: userCalculated,
     );
   }
 }
@@ -2439,10 +2772,16 @@ class _PollResultCard extends StatelessWidget {
 class _CompactPollResultCard extends StatelessWidget {
   final String text;
   final String? mediaUrl;
+  /// Selected options with per-option Count; null hides receipt.
+  final Map<String, int?>? userDetailedBets;
+  /// Calculation-only values (multiplier lane). Not shown in UI text.
+  final Map<String, int?>? userCalculatedTotals;
 
   const _CompactPollResultCard({
     required this.text,
     this.mediaUrl,
+    this.userDetailedBets,
+    this.userCalculatedTotals,
   });
 
   static const double _hubCardRadius = 20.0; // Match Engagement Hub card
@@ -2487,37 +2826,65 @@ class _CompactPollResultCard extends StatelessWidget {
                 ),
               ),
 
-        // Bottom overlay with gradient + text
-        Align(
-          alignment: Alignment.bottomCenter,
+        // Full-card overlay identical to active poll card style.
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          top: 0,
           child: Container(
-            width: double.infinity,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.bottomCenter,
-                end: Alignment.topCenter,
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
                 colors: [
-                  Colors.black.withOpacity(0.9), // Very dark at bottom
-                  Colors.black.withOpacity(0.5), // Semi-dark in middle
-                  Colors.transparent,            // Fade to transparent
+                  Colors.transparent,
+                  Colors.black.withOpacity(0.8),
                 ],
-                stops: const [0.0, 0.4, 1.0],
-              ),
-              borderRadius: const BorderRadius.vertical(
-                bottom: Radius.circular(_hubCardRadius),
               ),
             ),
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              text,
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (userDetailedBets != null && userDetailedBets!.isNotEmpty) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.16),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.32),
+                          width: 1,
+                        ),
+                      ),
+                      child: _pollDetailedReceiptSection(
+                        context,
+                        detailedBets: userDetailedBets,
+                        calculatedBets: userCalculatedTotals,
+                        heading: 'Your choice',
+                        wrapInGlass: false,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Text(
+                    text,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
             ),
           ),
         ),
@@ -3285,8 +3652,15 @@ class _PollDialogState extends State<_PollDialog> {
   /// Checkbox-style poll: multiple selection (Set of option indices).
   /// Replaces previous radio-style single selection for better UX.
   final Set<int> _selectedIndices = {};
+  /// Isolated per-option state: [pollOptionUniqueId] -> multiplier. Matches receipt lookup.
+  final Map<String, int> _isolatedUnitsByOption = <String, int>{};
   bool _isSubmitting = false;
   int? _confirmedBalanceForSubmit;
+
+  String _optionKeyForIndex(int index) {
+    final opts = widget.item.quizData?.options ?? const <dynamic>[];
+    return pollOptionUniqueId(opts, index);
+  }
 
   @override
   void initState() {
@@ -3297,53 +3671,94 @@ class _PollDialogState extends State<_PollDialog> {
   @override
   void didUpdateWidget(_PollDialog oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.item.userAnswer != oldWidget.item.userAnswer) {
+    if (widget.item.userAnswer != oldWidget.item.userAnswer ||
+        widget.item.userBetUnitsPerOption != oldWidget.item.userBetUnitsPerOption) {
       _updateSelectedFromItem();
     }
   }
 
-  /// Parse userAnswer: supports single index "0" or multiple "0,1,2" (comma-separated).
+  /// Parse [userAnswer] indices; hydrate units from API, else overlay, else 1. Any option count.
   void _updateSelectedFromItem() {
+    final options = widget.item.quizData?.options ?? const <dynamic>[];
     if (widget.item.hasInteracted && widget.item.userAnswer != null) {
       final raw = widget.item.userAnswer!.trim();
       _selectedIndices.clear();
+      _isolatedUnitsByOption.clear();
+      final perOption = widget.item.userBetUnitsPerOption;
       for (final part in raw.split(',')) {
         final idx = int.tryParse(part.trim());
-        if (idx != null && idx >= 0) _selectedIndices.add(idx);
+        if (idx == null || idx < 0 || idx >= options.length) {
+          continue;
+        }
+        _selectedIndices.add(idx);
+        final k = pollOptionUniqueId(options, idx);
+        final fromApi = perOption?[idx];
+        final local = _pollUserLocalUnitOverlay[
+            pollUserLocalUnitStorageKey(widget.item.id, k)];
+        final int u;
+        if (fromApi != null && fromApi > 0) {
+          u = fromApi;
+          recordPollUserLocalUnitOverride(widget.item.id, k, u);
+        } else if (local != null && local > 0) {
+          u = local;
+        } else {
+          u = 1;
+        }
+        _isolatedUnitsByOption[k] = u;
       }
     } else if (!widget.item.hasInteracted) {
       _selectedIndices.clear();
+      _isolatedUnitsByOption.clear();
     }
   }
 
   void _toggleOption(int index) {
     setState(() {
+      final k = _optionKeyForIndex(index);
       if (_selectedIndices.contains(index)) {
         _selectedIndices.remove(index);
+        _isolatedUnitsByOption.remove(k);
       } else {
         _selectedIndices.add(index);
+        _isolatedUnitsByOption[k] = _isolatedUnitsByOption[k] ?? 1;
       }
     });
   }
 
-  /// Effective base cost: quizData.pollBaseCost > rewardPoints > 1000 fallback.
-  int get _effectiveBaseCost {
-    final quizBase = widget.item.quizData?.pollBaseCost ?? 0;
-    if (quizBase > 0) return quizBase;
-    if (widget.item.rewardPoints > 0) return widget.item.rewardPoints;
-    return 1000;
+  /// Persists to [recordPollUserLocalUnitOverride] so [pollUserSeparatedBetStates] can read.
+  void _updateOptionUnitValue(int optionIndex, int nextValue) {
+    if (nextValue <= 0) return;
+    final k = _optionKeyForIndex(optionIndex);
+    setState(() {
+      _isolatedUnitsByOption[k] = nextValue;
+      recordPollUserLocalUnitOverride(widget.item.id, k, nextValue);
+      // ignore: avoid_print
+      print('User Selected Multiplier: $nextValue (optionKey=$k)');
+    });
   }
 
-  /// Per selected checkbox PNP for the current betting mode (matches server).
+  /// Per selected checkbox PNP (stake only — never [rewardPoints] / win potential).
   int get _perUnitPollPnp {
     final q = widget.item.quizData;
-    if (q == null) return _effectiveBaseCost;
-    if (q.allowUserAmount) return q.effectiveAmountStepPnp;
-    return _effectiveBaseCost;
+    if (q == null) return 1000;
+    return q.spentPerUnitPnpForPoll(engagementRewardPoints: widget.item.rewardPoints);
   }
 
-  /// Total PNP for current selection (per-option cost × number of options).
+  /*
+  // OLD total logic (kept for reference):
+  // This assumed one shared amount across all selected options.
   int get _totalCost => _perUnitPollPnp * _selectedIndices.length;
+  */
+
+  /// Grand total derived from isolated per-option states (safe, non-mutating).
+  int get _isolatedGrandTotalPnp {
+    var total = 0;
+    for (final idx in _selectedIndices) {
+      final k = _optionKeyForIndex(idx);
+      total += _perUnitPollPnp * (_isolatedUnitsByOption[k] ?? 1);
+    }
+    return total;
+  }
 
   /// Balance from user custom fields (my_point / My Point Value / points_balance from /users/me).
   /// Used when PointProvider gives 0 so confirmation dialog shows real balance,
@@ -3362,17 +3777,18 @@ class _PollDialogState extends State<_PollDialog> {
     final direct = int.tryParse(trimmed);
     if (direct != null) return direct;
 
-    // Fallback: extract first number sequence from strings like "18,200 points"
-    final match = RegExp(r'\d+').firstMatch(trimmed);
-    if (match != null) {
-      final extracted = match.group(0);
-      if (extracted != null) {
-        final parsed = int.tryParse(extracted);
-        if (parsed != null) return parsed;
-      }
-    }
+    // Old Code: // Fallback: extract first number sequence from strings like "18,200 points"
+    // Old Code: final match = RegExp(r'\d+').firstMatch(trimmed);
+    // Old Code: if (match != null) {
+    // Old Code:   final extracted = match.group(0);
+    // Old Code:   if (extracted != null) {
+    // Old Code:     final parsed = int.tryParse(extracted);
+    // Old Code:     if (parsed != null) return parsed;
+    // Old Code:   }
+    // Old Code: }
 
-    return 0;
+    final numericString = trimmed.replaceAll(RegExp(r'[^0-9]'), '');
+    return int.tryParse(numericString) ?? 0;
   }
 
   Future<void> _onPlayPressed() async {
@@ -3389,9 +3805,7 @@ class _PollDialogState extends State<_PollDialog> {
     final q = widget.item.quizData;
     if (q == null) return;
     final allowUserAmount = q.allowUserAmount;
-    // Per-option PNP for this mode; for User Amount, one "unit" = effectiveAmountStepPnp (e.g. 1000).
-    final int perUnitPnp =
-        allowUserAmount ? q.effectiveAmountStepPnp : _effectiveBaseCost;
+    final int perUnitPnp = q.spentPerUnitPnpForPoll(engagementRewardPoints: widget.item.rewardPoints);
     // Cost when Amount multiplier k = 1
     final requiredPerAmount = perUnitPnp * selectedCount;
 
@@ -3488,9 +3902,15 @@ class _PollDialogState extends State<_PollDialog> {
 
     // Step 2: Let user choose Amount per option (each selected option gets its own amount)
     final selectedList = _selectedIndices.toList()..sort();
-    final Map<int, int> amountPerOption = {for (final i in selectedList) i: 1};
     final options = q.options;
+    for (final i in selectedList) {
+      final k = _optionKeyForIndex(i);
+      _isolatedUnitsByOption[k] = _isolatedUnitsByOption[k] ?? 1;
+    }
 
+    // Old Code: per-option amount `showDialog<void>` — both actions used `Navigator.pop(ctx)` only (no result).
+    /*
+    // Old Code:
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -3499,7 +3919,8 @@ class _PollDialogState extends State<_PollDialog> {
           builder: (context, setDialogState) {
             int totalCost = 0;
             for (final idx in selectedList) {
-              totalCost += perUnitPnp * (amountPerOption[idx] ?? 1);
+              final k = _optionKeyForIndex(idx);
+              totalCost += perUnitPnp * (_isolatedUnitsByOption[k] ?? 1);
             }
             final canAfford = totalCost <= userBalance;
             return AlertDialog(
@@ -3516,10 +3937,12 @@ class _PollDialogState extends State<_PollDialog> {
                     Text('အဆင့် တစ်ခုလျှင်: $perUnitPnp PNP', style: TextStyle(fontSize: 13, color: Colors.grey[700])),
                     const SizedBox(height: 16),
                     ...selectedList.map((idx) {
-                      final amt = amountPerOption[idx] ?? 1;
+                      final k = _optionKeyForIndex(idx);
+                      final amt = _isolatedUnitsByOption[k] ?? 1;
                       final optLabel = idx < options.length ? options[idx] : 'Option ${idx + 1}';
                       final maxForThis = userBalance ~/ perUnitPnp;
                       return Padding(
+                        key: ValueKey<String>(k),
                         padding: const EdgeInsets.only(bottom: 12),
                         child: Row(
                           children: [
@@ -3537,7 +3960,12 @@ class _PollDialogState extends State<_PollDialog> {
                               children: [
                                 IconButton(
                                   icon: const Icon(Icons.remove_circle_outline, size: 22),
-                                  onPressed: amt > 1 ? () => setDialogState(() => amountPerOption[idx] = amt - 1) : null,
+                                  onPressed: amt > 1
+                                      ? () => setDialogState(() {
+                                            final dynamicValue = amt - 1;
+                                            _updateOptionUnitValue(idx, dynamicValue);
+                                          })
+                                      : null,
                                   padding: EdgeInsets.zero,
                                   constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                                 ),
@@ -3547,7 +3975,12 @@ class _PollDialogState extends State<_PollDialog> {
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.add_circle_outline, size: 22),
-                                  onPressed: amt < maxForThis ? () => setDialogState(() => amountPerOption[idx] = amt + 1) : null,
+                                  onPressed: amt < maxForThis
+                                      ? () => setDialogState(() {
+                                            final dynamicValue = amt + 1;
+                                            _updateOptionUnitValue(idx, dynamicValue);
+                                          })
+                                      : null,
                                   padding: EdgeInsets.zero,
                                   constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                                 ),
@@ -3585,12 +4018,125 @@ class _PollDialogState extends State<_PollDialog> {
         );
       },
     );
+    */
 
+    final bool? isConfirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            int totalCost = 0;
+            for (final idx in selectedList) {
+              final k = _optionKeyForIndex(idx);
+              totalCost += perUnitPnp * (_isolatedUnitsByOption[k] ?? 1);
+            }
+            final canAfford = totalCost <= userBalance;
+            return AlertDialog(
+              title: const Text(
+                'Option တစ်ခုချင်းစီအတွက် Amount သတ်မှတ်ပါ',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('သင့်လက်ရှိ Point: $userBalance', style: const TextStyle(fontWeight: FontWeight.w600)),
+                    Text('အဆင့် တစ်ခုလျှင်: $perUnitPnp PNP', style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+                    const SizedBox(height: 16),
+                    ...selectedList.map((idx) {
+                      final k = _optionKeyForIndex(idx);
+                      final amt = _isolatedUnitsByOption[k] ?? 1;
+                      final optLabel = idx < options.length ? options[idx] : 'Option ${idx + 1}';
+                      final maxForThis = userBalance ~/ perUnitPnp;
+                      return Padding(
+                        key: ValueKey<String>(k),
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 2,
+                              child: Text(
+                                optLabel,
+                                style: const TextStyle(fontSize: 14),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 2,
+                              ),
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.remove_circle_outline, size: 22),
+                                  onPressed: amt > 1
+                                      ? () => setDialogState(() {
+                                            final dynamicValue = amt - 1;
+                                            _updateOptionUnitValue(idx, dynamicValue);
+                                          })
+                                      : null,
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                ),
+                                SizedBox(
+                                  width: 36,
+                                  child: Text('$amt', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.add_circle_outline, size: 22),
+                                  onPressed: amt < maxForThis
+                                      ? () => setDialogState(() {
+                                            final dynamicValue = amt + 1;
+                                            _updateOptionUnitValue(idx, dynamicValue);
+                                          })
+                                      : null,
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                ),
+                              ],
+                            ),
+                            Text('${perUnitPnp * amt}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                          ],
+                        ),
+                      );
+                    }),
+                    const Divider(),
+                    Text(
+                      'စုစုပေါင်း ကုန်ကျမည်: $totalCost PNP',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: canAfford ? null : Colors.red),
+                    ),
+                    if (!canAfford)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text('Point မလောက်ပါ (လိုအပ်ချက်: $totalCost)', style: TextStyle(fontSize: 12, color: Colors.red[700])),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('မလုပ်တော့ပါ', style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton(
+                  onPressed: canAfford
+                      ? () => Navigator.pop(ctx, true)
+                      : null,
+                  child: const Text('ကစားမည်'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (isConfirmed != true) return;
     if (!mounted) return;
 
     int finalTotalCost = 0;
     for (final idx in selectedList) {
-      finalTotalCost += perUnitPnp * (amountPerOption[idx] ?? 1);
+      final k = _optionKeyForIndex(idx);
+      finalTotalCost += perUnitPnp * (_isolatedUnitsByOption[k] ?? 1);
     }
     if (finalTotalCost > userBalance) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3599,7 +4145,14 @@ class _PollDialogState extends State<_PollDialog> {
       return;
     }
 
-    await _submitVote(amountPerOption: amountPerOption);
+    final isolatedAmountPerOption = <int, int>{};
+    for (final idx in selectedList) {
+      final k = _optionKeyForIndex(idx);
+      final u = _isolatedUnitsByOption[k] ?? 1;
+      recordPollUserLocalUnitOverride(widget.item.id, k, u);
+      isolatedAmountPerOption[idx] = u;
+    }
+    await _submitVote(amountPerOption: isolatedAmountPerOption);
   }
 
   @override
@@ -3684,10 +4237,10 @@ class _PollDialogState extends State<_PollDialog> {
                   String voteMsg =
                       'ဤ Poll ကို ကစားပြီးပါပြီ။\nအောက်တွင် သင်ရွေးချယ်ထားသည့် အဖြေများကို ပြထားပါသည်။\n(တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။)';
                   if (isUserAmountMode && betAmt != null && betAmt > 0) {
-                    final step = q?.effectiveAmountStepPnp ?? 1000;
                     final count = userSelectedIndices.length;
-                    final totalPnp = step * count * betAmt;
-                    voteMsg += '\nသင် ထိုးခဲ့သော Amount: $betAmt (စုစုပေါင်း $totalPnp PNP ကုန်ကျခဲ့သည်)';
+                    final totalAmountUnits = betAmt * count;
+                    voteMsg +=
+                        '\nသင် ထိုးခဲ့သော Amount: $betAmt (ရွေးချယ်ထားသော အဖြေ $count ခု, စုစုပေါင်း Amount $totalAmountUnits)';
                   }
                   return Container(
                     padding: const EdgeInsets.all(16),
@@ -3982,57 +4535,67 @@ class _PollDialogState extends State<_PollDialog> {
         }
         return;
       }
+      final stakePerUnit = quiz.spentPerUnitPnpForPoll(engagementRewardPoints: widget.item.rewardPoints);
       int totalCost;
       if (amountPerOption != null && amountPerOption.isNotEmpty) {
         totalCost = 0;
         for (final idx in _selectedIndices) {
-          totalCost += quiz.effectiveAmountStepPnp * (amountPerOption[idx] ?? 1);
+          totalCost += stakePerUnit * (amountPerOption[idx] ?? 1);
         }
       } else {
         final amt = amount <= 0 ? 1 : amount;
         totalCost = quiz.allowUserAmount
-            ? quiz.effectiveAmountStepPnp * _selectedIndices.length * amt
-            : _effectiveBaseCost * _selectedIndices.length;
+            ? stakePerUnit * _selectedIndices.length * amt
+            : stakePerUnit * _selectedIndices.length;
       }
 
-      // Re-fetch balance before submit (parallel for less delay)
-      await Future.wait([
-        authProvider.refreshUser(),
-        pointProvider.loadBalance(currentUserId.toString(), forceRefresh: true),
-      ]);
-      if (!mounted) return;
+      // Old Code: `await Future.wait` + `serverBalance` / `fromAuth` / `fromConfirmed` / max reduce / client pre-submit gate (redundant after `_onPlayPressed`; `submitInteraction` enforces balance).
+      // Old Code:      // Re-fetch balance before submit (parallel for less delay)
+      // Old Code:      await Future.wait([
+      // Old Code:        authProvider.refreshUser(),
+      // Old Code:        pointProvider.loadBalance(currentUserId.toString(), forceRefresh: true),
+      // Old Code:      ]);
+      // Old Code:      if (!mounted) return;
+      // Old Code:
+      // Old Code:      int serverBalance = pointProvider.currentBalance;
+      // Old Code:      final fromAuth =
+      // Old Code:          _balanceFromCustomFields(authProvider.user?.customFields);
+      // Old Code:      final fromConfirmed = _confirmedBalanceForSubmit ?? 0;
+      // Old Code:
+      // Old Code:      // Use the maximum of all known balances for this single submit flow so that
+      // Old Code:      // temporary API/meta desyncs don't incorrectly block the user.
+      // Old Code:      serverBalance = [
+      // Old Code:        serverBalance,
+      // Old Code:        fromAuth,
+      // Old Code:        fromConfirmed,
+      // Old Code:      ].reduce((a, b) => a > b ? a : b);
+      // Old Code:
+      // Old Code:      if (serverBalance < totalCost) {
+      // Old Code:        app_logger.Logger.warning(
+      // Old Code:          'Balance re-check failed before submit: serverBalance=$serverBalance, totalCost=$totalCost',
+      // Old Code:          tag: 'EngagementCarousel',
+      // Old Code:        );
+      // Old Code:        if (mounted) {
+      // Old Code:          final messenger = ScaffoldMessenger.of(context);
+      // Old Code:          messenger.showSnackBar(
+      // Old Code:            SnackBar(
+      // Old Code:              content: Text(
+      // Old Code:                'Point မလောက်ပါ။ လက်ကျန်: $serverBalance, လိုအပ်ချက်: $totalCost။ ကျေးဇူးပြု၍ စာမျက်နှာ refresh လုပ်ပြီး ထပ်ကြိုးစားပါ။',
+      // Old Code:              ),
+      // Old Code:              backgroundColor: Colors.orange,
+      // Old Code:              duration: const Duration(seconds: 4),
+      // Old Code:            ),
+      // Old Code:          );
+      // Old Code:        }
+      // Old Code:        return;
+      // Old Code:      }
 
-      int serverBalance = pointProvider.currentBalance;
-      final fromAuth =
-          _balanceFromCustomFields(authProvider.user?.customFields);
-      final fromConfirmed = _confirmedBalanceForSubmit ?? 0;
-
-      // Use the maximum of all known balances for this single submit flow so that
-      // temporary API/meta desyncs don't incorrectly block the user.
-      serverBalance = [
-        serverBalance,
-        fromAuth,
-        fromConfirmed,
-      ].reduce((a, b) => a > b ? a : b);
-
-      if (serverBalance < totalCost) {
-        app_logger.Logger.warning(
-          'Balance re-check failed before submit: serverBalance=$serverBalance, totalCost=$totalCost',
-          tag: 'EngagementCarousel',
-        );
-        if (mounted) {
-          final messenger = ScaffoldMessenger.of(context);
-          messenger.showSnackBar(
-            SnackBar(
-              content: Text(
-                'Point မလောက်ပါ။ လက်ကျန်: $serverBalance, လိုအပ်ချက်: $totalCost။ ကျေးဇူးပြု၍ စာမျက်နှာ refresh လုပ်ပြီး ထပ်ကြိုးစားပါ။',
-              ),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-        return;
+      // Local estimate for optimistic UI only (no extra network before submit; server is source of truth).
+      int balanceBefore = _confirmedBalanceForSubmit ?? pointProvider.currentBalance;
+      if (balanceBefore == 0) {
+        final fromAuthUi =
+            _balanceFromCustomFields(authProvider.user?.customFields);
+        if (fromAuthUi > 0) balanceBefore = fromAuthUi;
       }
 
       // Send comma-separated indices for checkbox (multiple) selection.
@@ -4056,18 +4619,23 @@ class _PollDialogState extends State<_PollDialog> {
           // Calculate session for AUTO_RUN and MANUAL_SESSION polls
           if (pollMode == 'AUTO_RUN' || pollMode == 'MANUAL_SESSION') {
             final startedAtStr = schedule['poll_actual_start_at']?.toString();
-            final pollDuration = schedule['poll_duration']; // minutes
-            final resultDuration = schedule['result_display_duration']; // minutes
+            final pollDuration = schedule['poll_duration'] ?? schedule['poll_period_minutes'];
+            final resultSecondsRaw = schedule['result_display_duration_seconds'] ??
+                schedule['result_display_seconds'];
             
-            if (startedAtStr != null && pollDuration != null && resultDuration != null) {
+            if (startedAtStr != null && pollDuration != null && resultSecondsRaw != null) {
               final startedAt = DateTime.tryParse(startedAtStr);
               final pollDurationMin = (pollDuration is int) ? pollDuration : 
                                      (pollDuration is double) ? pollDuration.toInt() : 15;
-              final resultDurationMin = (resultDuration is int) ? resultDuration : 
-                                       (resultDuration is double) ? resultDuration.toInt() : 1;
+              final resultSeconds = (resultSecondsRaw is int)
+                  ? resultSecondsRaw
+                  : (resultSecondsRaw is double)
+                      ? resultSecondsRaw.toInt()
+                      : int.tryParse(resultSecondsRaw.toString()) ?? 60;
               
               if (startedAt != null && pollDurationMin > 0) {
-                final cycleSeconds = (pollDurationMin + resultDurationMin) * 60;
+                // Cycle = voting window (minutes→seconds) + result phase (seconds).
+                final cycleSeconds = (pollDurationMin * 60) + resultSeconds;
                 final now = DateTime.now();
                 final elapsed = now.difference(startedAt).inSeconds;
                 final iteration = (elapsed / cycleSeconds).floor();
@@ -4086,7 +4654,7 @@ class _PollDialogState extends State<_PollDialog> {
       }
       
       app_logger.Logger.info(
-          'Submitting poll vote: userId=$currentUserId, itemId=${widget.item.id}, answer=$answerStr, sessionId=$sessionId, serverBalance=$serverBalance, amountPerOption=$amountPerOption',
+          'Submitting poll vote: userId=$currentUserId, itemId=${widget.item.id}, answer=$answerStr, sessionId=$sessionId, balanceBefore(optimistic)=$balanceBefore, amountPerOption=$amountPerOption',
           tag: 'EngagementCarousel');
 
       final result = await engagementProvider.submitInteraction(
@@ -4119,7 +4687,7 @@ class _PollDialogState extends State<_PollDialog> {
       }
 
       if (result['success'] == true) {
-        final int newBalance = serverBalance - totalCost;
+        final int newBalance = balanceBefore - totalCost;
 
         // ============================================================================
         // CRITICAL: Points deducted from wp_twork_point_transactions (backend)
@@ -4128,7 +4696,7 @@ class _PollDialogState extends State<_PollDialog> {
         // ============================================================================
         
         app_logger.Logger.info(
-            '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, Balance: $serverBalance → $newBalance',
+            '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, Balance: $balanceBefore → $newBalance',
             tag: 'EngagementCarousel');
 
         // Optimistic update: My PNP card updates instantly (no delay)
@@ -4190,39 +4758,42 @@ class _PollDialogState extends State<_PollDialog> {
         final isDuplicate = result['is_duplicate'] == true;
         final isInsufficient =
             result['code']?.toString().toLowerCase() == 'insufficient_balance';
-        final data = result['data'] as Map<String, dynamic>?;
-        final serverBalanceVal = result['balance'] ?? data?['balance'];
-        final requiredVal = result['required'] ?? data?['required'];
 
         app_logger.Logger.warning(
             'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient',
             tag: 'EngagementCarousel');
 
-        // Show detailed message for insufficient balance (server/client sync issue)
-        // When server returns balance 0 but user had confirmed balance, show friendlier message
-        final int? confirmedBalance = _confirmedBalanceForSubmit;
-        final int requiredInt = requiredVal is int
-            ? requiredVal
-            : (requiredVal is num
-                ? requiredVal.toInt()
-                : int.tryParse(requiredVal.toString()) ?? 0);
-        final bool serverSaysZero =
-            isInsufficient && serverBalanceVal != null && serverBalanceVal == 0;
-        final bool weHadBalance = confirmedBalance != null &&
-            confirmedBalance > 0 &&
-            requiredVal != null &&
-            confirmedBalance >= requiredInt;
+        // Old Code: `confirmedBalance` / `serverSaysZero` / `weHadBalance` / `requiredInt` / layered displayMessage (server `insufficient_balance` already authoritative).
+        // Old Code:        final int? confirmedBalance = _confirmedBalanceForSubmit;
+        // Old Code:        final int requiredInt = requiredVal is int
+        // Old Code:            ? requiredVal
+        // Old Code:            : (requiredVal is num
+        // Old Code:                ? requiredVal.toInt()
+        // Old Code:                : int.tryParse(requiredVal.toString()) ?? 0);
+        // Old Code:        final bool serverSaysZero =
+        // Old Code:            isInsufficient && serverBalanceVal != null && serverBalanceVal == 0;
+        // Old Code:        final bool weHadBalance = confirmedBalance != null &&
+        // Old Code:            confirmedBalance > 0 &&
+        // Old Code:            requiredVal != null &&
+        // Old Code:            confirmedBalance >= requiredInt;
+        // Old Code:        final String displayMessage;
+        // Old Code:        if (isInsufficient && requiredVal != null) {
+        // Old Code:          if (serverSaysZero && weHadBalance) {
+        // Old Code:            displayMessage = ...;
+        // Old Code:          } else if (serverBalanceVal != null) {
+        // Old Code:            displayMessage = ...;
+        // Old Code:          } else {
+        // Old Code:            displayMessage = message;
+        // Old Code:          }
+        // Old Code:        } else {
+        // Old Code:          displayMessage = message;
+        // Old Code:        }
+
         final String displayMessage;
-        if (isInsufficient && requiredVal != null) {
-          if (serverSaysZero && weHadBalance) {
-            displayMessage =
-                'Point မလောက်ပါ။ Server မှာ balance မတွေ့သေးပါ (သင့်လက်ကျန်: $confirmedBalance, လိုအပ်ချက်: $requiredVal)။ ကျေးဇူးပြု၍ ခဏစောင့်ပြီး ထပ်ကြိုးစားပါ။';
-          } else if (serverBalanceVal != null) {
-            displayMessage =
-                'Point မလောက်ပါ။ Server လက်ကျန်: $serverBalanceVal, လိုအပ်ချက်: $requiredVal။ ကျေးဇူးပြု၍ refresh လုပ်ပြီး ထပ်ကြိုးစားပါ။';
-          } else {
-            displayMessage = message;
-          }
+        if (isInsufficient) {
+          final m = message.trim();
+          displayMessage =
+              m.isNotEmpty ? m : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
         } else {
           displayMessage = message;
         }
@@ -4964,153 +5535,41 @@ class _NumberBackgroundPainter extends CustomPainter {
   }
 }
 
-/// CREATIVE DESIGN: Beautiful animated celebration widget for voted polls
-/// Features: Pulse animation, gradient backgrounds, sparkle effects, and smooth transitions
-class _VoteSubmittedCelebration extends StatefulWidget {
-  final BoxConstraints constraints;
-  final String? selectedOption;
-  final String? itemId; // PROFESSIONAL FIX: Item ID for stable key generation
+/// Receipt-style list of selected poll options (per-option Count) on the carousel card.
+class _VoteSubmittedCelebration extends StatelessWidget {
+  final Map<String, int?>? detailedBets;
 
   const _VoteSubmittedCelebration({
     super.key,
-    required this.constraints,
-    this.selectedOption,
-    this.itemId, // Item ID for stable key
+    this.detailedBets,
   });
 
   @override
-  State<_VoteSubmittedCelebration> createState() =>
-      _VoteSubmittedCelebrationState();
-}
-
-class _VoteSubmittedCelebrationState extends State<_VoteSubmittedCelebration> {
-  // PROFESSIONAL FIX: Static map to track vote submission times per item
-  // This ensures the "Vote Submitted!" message stays hidden even if widget is recreated
-  static final Map<String, DateTime> _submissionTimes = {};
-
-  // PROFESSIONAL FIX: Clean up old submission times to prevent memory leaks
-  // Remove entries older than 1 minute
-  static void _cleanupOldEntries() {
-    final now = DateTime.now();
-    final cutoff = now.subtract(const Duration(minutes: 1));
-    _submissionTimes.removeWhere((key, value) => value.isBefore(cutoff));
-  }
-
-  // Call cleanup periodically (called from build to ensure it happens)
-  void _ensureCleanup() {
-    if (_submissionTimes.length > 50) {
-      // Only cleanup if we have many entries
-      _cleanupOldEntries();
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    // PROFESSIONAL FIX: Periodically clean up old submission times
-    _ensureCleanup();
-
-    // PROFESSIONAL: Integrated design - "Vote Submitted!" and "Your Choice" in one unified badge
-    // Hide "Vote Submitted!" message after 3 seconds, keep "Your Choice" visible
-    Widget content = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    final bets = detailedBets;
+    final Widget content = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: BoxDecoration(
-        // Transparent background as requested
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // PROFESSIONAL: Integrated "Your Choice" section - inline layout with enhanced styling
-          if (widget.selectedOption != null &&
-              widget.selectedOption!.trim().isNotEmpty) ...[
-            // PROFESSIONAL: Enhanced inline "Your Choice" with selected answer
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                // CREATIVE: Enhanced vote icon indicator with subtle background
-                Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.how_to_vote_rounded,
-                    color: Colors.white,
-                    size: 16,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                // PROFESSIONAL: Enhanced inline text with "Your Choice" label and selected answer
-                Expanded(
-                  child: RichText(
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    text: TextSpan(
-                      children: [
-                        // "Your Choice" label with professional styling
-                        TextSpan(
-                          text: 'Your Choice: ',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.9),
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.4,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black.withOpacity(0.5),
-                                offset: const Offset(0, 1),
-                                blurRadius: 3,
-                              ),
-                            ],
-                          ),
-                        ),
-                        // Selected answer text with enhanced emphasis
-                        TextSpan(
-                          text: widget.selectedOption!,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.3,
-                            height: 1.3,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black54,
-                                offset: Offset(0, 1.5),
-                                blurRadius: 4,
-                              ),
-                              Shadow(
-                                color: Colors.black38,
-                                offset: Offset(0, 0.5),
-                                blurRadius: 2,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // CREATIVE: Static sparkle decoration (no animation)
-                Icon(
-                  Icons.auto_awesome_rounded,
-                  color: Colors.amber[200],
-                  size: 20,
-                ),
-              ],
+          if (bets != null && bets.isNotEmpty) ...[
+            _pollDetailedReceiptSection(
+              context,
+              detailedBets: bets,
+              calculatedBets: null,
+              heading: 'Your choice',
+              wrapInGlass: true,
             ),
           ],
         ],
       ),
     );
 
-    // "Your Choice" badge should be display-only: tapping must not trigger anything.
-    // Using IgnorePointer ensures taps pass through to parent (e.g. page swipe),
-    // while this badge itself never reacts.
     return IgnorePointer(
       child: SizedBox(
         width: double.infinity,

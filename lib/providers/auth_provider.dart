@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import '../models/auth_user.dart';
 import '../models/auth_response.dart';
@@ -6,6 +8,8 @@ import '../models/register_request.dart';
 import '../services/auth_service.dart';
 import '../services/connectivity_service.dart';
 import '../services/missed_notification_recovery_service.dart';
+import '../services/push_notification_service.dart';
+import 'in_app_notification_provider.dart';
 import '../utils/logger.dart';
 
 enum AuthStatus {
@@ -82,6 +86,8 @@ class AuthProvider with ChangeNotifier {
         _status = AuthStatus.authenticated;
         _setLoading(false); // Set loading to false early to allow navigation
 
+        _reconcilePushAndInAppAfterAuth();
+
         // Verify token in background (non-blocking) - only if online
         try {
           // Check connectivity before making network call
@@ -110,6 +116,7 @@ class AuthProvider with ChangeNotifier {
               _user = currentUser;
               _status = AuthStatus.authenticated;
               notifyListeners();
+              _reconcilePushAndInAppAfterAuth();
             } else {
               Logger.debug(
                   'Token verification failed, but keeping user logged in with stored data',
@@ -147,6 +154,7 @@ class AuthProvider with ChangeNotifier {
               tag: 'AuthProvider');
           _user = storedUser;
           _status = AuthStatus.authenticated;
+          _reconcilePushAndInAppAfterAuth();
         } else {
           _setError('Failed to initialize authentication: $e');
           _status = AuthStatus.unauthenticated;
@@ -169,6 +177,26 @@ class AuthProvider with ChangeNotifier {
     } catch (e) {
       return null;
     }
+  }
+
+  // Old Code: No call after session became available — FCM device token was only uploaded
+  // during PushNotificationService.initialize() when `user_data` was often still missing;
+  // in-app list was not re-hydrated from storage after new login.
+  /// Register FCM token with backend (once [user_data] exists) and reload in-app notification list.
+  void _reconcilePushAndInAppAfterAuth() {
+    unawaited(Future(() async {
+      try {
+        await PushNotificationService().syncFcmTokenToBackendForCurrentUser();
+        await InAppNotificationProvider.instance.loadNotifications();
+      } catch (e, stackTrace) {
+        Logger.debug(
+          'Post-auth push / in-app reconcile: $e',
+          tag: 'AuthProvider',
+          error: e,
+          stackTrace: stackTrace,
+        );
+      }
+    }));
   }
 
   /// Login user
@@ -197,6 +225,8 @@ class AuthProvider with ChangeNotifier {
               tag: 'AuthProvider');
         }
         notifyListeners();
+        // Old Code: `notifyListeners()` only; backend never got FCM token after fresh login.
+        _reconcilePushAndInAppAfterAuth();
         return response;
       } else {
         _setError(response.message);
@@ -239,6 +269,8 @@ class AuthProvider with ChangeNotifier {
               tag: 'AuthProvider');
         }
         notifyListeners();
+        // Old Code: `notifyListeners()` only; same FCM registration gap as login.
+        _reconcilePushAndInAppAfterAuth();
         return response;
       } else {
         _setError(response.message);

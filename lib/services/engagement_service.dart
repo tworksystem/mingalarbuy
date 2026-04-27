@@ -80,6 +80,28 @@ class QuizData {
     return 1000;
   }
 
+  /// PNP actually charged per one betting unit (vote stake), for UI receipts and cost checks.
+  /// Does **not** apply win [reward_multiplier] or engagement reward — those are separate.
+  /// When [pollBaseCost] equals [engagementRewardPoints], treats that as misconfiguration
+  /// (reward stored as base) and falls back to 1000 PNP per unit.
+  int spentPerUnitPnpForPoll({int? engagementRewardPoints}) {
+    if (allowUserAmount) {
+      final s = betAmountStep;
+      if (s != null && s > 0) return s;
+    }
+    if (pollBaseCost > 0 && pollBaseCost < 1000) {
+      return pollBaseCost * 1000;
+    }
+    if (pollBaseCost > 0) {
+      final rp = engagementRewardPoints;
+      if (rp != null && rp > 0 && pollBaseCost == rp) {
+        return 1000;
+      }
+      return pollBaseCost;
+    }
+    return 1000;
+  }
+
   factory QuizData.fromJson(Map<String, dynamic> json) {
     // Determine active/disabled state from multiple possible backend flags
     bool isActive = true;
@@ -159,6 +181,8 @@ class EngagementItem {
   final String? userAnswer;
   /// User Amount mode: the multiplier (1, 2, 3...) user selected when voting. null = Base Cost mode or not voted.
   final int? userBetAmount;
+  /// Optional per-option bet multipliers from API (option index -> units k). When null, UI falls back to [userBetAmount].
+  final Map<int, int>? userBetUnitsPerOption;
   final int?
       rotationDurationSeconds; // Rotation duration in seconds (null = use default)
   final int interactionCount; // Total interactions (for corner badge)
@@ -176,6 +200,7 @@ class EngagementItem {
     required this.hasInteracted,
     this.userAnswer,
     this.userBetAmount,
+    this.userBetUnitsPerOption,
     this.rotationDurationSeconds,
     this.interactionCount = 0,
     this.pollVotingSchedule,
@@ -190,6 +215,7 @@ class EngagementItem {
     Map<String, dynamic>? pollVotingSchedule,
     bool? hasInteracted,
     int? userBetAmount,
+    Map<int, int>? userBetUnitsPerOption,
     bool clearPollResult = false,
   }) =>
       EngagementItem(
@@ -203,6 +229,7 @@ class EngagementItem {
         hasInteracted: hasInteracted ?? this.hasInteracted,
         userAnswer: userAnswer,
         userBetAmount: userBetAmount ?? this.userBetAmount,
+        userBetUnitsPerOption: userBetUnitsPerOption ?? this.userBetUnitsPerOption,
         rotationDurationSeconds: rotationDurationSeconds,
         interactionCount: interactionCount ?? this.interactionCount,
         pollVotingSchedule: pollVotingSchedule ?? this.pollVotingSchedule,
@@ -316,6 +343,27 @@ class EngagementItem {
         ? json['poll_result'] as Map<String, dynamic>
         : null;
 
+    Map<int, int>? _parseUserBetUnitsPerOption(dynamic raw) {
+      if (raw == null) return null;
+      Map<String, dynamic>? m;
+      if (raw is Map) {
+        m = Map<String, dynamic>.from(raw);
+      } else if (raw is String && raw.trim().isNotEmpty) {
+        try {
+          final d = jsonDecode(raw);
+          if (d is Map) m = Map<String, dynamic>.from(d);
+        } catch (_) {}
+      }
+      if (m == null || m.isEmpty) return null;
+      final out = <int, int>{};
+      m.forEach((k, v) {
+        final ki = int.tryParse(k.toString());
+        final vi = v is num ? v.toInt() : int.tryParse(v.toString()) ?? 0;
+        if (ki != null && ki >= 0 && vi > 0) out[ki] = vi;
+      });
+      return out.isEmpty ? null : out;
+    }
+
     return EngagementItem(
       id: json['id'] ?? 0,
       type: type,
@@ -333,6 +381,9 @@ class EngagementItem {
           json['has_interacted'] == '1',
       userAnswer: json['user_answer']?.toString(),
       userBetAmount: _parseUserBetAmount(json['user_bet_amount']),
+      userBetUnitsPerOption: _parseUserBetUnitsPerOption(
+        json['user_bet_amount_per_option'] ?? json['bet_amount_per_option'],
+      ),
       rotationDurationSeconds: rotationDurationSeconds,
       interactionCount: interactionCount,
       pollVotingSchedule: pollVotingSchedule,
@@ -694,15 +745,40 @@ class EngagementService {
           throw const FormatException('Response is not JSON object');
         }
 
+        int? parseNumeric(dynamic v) {
+          if (v == null) return null;
+          if (v is int) return v;
+          if (v is num) return v.toInt();
+          final s = v.toString().trim().replaceAll(RegExp(r'[^0-9-]'), '');
+          if (s.isEmpty || s == '-') return null;
+          return int.tryParse(s);
+        }
+
         if (data['success'] == true) {
-          // Handle new response format with nested 'data' object
-          final responseData = data['data'] as Map<String, dynamic>?;
+          // Old Code:
+          // final responseData = data['data'] as Map<String, dynamic>?;
+          //
+          // New Code:
+          // Accept dynamic map payload and normalize key numeric fields for callers.
+          final rawResponseData = data['data'];
+          final responseData = rawResponseData is Map
+              ? Map<String, dynamic>.from(rawResponseData)
+              : null;
           final isCorrect =
               responseData?['is_correct'] ?? data['is_correct'] ?? false;
           final pointsEarned = responseData?['points_earned'] ??
               data['points_earned'] ??
               data['points_awarded'] ??
               0;
+          final parsedNewBalance = parseNumeric(
+            responseData?['new_balance'] ?? data['new_balance'],
+          );
+          final parsedRequired = parseNumeric(
+            responseData?['required'] ?? data['required'],
+          );
+          final parsedBalance = parseNumeric(
+            responseData?['balance'] ?? data['balance'],
+          );
 
           app_logger.Logger.info(
               'Interaction submitted successfully - Correct: $isCorrect, Points: $pointsEarned',
@@ -715,6 +791,9 @@ class EngagementService {
                 : (pointsEarned as num).toInt(),
             'message': data['message']?.toString() ?? 'Success',
             'data': responseData,
+            if (parsedNewBalance != null) 'new_balance': parsedNewBalance,
+            if (parsedRequired != null) 'required': parsedRequired,
+            if (parsedBalance != null) 'balance': parsedBalance,
           };
         }
 
@@ -742,21 +821,34 @@ class EngagementService {
         }
 
         app_logger.Logger.error(
-            'Interaction error: $_lastError (status=${response?.statusCode})',
+            'Interaction error: $_lastError (status=${response.statusCode})',
             tag: 'EngagementService');
+
+        // Old Code: return {
+        // Old Code:   'success': false,
+        // Old Code:   'message': _lastError,
+        // Old Code:   'data': data['data'],
+        // Old Code:   'code': code,
+        // Old Code:   // Pass through balance/required for insufficient_balance (backend puts at top level)
+        // Old Code:   if (data['balance'] != null) 'balance': data['balance'],
+        // Old Code:   if (data['required'] != null) 'required': data['required'],
+        // Old Code: };
+        final parsedBalance = parseNumeric(data['balance']);
+        final parsedRequired = parseNumeric(data['required']);
+
         return {
           'success': false,
           'message': _lastError,
           'data': data['data'],
           'code': code,
-          // Pass through balance/required for insufficient_balance (backend puts at top level)
-          if (data['balance'] != null) 'balance': data['balance'],
-          if (data['required'] != null) 'required': data['required'],
+          // Keep authoritative insufficient payload normalized as int for UI validators/messages.
+          if (parsedBalance != null) 'balance': parsedBalance,
+          if (parsedRequired != null) 'required': parsedRequired,
         };
       } catch (e, stackTrace) {
         // Not JSON (or unexpected). Fall back to status-based error.
         _lastError =
-            'Invalid response from server. Status: ${response?.statusCode}';
+            'Invalid response from server. Status: ${response.statusCode}';
         final String full = ApiService.responseBodyString(response);
         final responsePreview = full.length > 500
             ? '${full.substring(0, 500)}...'

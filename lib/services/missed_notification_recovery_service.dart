@@ -108,6 +108,7 @@ class MissedNotificationRecoveryService {
 
           // Create in-app notification with transaction ID
           // This ensures duplicate prevention works correctly
+          // Old Code: .createPointNotification( ... transactionId: txn.id only — [eventOccurredAt] missing; in-app [createdAt] was DateTime.now()).
           final wasCreated = await InAppNotificationService().createPointNotification(
             type: 'engagement_points',
             title: notificationTitle,
@@ -115,6 +116,7 @@ class MissedNotificationRecoveryService {
             points: txn.points.toString(),
             currentBalance: null, // Will use cached balance
             transactionId: txn.id,
+            eventOccurredAt: txn.createdAt,
             additionalData: {
               'itemType': 'poll',
               'itemTitle': pollTitle,

@@ -147,8 +147,11 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
             ),
             title: Row(
               children: [
-                Icon(Icons.warning_amber_rounded,
-                    color: Colors.orange.shade700, size: 28),
+                Icon(
+                  Icons.warning_amber_rounded,
+                  color: Colors.orange.shade700,
+                  size: 28,
+                ),
                 const SizedBox(width: 12),
                 const Text(
                   'Confirm Withdrawal',
@@ -166,7 +169,9 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                 ),
                 const SizedBox(height: 16),
                 _buildConfirmationRow(
-                    'Amount', '${amount.toStringAsFixed(2)} Ks'),
+                  'Amount',
+                  '${amount.toStringAsFixed(2)} Ks',
+                ),
                 const SizedBox(height: 8),
                 _buildConfirmationRow('Method', _selectedMethod.displayName),
                 const SizedBox(height: 8),
@@ -177,23 +182,33 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                   const SizedBox(height: 8),
                 ] else if (_selectedMethod != WithdrawalMethod.bank) ...[
                   _buildConfirmationRow(
-                      'Pay Name', _selectedMethod.displayName),
+                    'Pay Name',
+                    _selectedMethod.displayName,
+                  ),
                   const SizedBox(height: 8),
                 ],
                 _buildConfirmationRow(
-                    _accountNumberLabel, _accountNumberController.text.trim()),
+                  _accountNumberLabel,
+                  _accountNumberController.text.trim(),
+                ),
                 if (_accountNameController.text.trim().isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _buildConfirmationRow(
-                      'Account Name', _accountNameController.text.trim()),
+                    'Account Name',
+                    _accountNameController.text.trim(),
+                  ),
                 ],
                 if (_availableBalance != null) ...[
                   const SizedBox(height: 8),
-                  _buildConfirmationRow('Available Balance',
-                      '${_availableBalance!.toStringAsFixed(2)} Ks'),
+                  _buildConfirmationRow(
+                    'Available Balance',
+                    '${_availableBalance!.toStringAsFixed(2)} Ks',
+                  ),
                   const SizedBox(height: 8),
-                  _buildConfirmationRow('Balance After',
-                      '${(_availableBalance! - amount).toStringAsFixed(2)} Ks'),
+                  _buildConfirmationRow(
+                    'Balance After',
+                    '${(_availableBalance! - amount).toStringAsFixed(2)} Ks',
+                  ),
                 ],
               ],
             ),
@@ -230,7 +245,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
         Text(
           value,
           style: const TextStyle(
-              fontSize: 14, fontWeight: FontWeight.bold, color: darkGrey),
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: darkGrey,
+          ),
         ),
       ],
     );
@@ -291,16 +309,18 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
         accountName: _accountNameController.text.trim().isEmpty
             ? null
             : _accountNameController.text.trim(),
-        bankName:
-            _selectedMethod == WithdrawalMethod.bank ? _selectedBankName : null,
+        bankName: _selectedMethod == WithdrawalMethod.bank
+            ? _selectedBankName
+            : null,
         notes: _notesController.text.trim().isEmpty
             ? null
             : _notesController.text.trim(),
       );
 
       Logger.info(
-          'Submitting withdrawal request: ${amount.toStringAsFixed(2)} Ks via ${_selectedMethod.displayName}',
-          tag: 'WithdrawalDialog');
+        'Submitting withdrawal request: ${amount.toStringAsFixed(2)} Ks via ${_selectedMethod.displayName}',
+        tag: 'WithdrawalDialog',
+      );
 
       // Process withdrawal
       final result = await walletProvider.withdrawFromBalance(request);
@@ -357,8 +377,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
           _errorMessage = 'Failed to process withdrawal. Please try again.';
         });
         HapticFeedback.heavyImpact();
-        Logger.error('Error submitting withdrawal: $e',
-            tag: 'WithdrawalDialog');
+        Logger.error(
+          'Error submitting withdrawal: $e',
+          tag: 'WithdrawalDialog',
+        );
       }
     }
   }
@@ -376,8 +398,11 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.check_circle,
-                        color: Colors.white, size: 24),
+                    const Icon(
+                      Icons.check_circle,
+                      color: Colors.white,
+                      size: 24,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
@@ -424,23 +449,19 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
   @override
   Widget build(BuildContext context) {
     // Build the appropriate screen based on state
-    final content =
-        _showSuccessScreen ? _buildSuccessScreen() : _buildFormScreen();
+    final content = _showSuccessScreen
+        ? _buildSuccessScreen()
+        : _buildFormScreen();
 
     return Dialog(
       backgroundColor: Colors.white,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       elevation: 8,
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 300),
         transitionBuilder: (Widget child, Animation<double> animation) {
-          return FadeTransition(
-            opacity: animation,
-            child: child,
-          );
+          return FadeTransition(opacity: animation, child: child);
         },
         child: Container(
           key: ValueKey(_showSuccessScreen ? 'success' : 'form'),
@@ -504,20 +525,28 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
               ),
               child: Column(
                 children: [
-                  _buildSuccessRow('Amount Withdrawn',
-                      '${_withdrawnAmount!.toStringAsFixed(2)} Ks'),
-                  const Divider(height: 20),
-                  _buildSuccessRow('Previous Balance',
-                      '${_previousBalance!.toStringAsFixed(2)} Ks'),
+                  _buildSuccessRow(
+                    'Amount Withdrawn',
+                    '${_withdrawnAmount!.toStringAsFixed(2)} Ks',
+                  ),
                   const Divider(height: 20),
                   _buildSuccessRow(
-                      'New Balance', '${_newBalance!.toStringAsFixed(2)} Ks',
-                      isHighlight: true),
+                    'Previous Balance',
+                    '${_previousBalance!.toStringAsFixed(2)} Ks',
+                  ),
+                  const Divider(height: 20),
+                  _buildSuccessRow(
+                    'New Balance',
+                    '${_newBalance!.toStringAsFixed(2)} Ks',
+                    isHighlight: true,
+                  ),
                   if (_withdrawalResult?.transactionId != null) ...[
                     const Divider(height: 20),
                     _buildSuccessRow(
-                        'Transaction ID', _withdrawalResult!.transactionId!,
-                        isSmall: true),
+                      'Transaction ID',
+                      _withdrawalResult!.transactionId!,
+                      isSmall: true,
+                    ),
                   ],
                 ],
               ),
@@ -531,8 +560,11 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline,
-                      color: Colors.blue.shade700, size: 20),
+                  Icon(
+                    Icons.info_outline,
+                    color: Colors.blue.shade700,
+                    size: 20,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
@@ -552,8 +584,12 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
     );
   }
 
-  Widget _buildSuccessRow(String label, String value,
-      {bool isHighlight = false, bool isSmall = false}) {
+  Widget _buildSuccessRow(
+    String label,
+    String value, {
+    bool isHighlight = false,
+    bool isSmall = false,
+  }) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -584,9 +620,7 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
     if (_availableBalance == null) {
       return Container(
         padding: const EdgeInsets.all(48.0),
-        constraints: const BoxConstraints(
-          minHeight: 200,
-        ),
+        constraints: const BoxConstraints(minHeight: 200),
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -636,8 +670,11 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                         color: mediumYellow.withValues(alpha: 0.2),
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Icon(Icons.account_balance_wallet,
-                          color: mediumYellow, size: 24),
+                      child: Icon(
+                        Icons.account_balance_wallet,
+                        color: mediumYellow,
+                        size: 24,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     const Expanded(
@@ -685,8 +722,11 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.account_balance_wallet,
-                              color: Colors.white, size: 20),
+                          Icon(
+                            Icons.account_balance_wallet,
+                            color: Colors.white,
+                            size: 20,
+                          ),
                           const SizedBox(width: 8),
                           Text(
                             'Available Balance',
@@ -803,19 +843,23 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide:
-                          const BorderSide(color: mediumYellow, width: 2),
+                      borderSide: const BorderSide(
+                        color: mediumYellow,
+                        width: 2,
+                      ),
                     ),
                     errorBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: Colors.red.shade300),
                     ),
                   ),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   inputFormatters: [
                     FilteringTextInputFormatter.allow(
-                        RegExp(r'^\d+\.?\d{0,2}')),
+                      RegExp(r'^\d+\.?\d{0,2}'),
+                    ),
                   ],
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) {
@@ -861,8 +905,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide:
-                          const BorderSide(color: mediumYellow, width: 2),
+                      borderSide: const BorderSide(
+                        color: mediumYellow,
+                        width: 2,
+                      ),
                     ),
                   ),
                   keyboardType: _selectedMethod == WithdrawalMethod.bank
@@ -897,8 +943,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide:
-                          const BorderSide(color: mediumYellow, width: 2),
+                      borderSide: const BorderSide(
+                        color: mediumYellow,
+                        width: 2,
+                      ),
                     ),
                   ),
                   enabled: !_isProcessing,
@@ -927,8 +975,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide:
-                            const BorderSide(color: mediumYellow, width: 2),
+                        borderSide: const BorderSide(
+                          color: mediumYellow,
+                          width: 2,
+                        ),
                       ),
                       errorBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -936,8 +986,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                       ),
                       focusedErrorBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide:
-                            BorderSide(color: Colors.red.shade400, width: 2),
+                        borderSide: BorderSide(
+                          color: Colors.red.shade400,
+                          width: 2,
+                        ),
                       ),
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 16,
@@ -952,10 +1004,7 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     iconDisabledColor: Colors.grey.shade400,
                     isExpanded: true,
                     isDense: false,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      color: darkGrey,
-                    ),
+                    style: const TextStyle(fontSize: 16, color: darkGrey),
                     dropdownColor: Colors.white,
                     borderRadius: BorderRadius.circular(12),
                     menuMaxHeight: 300,
@@ -1043,8 +1092,10 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide:
-                          const BorderSide(color: mediumYellow, width: 2),
+                      borderSide: const BorderSide(
+                        color: mediumYellow,
+                        width: 2,
+                      ),
                     ),
                   ),
                   maxLines: 2,
@@ -1059,13 +1110,18 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     decoration: BoxDecoration(
                       color: Colors.red.shade50,
                       borderRadius: BorderRadius.circular(12),
-                      border:
-                          Border.all(color: Colors.red.shade200, width: 1.5),
+                      border: Border.all(
+                        color: Colors.red.shade200,
+                        width: 1.5,
+                      ),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.error_outline,
-                            color: Colors.red.shade700, size: 24),
+                        Icon(
+                          Icons.error_outline,
+                          color: Colors.red.shade700,
+                          size: 24,
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -1107,7 +1163,8 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2.8,
                                   valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white),
+                                    Colors.white,
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -1237,8 +1294,9 @@ class _WithdrawalDialogState extends State<WithdrawalDialog>
                     method.displayName,
                     style: TextStyle(
                       color: isSelected ? color : Colors.grey.shade700,
-                      fontWeight:
-                          isSelected ? FontWeight.bold : FontWeight.w500,
+                      fontWeight: isSelected
+                          ? FontWeight.bold
+                          : FontWeight.w500,
                       fontSize: 10, // Smaller font for compact design
                       height: 1.2,
                     ),

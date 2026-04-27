@@ -7,20 +7,21 @@ import 'package:flutter/services.dart';
 /// Example API payload when submitting:
 /// ```dart
 /// {
-///   'poll_duration': 15,           // minutes
-///   'result_display_duration': 1,  // minutes
+///   'poll_duration': 15,                      // minutes
+///   'result_display_duration_seconds': 90,   // total seconds (e.g. 1 min 30 sec)
 /// }
 /// ```
 class PollTimerConfigForm extends StatefulWidget {
   final int initialPollDuration;
-  final int initialResultDisplayDuration;
+  /// Total seconds for the result phase (canonical; matches WordPress `result_display_duration_seconds`).
+  final int initialResultDisplayDurationSeconds;
   final ValueChanged<Map<String, dynamic>>? onSubmit;
   final AutovalidateMode autovalidateMode;
 
   const PollTimerConfigForm({
     super.key,
     this.initialPollDuration = 15,
-    this.initialResultDisplayDuration = 1,
+    this.initialResultDisplayDurationSeconds = 60,
     this.onSubmit,
     this.autovalidateMode = AutovalidateMode.onUserInteraction,
   });
@@ -32,7 +33,8 @@ class PollTimerConfigForm extends StatefulWidget {
 class _PollTimerConfigFormState extends State<PollTimerConfigForm> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _pollDurationController;
-  late TextEditingController _resultDisplayController;
+  late TextEditingController _resultMinutesController;
+  late TextEditingController _resultSecondsController;
 
   @override
   void initState() {
@@ -40,15 +42,18 @@ class _PollTimerConfigFormState extends State<PollTimerConfigForm> {
     _pollDurationController = TextEditingController(
       text: widget.initialPollDuration.toString(),
     );
-    _resultDisplayController = TextEditingController(
-      text: widget.initialResultDisplayDuration.toString(),
-    );
+    final capped = widget.initialResultDisplayDurationSeconds.clamp(0, 60 * 60 + 59);
+    final rm = capped ~/ 60;
+    final rs = capped % 60;
+    _resultMinutesController = TextEditingController(text: rm.toString());
+    _resultSecondsController = TextEditingController(text: rs.toString());
   }
 
   @override
   void dispose() {
     _pollDurationController.dispose();
-    _resultDisplayController.dispose();
+    _resultMinutesController.dispose();
+    _resultSecondsController.dispose();
     super.dispose();
   }
 
@@ -69,10 +74,10 @@ class _PollTimerConfigFormState extends State<PollTimerConfigForm> {
     return null;
   }
 
-  String? _validateResultDisplay(String? value) {
+  String? _validateResultMinutes(String? value) {
     final v = _parseInt(value ?? '');
     if (v == null || v < 0) {
-      return 'Result display duration cannot be empty or negative. Enter minutes (e.g. 0, 1, 5).';
+      return 'Minutes cannot be empty or negative (0–60).';
     }
     if (v > 60) {
       return 'Maximum 60 minutes.';
@@ -80,13 +85,30 @@ class _PollTimerConfigFormState extends State<PollTimerConfigForm> {
     return null;
   }
 
+  String? _validateResultSeconds(String? value) {
+    final v = _parseInt(value ?? '');
+    if (v == null || v < 0) {
+      return 'Seconds cannot be empty or negative (0–59).';
+    }
+    if (v > 59) {
+      return 'Seconds must be 0–59.';
+    }
+    return null;
+  }
+
+  /// Combines minutes and seconds into one integer for the API / DB (seconds = minutes×60 + seconds).
+  static int combineResultDisplaySeconds(int minutes, int seconds) {
+    return (minutes.clamp(0, 60) * 60) + seconds.clamp(0, 59);
+  }
+
   Map<String, dynamic> _buildPayload() {
     final pollDuration = int.tryParse(_pollDurationController.text.trim()) ?? 15;
-    final resultDisplay =
-        int.tryParse(_resultDisplayController.text.trim()) ?? 1;
+    final rm = int.tryParse(_resultMinutesController.text.trim()) ?? 0;
+    final rs = int.tryParse(_resultSecondsController.text.trim()) ?? 0;
+    final totalSeconds = combineResultDisplaySeconds(rm, rs);
     return {
       'poll_duration': pollDuration,
-      'result_display_duration': resultDisplay,
+      'result_display_duration_seconds': totalSeconds,
     };
   }
 
@@ -119,21 +141,50 @@ class _PollTimerConfigFormState extends State<PollTimerConfigForm> {
             onFieldSubmitted: (_) => _handleSubmit(),
           ),
           const SizedBox(height: 16),
-          TextFormField(
-            controller: _resultDisplayController,
-            decoration: const InputDecoration(
-              labelText: 'Result Display Duration (minutes)',
-              hintText: 'e.g. 0, 1, 5',
-              border: OutlineInputBorder(),
-              helperText:
-                  'How long to show the winning result before next vote (0–60)',
-            ),
-            keyboardType: TextInputType.number,
-            inputFormatters: [
-              FilteringTextInputFormatter.digitsOnly,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextFormField(
+                  controller: _resultMinutesController,
+                  decoration: const InputDecoration(
+                    labelText: 'Result display — minutes',
+                    hintText: '0–60',
+                    border: OutlineInputBorder(),
+                    helperText: '0–60',
+                  ),
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  validator: _validateResultMinutes,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextFormField(
+                  controller: _resultSecondsController,
+                  decoration: const InputDecoration(
+                    labelText: 'Result display — seconds',
+                    hintText: '0–59',
+                    border: OutlineInputBorder(),
+                    helperText: '0–59',
+                  ),
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  validator: _validateResultSeconds,
+                ),
+              ),
             ],
-            validator: _validateResultDisplay,
-            onFieldSubmitted: (_) => _handleSubmit(),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'How long to show the winning result before the next vote. Stored as total seconds on the server.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
           ),
           if (widget.onSubmit != null) ...[
             const SizedBox(height: 20),

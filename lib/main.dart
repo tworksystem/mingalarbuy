@@ -115,6 +115,12 @@ void main() async {
         try {
           await BackgroundService.initialize();
           await BackgroundService.registerPeriodicTask();
+          // Old Code: only periodic registration at startup.
+          // New Code: also request a near-term one-off tick so backend gets nudged
+          // quickly after cold start (best effort, OS may defer).
+          await BackgroundService.registerAutoRunPollOneOffTick(
+            initialDelay: const Duration(seconds: 30),
+          );
         } catch (e) {
           Logger.error('Background service initialization failed: $e',
               tag: 'Main', error: e);
@@ -522,7 +528,20 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         if (authProvider.isAuthenticated && authProvider.user != null) {
           final userId = authProvider.user!.id;
           final token = authProvider.token;
-          
+          final userIdString = userId.toString();
+
+          // Sync point balance with server (e.g. poll winner credits from WP-Cron / background).
+          PointProvider.instance
+              .loadBalance(userIdString, forceRefresh: true)
+              .catchError((e) {
+            Logger.warning(
+                'Error refreshing point balance on app resume: $e',
+                tag: 'Main',
+                error: e);
+          });
+          Logger.info('Point balance refresh triggered on app resume (forceRefresh)',
+              tag: 'Main');
+
           engagementProvider.refreshImmediately(
             userId: userId,
             token: token,
@@ -545,9 +564,33 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       // App going to background - stop active polling to save battery
       _stopActiveSync();
 
+      // Old Code: no immediate background task nudge for auto-run poll lifecycle.
+      // New Code: schedule one-off background tick so backend keeps progressing
+      // AUTO_RUN state while app is backgrounded.
+      if (!kIsWeb) {
+        BackgroundService.registerAutoRunPollOneOffTick(
+          initialDelay: const Duration(seconds: 15),
+        ).catchError((e) {
+          Logger.warning('Failed scheduling background auto-run poll tick: $e',
+              tag: 'Main', error: e);
+        });
+      }
+
       // End usage tracking session when app goes to background
       _handleUsageTrackingPause();
     } else if (state == AppLifecycleState.detached) {
+      // Old Code: detached only ended usage tracking.
+      // New Code: request one last best-effort server tick before termination.
+      if (!kIsWeb) {
+        BackgroundService.registerAutoRunPollOneOffTick(
+          initialDelay: const Duration(seconds: 5),
+        ).catchError((e) {
+          Logger.warning(
+              'Failed scheduling detached auto-run poll background tick: $e',
+              tag: 'Main',
+              error: e);
+        });
+      }
       // App is being terminated - end session
       _handleUsageTrackingDetached();
     }

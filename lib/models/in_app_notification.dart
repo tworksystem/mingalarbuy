@@ -32,12 +32,59 @@ class InAppNotification {
         (e) => e.toString() == json['type'],
         orElse: () => NotificationType.info,
       ),
-      createdAt: DateTime.parse(json['createdAt'] as String),
+      // Old Code: createdAt: DateTime.parse(json['createdAt'] as String),
+      createdAt: parseCreatedAtFromJson(json),
       isRead: json['isRead'] as bool? ?? false,
       data: json['data'] as Map<String, dynamic>?,
       imageUrl: json['imageUrl'] as String?,
       actionUrl: json['actionUrl'] as String?,
     );
+  }
+
+  /// Parses [createdAt] from storage/API keys; normalizes to a consistent [DateTime] instant.
+  /// Does **not** use [DateTime.now] when missing — that made stale rows look like "Just now".
+  static DateTime parseCreatedAtFromJson(Map<String, dynamic> json) {
+    // Old Code: return DateTime.parse(json['createdAt'] as String);
+    final Object? raw =
+        json['createdAt'] ?? json['created_at'] ?? json['updatedAt'] ?? json['updated_at'];
+    if (raw == null) {
+      // Sentinel: unknown time; UI will not show as "now" (see timeago helper).
+      return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+    }
+    if (raw is int) {
+      final int v = raw;
+      if (v > 1000000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(v, isUtc: true);
+      }
+      if (v > 1000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true);
+      }
+    } else if (raw is num) {
+      final int v = raw.round();
+      if (v > 1000000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(v, isUtc: true);
+      }
+      if (v > 1000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true);
+      }
+    } else if (raw is String) {
+      final String s = raw.trim();
+      if (s.isNotEmpty) {
+        final DateTime? p = DateTime.tryParse(s);
+        if (p != null) {
+          return p;
+        }
+      }
+    } else {
+      final String s = raw.toString().trim();
+      if (s.isNotEmpty) {
+        final DateTime? p = DateTime.tryParse(s);
+        if (p != null) {
+          return p;
+        }
+      }
+    }
+    return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
   }
 
   /// Convert to JSON
@@ -47,7 +94,8 @@ class InAppNotification {
       'title': title,
       'body': body,
       'type': type.toString(),
-      'createdAt': createdAt.toIso8601String(),
+      // Old Code: 'createdAt': createdAt.toIso8601String(),
+      'createdAt': createdAt.toUtc().toIso8601String(),
       'isRead': isRead,
       'data': data,
       'imageUrl': imageUrl,

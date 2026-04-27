@@ -7,6 +7,7 @@ class PointTransaction {
   final int points;
   final String? description;
   final String? orderId;
+  final PollTransactionDetails? pollDetails;
   final DateTime createdAt;
   final DateTime? expiresAt;
   final bool isExpired;
@@ -19,6 +20,7 @@ class PointTransaction {
     required this.points,
     this.description,
     this.orderId,
+    this.pollDetails,
     required this.createdAt,
     this.expiresAt,
     this.isExpired = false,
@@ -148,6 +150,24 @@ class PointTransaction {
 
   /// Create from JSON
   factory PointTransaction.fromJson(Map<String, dynamic> json) {
+    PollTransactionDetails? parsedPollDetails;
+    // OLD CODE: Only parse poll_details / pollDetails objects.
+    // New Code: also support legacy flat keys from backend and normalize into PollTransactionDetails.
+    if (json['poll_details'] is Map<String, dynamic>) {
+      parsedPollDetails = PollTransactionDetails.fromJson(
+        json['poll_details'] as Map<String, dynamic>,
+      );
+    } else if (json['pollDetails'] is Map<String, dynamic>) {
+      parsedPollDetails = PollTransactionDetails.fromJson(
+        json['pollDetails'] as Map<String, dynamic>,
+      );
+    } else if (json.containsKey('selected_option') ||
+        json.containsKey('bet_amount') ||
+        json.containsKey('winning_option') ||
+        json.containsKey('won_amount')) {
+      parsedPollDetails = PollTransactionDetails.fromLegacyFlatJson(json);
+    }
+
     return PointTransaction(
       id: json['id']?.toString() ?? '',
       userId: json['user_id']?.toString() ?? json['userId']?.toString() ?? '',
@@ -157,6 +177,7 @@ class PointTransaction {
       points: _parseInt(json['points']),
       description: json['description']?.toString(),
       orderId: json['order_id']?.toString() ?? json['orderId']?.toString(),
+      pollDetails: parsedPollDetails,
       createdAt: json['created_at'] != null
           ? _parseServerDateTime(json['created_at'])
           : json['createdAt'] != null
@@ -170,6 +191,34 @@ class PointTransaction {
       isExpired: json['is_expired'] ?? json['isExpired'] ?? false,
       status: PointTransactionStatusExtension.fromString(
           json['status']?.toString() ?? 'approved'),
+    );
+  }
+
+  PointTransaction copyWith({
+    String? id,
+    String? userId,
+    PointTransactionType? type,
+    int? points,
+    String? description,
+    String? orderId,
+    PollTransactionDetails? pollDetails,
+    DateTime? createdAt,
+    DateTime? expiresAt,
+    bool? isExpired,
+    PointTransactionStatus? status,
+  }) {
+    return PointTransaction(
+      id: id ?? this.id,
+      userId: userId ?? this.userId,
+      type: type ?? this.type,
+      points: points ?? this.points,
+      description: description ?? this.description,
+      orderId: orderId ?? this.orderId,
+      pollDetails: pollDetails ?? this.pollDetails,
+      createdAt: createdAt ?? this.createdAt,
+      expiresAt: expiresAt ?? this.expiresAt,
+      isExpired: isExpired ?? this.isExpired,
+      status: status ?? this.status,
     );
   }
 
@@ -218,6 +267,7 @@ class PointTransaction {
       'points': points,
       'description': description,
       'order_id': orderId,
+      if (pollDetails != null) 'poll_details': pollDetails!.toJson(),
       // Convert Myanmar time back to UTC for storage
       // This ensures when we load from cache, we can convert it to Myanmar time again
       'created_at': _myanmarTimeToUtc(createdAt).toIso8601String(),
@@ -282,6 +332,175 @@ class PointTransaction {
 
   /// Check if transaction is rejected
   bool get isRejected => status == PointTransactionStatus.rejected;
+}
+
+class PollTransactionDetails {
+  final int? pollId;
+  final String? pollTitle;
+  final String? sessionId;
+  final String? resultStatus; // won / lost / pending
+  final int totalBetPnp;
+  final int wonAmountPnp;
+  final int netAmountPnp;
+  final PollOptionSnapshot? winningOption;
+  final List<PollOptionSnapshot> selectedOptions;
+
+  PollTransactionDetails({
+    this.pollId,
+    this.pollTitle,
+    this.sessionId,
+    this.resultStatus,
+    this.totalBetPnp = 0,
+    this.wonAmountPnp = 0,
+    this.netAmountPnp = 0,
+    this.winningOption,
+    this.selectedOptions = const [],
+  });
+
+  static int _parseInt(dynamic value) {
+    if (value == null) return 0;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    final s = value.toString().trim();
+    if (s.isEmpty) return 0;
+    return int.tryParse(s) ?? (double.tryParse(s)?.toInt() ?? 0);
+  }
+
+  factory PollTransactionDetails.fromJson(Map<String, dynamic> json) {
+    final selectedRaw = json['selected_options'];
+    final List<PollOptionSnapshot> selected;
+    if (selectedRaw is List) {
+      selected = selectedRaw
+          .whereType<Map>()
+          .map((e) => PollOptionSnapshot.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    } else {
+      selected = const [];
+    }
+
+    final winningRaw = json['winning_option'];
+    final PollOptionSnapshot? winning = winningRaw is Map
+        ? PollOptionSnapshot.fromJson(Map<String, dynamic>.from(winningRaw))
+        : null;
+
+    return PollTransactionDetails(
+      pollId: json['poll_id'] == null ? null : _parseInt(json['poll_id']),
+      pollTitle: json['poll_title']?.toString(),
+      sessionId: json['session_id']?.toString(),
+      resultStatus: json['result_status']?.toString(),
+      totalBetPnp: _parseInt(json['total_bet_pnp']),
+      wonAmountPnp: _parseInt(json['won_amount_pnp']),
+      netAmountPnp: _parseInt(json['net_amount_pnp']),
+      winningOption: winning,
+      selectedOptions: selected,
+    );
+  }
+
+  factory PollTransactionDetails.fromLegacyFlatJson(
+      Map<String, dynamic> json) {
+    final selectedRaw = json['selected_option']?.toString() ?? '';
+    final selected = <PollOptionSnapshot>[];
+    if (selectedRaw.trim().isNotEmpty) {
+      for (final part in selectedRaw.split(',')) {
+        final idx = _parseInt(part.trim());
+        selected.add(
+          PollOptionSnapshot(
+            index: idx,
+            label: 'Option ${idx + 1}',
+            betUnits: _parseInt(json['bet_amount']),
+            betPnp: 0,
+          ),
+        );
+      }
+    }
+
+    final winningRaw = json['winning_option'];
+    PollOptionSnapshot? winning;
+    if (winningRaw != null && winningRaw.toString().trim().isNotEmpty) {
+      if (winningRaw is Map<String, dynamic>) {
+        winning = PollOptionSnapshot.fromJson(winningRaw);
+      } else {
+        final idx = _parseInt(winningRaw);
+        winning = PollOptionSnapshot(index: idx, label: 'Option ${idx + 1}');
+      }
+    }
+
+    final won = _parseInt(json['won_amount']);
+    final betUnits = _parseInt(json['bet_amount']);
+
+    return PollTransactionDetails(
+      resultStatus: won > 0 ? 'won' : 'pending',
+      totalBetPnp: 0,
+      wonAmountPnp: won,
+      netAmountPnp: won,
+      winningOption: winning,
+      selectedOptions: selected.isEmpty
+          ? [
+              PollOptionSnapshot(
+                index: 0,
+                label: '',
+                betUnits: betUnits,
+                betPnp: 0,
+              )
+            ]
+          : selected,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'poll_id': pollId,
+      'poll_title': pollTitle,
+      'session_id': sessionId,
+      'result_status': resultStatus,
+      'total_bet_pnp': totalBetPnp,
+      'won_amount_pnp': wonAmountPnp,
+      'net_amount_pnp': netAmountPnp,
+      'winning_option': winningOption?.toJson(),
+      'selected_options': selectedOptions.map((e) => e.toJson()).toList(),
+    };
+  }
+}
+
+class PollOptionSnapshot {
+  final int index;
+  final String label;
+  final int betUnits;
+  final int betPnp;
+
+  PollOptionSnapshot({
+    required this.index,
+    required this.label,
+    this.betUnits = 0,
+    this.betPnp = 0,
+  });
+
+  static int _parseInt(dynamic value) {
+    if (value == null) return 0;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    final s = value.toString().trim();
+    if (s.isEmpty) return 0;
+    return int.tryParse(s) ?? (double.tryParse(s)?.toInt() ?? 0);
+  }
+
+  factory PollOptionSnapshot.fromJson(Map<String, dynamic> json) {
+    return PollOptionSnapshot(
+      index: _parseInt(json['index']),
+      label: json['label']?.toString() ?? '',
+      betUnits: _parseInt(json['bet_units']),
+      betPnp: _parseInt(json['bet_pnp']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'index': index,
+      'label': label,
+      'bet_units': betUnits,
+      'bet_pnp': betPnp,
+    };
+  }
 }
 
 /// Point transaction types

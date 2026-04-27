@@ -185,7 +185,7 @@ class PointNotificationManager {
             preferredContext != null && preferredContext.mounted;
 
         if (hasContext) {
-          await _showModalWithContext(preferredContext!, event);
+          await _showModalWithContext(preferredContext, event);
         } else {
           _queueModalForDisplay(event);
         }
@@ -434,11 +434,47 @@ class PointNotificationManager {
           break;
       }
 
+      // OLD CODE:
+      // final success = await _inAppNotificationService.createPointNotification(
+      //   type: notificationType,
+      //   title: title,
+      //   body: body,
+      //   transactionId: transactionId,
+      //   points: points.toString(),
+      //   currentBalance: currentBalance.toString(),
+      //   additionalData: additionalData,
+      // );
+      //
+      // New Code:
+      // For poll winners, pass a stable requestId derived from pollId+sessionId
+      // so storage-level idempotency survives app restarts.
+      final pollId = (additionalData?['pollId'] ??
+              additionalData?['poll_id'] ??
+              additionalData?['itemId'] ??
+              additionalData?['item_id'])
+          ?.toString();
+      final sessionId =
+          (additionalData?['sessionId'] ?? additionalData?['session_id'])
+              ?.toString();
+      final itemType =
+          (additionalData?['itemType'] ?? additionalData?['item_type'])
+              ?.toString()
+              .toLowerCase();
+      final stableRequestId = (notificationType == 'engagement_points' &&
+              itemType == 'poll' &&
+              pollId != null &&
+              pollId.isNotEmpty &&
+              sessionId != null &&
+              sessionId.isNotEmpty)
+          ? 'poll_${pollId}_$sessionId'
+          : requestIdFromAdditional(additionalData);
+
       final success = await _inAppNotificationService.createPointNotification(
         type: notificationType,
         title: title,
         body: body,
         transactionId: transactionId,
+        requestId: stableRequestId,
         points: points.toString(),
         currentBalance: currentBalance.toString(),
         additionalData: additionalData,
@@ -456,6 +492,13 @@ class PointNotificationManager {
         stackTrace: stackTrace,
       );
     }
+  }
+
+  String? requestIdFromAdditional(Map<String, dynamic>? additionalData) {
+    final v = additionalData?['requestId'] ?? additionalData?['request_id'];
+    if (v == null) return null;
+    final s = v.toString().trim();
+    return s.isEmpty ? null : s;
   }
 
   /// Show push notification

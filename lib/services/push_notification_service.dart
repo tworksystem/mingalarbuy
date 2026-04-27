@@ -81,6 +81,39 @@ Future<bool> _verifyNotificationUserInBackground(
   }
 }
 
+/// Best-effort event time from FCM [data] for in-app [createdAt] (backend keys vary).
+DateTime? _tryParseFcmDataEventTime(Map<String, dynamic> data) {
+  for (final String key in <String>[
+    'timestamp',
+    'created_at',
+    'createdAt',
+    'sent_at',
+    'time',
+  ]) {
+    final Object? v = data[key];
+    if (v == null) {
+      continue;
+    }
+    if (v is int) {
+      if (v > 1000000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(v, isUtc: true);
+      }
+      if (v > 1000000000) {
+        return DateTime.fromMillisecondsSinceEpoch(v * 1000, isUtc: true);
+      }
+    } else {
+      final String s = v.toString().trim();
+      if (s.isNotEmpty) {
+        final DateTime? p = DateTime.tryParse(s);
+        if (p != null) {
+          return p;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /// Background message handler (must be top-level function)
 /// This handles notifications when app is terminated or in background
 @pragma('vm:entry-point')
@@ -197,6 +230,10 @@ class PushNotificationService {
   String? _fcmToken;
   bool _isInitialized = false;
 
+  /// Holds FCM stream subscriptions so we can [disposeMessagingSubscriptions] and avoid duplicate listeners.
+  final List<StreamSubscription<RemoteMessage>> _fcmMessageSubscriptions = [];
+  StreamSubscription<String>? _fcmTokenRefreshSubscription;
+
   // Throttle expensive "hard sync" (network refresh) after point notifications.
   // We still apply the FCM `currentBalance` snapshot instantly to update UI.
   final Map<String, DateTime> _lastPointsHardSyncAtByUser = {};
@@ -251,6 +288,45 @@ class PushNotificationService {
   /// Set callback for forcing engagement feed refresh
   void setEngagementFeedRefreshCallback(Future<void> Function() callback) {
     onEngagementFeedRefresh = callback;
+  }
+
+  /// Re-send FCM token to backend when a session exists (e.g. after login / cold start with stored user).
+  ///
+  /// // Old Code: Token upload only ran once inside [initialize] -> [_getFCMToken], often
+  /// // when SecureStorage `user_data` was still null — server could not target the device.
+  Future<void> syncFcmTokenToBackendForCurrentUser() async {
+    if (!_isInitialized) {
+      Logger.info(
+        'syncFcmTokenToBackendForCurrentUser: service not initialized; skipping',
+        tag: 'PushNotification',
+      );
+      return;
+    }
+    try {
+      if (_fcmToken == null || _fcmToken!.isEmpty) {
+        await _getFCMToken();
+      } else {
+        await _sendTokenToBackend(_fcmToken!);
+      }
+    } catch (e, stackTrace) {
+      Logger.error(
+        'syncFcmTokenToBackendForCurrentUser failed: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  /// Cancel FCM listeners (e.g. before tests or to replace handlers). Safe to call if empty.
+  void disposeMessagingSubscriptions() {
+    for (final s in _fcmMessageSubscriptions) {
+      s.cancel();
+    }
+    _fcmMessageSubscriptions.clear();
+    _fcmTokenRefreshSubscription?.cancel();
+    _fcmTokenRefreshSubscription = null;
+    Logger.info('FCM messaging subscriptions disposed', tag: 'PushNotification');
   }
 
   /// PROFESSIONAL SECURITY: Get current logged-in user ID from secure storage
@@ -480,32 +556,40 @@ class PushNotificationService {
   /// Configure message handlers
   /// This sets up listeners for FCM messages in all app states (foreground, background, terminated)
   Future<void> _configureMessageHandlers() async {
+    // Old Code: Bare .listen() calls with no [StreamSubscription] tracking — re-init would leak
+    // and tests could not cancel. We cancel any prior subs before attaching.
+    disposeMessagingSubscriptions();
+
     // Handle foreground messages (app is open)
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-      Logger.info('Foreground message received: ${message.notification?.title}',
-          tag: 'PushNotification');
-      Logger.info('Message data: ${message.data}', tag: 'PushNotification');
+    _fcmMessageSubscriptions.add(
+      FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+        Logger.info('Foreground message received: ${message.notification?.title}',
+            tag: 'PushNotification');
+        Logger.info('Message data: ${message.data}', tag: 'PushNotification');
 
-      // Show local notification in foreground
-      _handleForegroundMessage(message);
+        // Show local notification in foreground
+        _handleForegroundMessage(message);
 
-      // Trigger immediate order refresh when notification arrives
-      await _handleOrderUpdateNotification(message);
-    });
+        // Trigger immediate order refresh when notification arrives
+        await _handleOrderUpdateNotification(message);
+      }),
+    );
 
     // Handle notification tap when app is in background
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
-      Logger.info(
-          'Notification tapped (background): ${message.notification?.title}',
-          tag: 'PushNotification');
-      Logger.info('Message data: ${message.data}', tag: 'PushNotification');
+    _fcmMessageSubscriptions.add(
+      FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
+        Logger.info(
+            'Notification tapped (background): ${message.notification?.title}',
+            tag: 'PushNotification');
+        Logger.info('Message data: ${message.data}', tag: 'PushNotification');
 
-      // Handle notification tap and navigate
-      _handleNotificationTap(message);
+        // Handle notification tap and navigate
+        _handleNotificationTap(message);
 
-      // Also trigger order refresh
-      await _handleOrderUpdateNotification(message);
-    });
+        // Also trigger order refresh
+        await _handleOrderUpdateNotification(message);
+      }),
+    );
 
     // Handle notification tap when app was terminated
     final initialMessage = await _firebaseMessaging.getInitialMessage();
@@ -524,7 +608,8 @@ class PushNotificationService {
     }
 
     // Handle FCM token refresh
-    _firebaseMessaging.onTokenRefresh.listen((newToken) {
+    _fcmTokenRefreshSubscription =
+        _firebaseMessaging.onTokenRefresh.listen((newToken) {
       Logger.info('FCM token refreshed', tag: 'PushNotification');
       _fcmToken = newToken;
       _sendTokenToBackend(newToken);
@@ -556,6 +641,31 @@ class PushNotificationService {
     'engagement_new_item',
     'engagement_item_updated', // PROFESSIONAL FIX: Added update notification type
   ];
+
+  /// Poll/quiz win uses `engagement_points` in the point branch; feed refresh was never invoked.
+  Future<void> _refreshEngagementFeedAfterEngagementPointsFcm() async {
+    try {
+      if (onEngagementFeedRefresh != null) {
+        await onEngagementFeedRefresh!();
+        Logger.info(
+          'Engagement feed refreshed after engagement_points (real-time poll win UI)',
+          tag: 'PushNotification',
+        );
+      } else {
+        Logger.warning(
+          'onEngagementFeedRefresh not set; engagement hub may stay stale',
+          tag: 'PushNotification',
+        );
+      }
+    } catch (e, stackTrace) {
+      Logger.error(
+        'Engagement feed refresh after engagement_points failed: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
 
   /// Handle order update notification - triggers immediate order refresh
   /// This is called when FCM notification arrives to ensure orders are instantly updated
@@ -649,176 +759,137 @@ class PushNotificationService {
             break;
         }
 
-        // PROFESSIONAL FCM INTEGRATION: Create in-app notification for point events
+        // OLD CODE:
+        // - createPointNotification(...) directly
+        // - then notifyPointEvent(... showInAppNotification: false)
+        // This created two independent writer paths and could duplicate winner rows.
+        //
+        // New Code:
+        // Single-writer path via PointNotificationManager for both in-app row and modal decision.
         try {
-          // Get notification title and body from message
           final notificationTitle = message.notification?.title ??
               _getPointNotificationTitle(notificationType, points);
           final notificationBody = message.notification?.body ??
               _getPointNotificationBody(
                   notificationType, points, currentBalance, data);
+          final eventOccurredAt =
+              _tryParseFcmDataEventTime(Map<String, dynamic>.from(data));
 
-          // Create in-app notification
-          final notificationCreated =
-              await InAppNotificationService().createPointNotification(
-            type: notificationType,
-            title: notificationTitle,
-            body: notificationBody,
-            transactionId: transactionId.isNotEmpty ? transactionId : null,
-            requestId: requestId.isNotEmpty ? requestId : null,
-            points: points,
-            currentBalance: currentBalance,
-            additionalData: data,
-          );
+          PointNotificationType? modalType;
+          bool shouldShowModal = false;
+          bool? isAdjustmentPositive;
 
-          if (notificationCreated) {
-            // Update provider immediately for real-time UI update
-            try {
-              final notificationProvider = InAppNotificationProvider.instance;
-              await notificationProvider.loadNotifications();
-              Logger.info(
-                  'In-app point notification created and provider updated: type=$notificationType',
-                  tag: 'PushNotification');
-            } catch (e) {
-              Logger.error('Error updating notification provider: $e',
-                  tag: 'PushNotification', error: e);
-            }
+          switch (notificationType) {
+            case 'points_earned':
+              modalType = PointNotificationType.earned;
+              shouldShowModal = true;
+              break;
+            case 'points_approved':
+              modalType = PointNotificationType.approved;
+              shouldShowModal = true;
+              break;
+            case 'engagement_points':
+              modalType = PointNotificationType.engagementEarned;
+              final engagementItemType =
+                  (data['itemType'] ?? data['item_type'] ?? '')
+                      .toString()
+                      .toLowerCase();
+              shouldShowModal = engagementItemType != 'poll';
+              break;
+            case 'exchange_approved':
+              modalType = PointNotificationType.exchangeApproved;
+              shouldShowModal = true;
+              break;
+            case 'points_redeemed':
+              modalType = PointNotificationType.redeemed;
+              shouldShowModal = false;
+              break;
+            case 'exchange_rejected':
+              modalType = PointNotificationType.exchangeRejected;
+              shouldShowModal = false;
+              break;
+            case 'points_adjusted':
+              modalType = PointNotificationType.adjusted;
+              isAdjustmentPositive = _parseBool(data['isPositive']) ??
+                  _parseBool(data['is_positive']);
+              if (isAdjustmentPositive == null) {
+                final pointsValueRaw = data['pointsValue'] ?? data['points_value'];
+                final parsedDelta = int.tryParse(pointsValueRaw?.toString() ?? '');
+                if (parsedDelta != null) {
+                  isAdjustmentPositive = parsedDelta >= 0;
+                }
+              }
+              shouldShowModal = isAdjustmentPositive == true;
+              break;
+          }
 
-            // PROFESSIONAL FIX: Mark transaction as notified to prevent duplicate on app reinstall
-            if (transactionId.isNotEmpty && userId.isNotEmpty) {
-              MissedNotificationRecoveryService.markTransactionAsNotified(
-                  userId, transactionId);
-              Logger.info(
-                  'Transaction marked as notified: $transactionId',
-                  tag: 'PushNotification');
-            }
-          } else {
+          if (modalType != null) {
+            final pointsInt = int.tryParse(points) ?? 0;
+            final balanceInt = int.tryParse(currentBalance) ?? 0;
+            final itemIdRaw =
+                data['itemId'] ?? data['item_id'] ?? data['pollId'] ?? data['poll_id'];
+
+            await PointNotificationManager().notifyPointEvent(
+              type: modalType,
+              points: pointsInt,
+              currentBalance: balanceInt,
+              description: notificationBody,
+              transactionId: transactionId.isNotEmpty ? transactionId : null,
+              orderId: transactionId.isNotEmpty
+                  ? null
+                  : (notificationType == 'engagement_points' &&
+                          itemIdRaw != null &&
+                          itemIdRaw.toString().isNotEmpty)
+                      ? 'fcm_engagement_${itemIdRaw}'
+                      : null,
+              userId: userId,
+              additionalData: {
+                ...Map<String, dynamic>.from(data),
+                if (eventOccurredAt != null)
+                  'eventOccurredAt': eventOccurredAt.toUtc().toIso8601String(),
+                'displayTitle': notificationTitle,
+                if (notificationType == 'engagement_points') ...{
+                  'itemType': data['itemType'] ?? data['item_type'] ?? '',
+                  'itemTitle': data['itemTitle'] ?? data['item_title'] ?? '',
+                  if (itemIdRaw != null) 'itemId': itemIdRaw,
+                  if (data['pollId'] != null || data['poll_id'] != null)
+                    'pollId': data['pollId'] ?? data['poll_id'],
+                  if (data['sessionId'] != null || data['session_id'] != null)
+                    'sessionId': data['sessionId'] ?? data['session_id'],
+                },
+                if (notificationType == 'exchange_rejected') 'reason': reason,
+                if (notificationType == 'points_adjusted')
+                  'isPositive': isAdjustmentPositive ?? true,
+              },
+              showPushNotification: false,
+              showInAppNotification: true,
+              showModalPopup: shouldShowModal,
+            );
+
+            // Ensure badges/UI are fresh.
+            final notificationProvider = InAppNotificationProvider.instance;
+            await notificationProvider.loadNotifications();
+
             Logger.info(
-                'Duplicate point notification prevented: type=$notificationType',
+                'Point notification handled via manager: type=$notificationType',
                 tag: 'PushNotification');
           }
 
-          // PROFESSIONAL MODAL INTEGRATION: Trigger modal popup for point events
-          // Only trigger modal for positive events that should be celebrated
-          try {
-            // Map notification type to PointNotificationType
-            PointNotificationType? modalType;
-            bool shouldShowModal = false;
-            bool? isAdjustmentPositive;
-
-            switch (notificationType) {
-              case 'points_earned':
-                modalType = PointNotificationType.earned;
-                shouldShowModal = true;
-                break;
-              case 'points_approved':
-                modalType = PointNotificationType.approved;
-                shouldShowModal = true;
-                break;
-              case 'engagement_points':
-                modalType = PointNotificationType.engagementEarned;
-                // Poll winner: FCM already surfaced the system notification; in-app row
-                // was created above — do not stack a blocking modal.
-                final engagementItemType = (data['itemType'] ??
-                        data['item_type'] ??
-                        '')
-                    .toString()
-                    .toLowerCase();
-                shouldShowModal = engagementItemType != 'poll';
-                break;
-              case 'exchange_approved':
-                modalType = PointNotificationType.exchangeApproved;
-                shouldShowModal = true;
-                break;
-              case 'points_redeemed':
-                modalType = PointNotificationType.redeemed;
-                shouldShowModal = false; // Don't show modal for redeemed
-                break;
-              case 'exchange_rejected':
-                modalType = PointNotificationType.exchangeRejected;
-                shouldShowModal = false; // Don't show modal for rejected
-                break;
-              case 'points_adjusted':
-                modalType = PointNotificationType.adjusted;
-                // UX requirement: Do NOT show modal for negative manual adjustments.
-                // Backend sends `points` as absolute value; direction comes from `isPositive` / `is_positive` / `points_value`.
-                isAdjustmentPositive = _parseBool(data['isPositive']) ??
-                    _parseBool(data['is_positive']);
-                if (isAdjustmentPositive == null) {
-                  final pointsValueRaw =
-                      data['pointsValue'] ?? data['points_value'];
-                  final parsedDelta =
-                      int.tryParse(pointsValueRaw?.toString() ?? '');
-                  if (parsedDelta != null) {
-                    isAdjustmentPositive = parsedDelta >= 0;
-                  }
-                }
-                shouldShowModal = isAdjustmentPositive == true;
-                break;
-            }
-
-            if (modalType != null && shouldShowModal) {
-              final pointsInt = int.tryParse(points) ?? 0;
-              final balanceInt = int.tryParse(currentBalance) ?? 0;
-
-              // Trigger modal event
-              final itemIdRaw =
-                  data['itemId'] ?? data['item_id'] ?? data['pollId'] ?? data['poll_id'];
-              await PointNotificationManager().notifyPointEvent(
-                type: modalType,
-                points: pointsInt,
-                currentBalance: balanceInt,
-                description: message.notification?.body,
-                transactionId: transactionId.isNotEmpty ? transactionId : null,
-                orderId: transactionId.isNotEmpty
-                    ? null
-                    : (notificationType == 'engagement_points' &&
-                            itemIdRaw != null &&
-                            itemIdRaw.toString().isNotEmpty)
-                        ? 'fcm_engagement_${itemIdRaw}'
-                        : null,
-                userId: userId,
-                additionalData: {
-                  if (notificationType == 'engagement_points') ...{
-                    'itemType': data['itemType'] ?? data['item_type'] ?? '',
-                    'itemTitle': data['itemTitle'] ?? data['item_title'] ?? '',
-                    if (itemIdRaw != null) 'itemId': itemIdRaw,
-                    if (data['pollId'] != null || data['poll_id'] != null)
-                      'pollId': data['pollId'] ?? data['poll_id'],
-                    if (data['sessionId'] != null || data['session_id'] != null)
-                      'sessionId': data['sessionId'] ?? data['session_id'],
-                  },
-                  if (notificationType == 'exchange_rejected') 'reason': reason,
-                  if (notificationType == 'points_adjusted') ...{
-                    // Important: do NOT infer positivity from `points` because backend uses absolute value.
-                    'isPositive': isAdjustmentPositive ?? true,
-                  },
-                },
-                showPushNotification:
-                    false, // Already shown via FCM, don't show again
-                showInAppNotification:
-                    false, // Already created above, don't create duplicate
-                showModalPopup: true,
-              );
-
-              Logger.info(
-                  'Point notification modal event triggered: type=$notificationType, points=$pointsInt',
-                  tag: 'PushNotification');
-            }
-
-            // PROFESSIONAL FIX: Mark transaction as notified
-            // This prevents duplicate notifications on app reinstall
-            if (transactionId.isNotEmpty && userId.isNotEmpty) {
-              MissedNotificationRecoveryService.markTransactionAsNotified(
-                  userId, transactionId);
-            }
-          } catch (e, stackTrace) {
-            Logger.error('Error triggering point notification modal: $e',
-                tag: 'PushNotification', error: e, stackTrace: stackTrace);
+          if (transactionId.isNotEmpty && userId.isNotEmpty) {
+            MissedNotificationRecoveryService.markTransactionAsNotified(
+                userId, transactionId);
+            Logger.info('Transaction marked as notified: $transactionId',
+                tag: 'PushNotification');
           }
         } catch (e, stackTrace) {
-          Logger.error('Error creating in-app point notification: $e',
+          Logger.error('Error handling in-app point notification: $e',
               tag: 'PushNotification', error: e, stackTrace: stackTrace);
+        }
+
+        // Old Code: `return` only — engagement_points (poll win) left EngagementCarousel
+        // stale; user had to pull-to-refresh to see new balance/result on cards.
+        if (notificationType == 'engagement_points') {
+          await _refreshEngagementFeedAfterEngagementPointsFcm();
         }
 
         return; // Exit early for point notifications

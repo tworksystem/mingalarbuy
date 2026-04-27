@@ -1283,6 +1283,9 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
         transaction.type == PointTransactionType.adjust;
     final isManualReward = orderIdStr.startsWith('manual_reward:');
     final isCodeRedemption = orderIdStr.startsWith('code:');
+    final pollDetails = transaction.pollDetails;
+    final hasPollDetails =
+        pollDetails != null && pollDetails.selectedOptions.isNotEmpty;
 
     // Determine the transaction label
     final transactionLabel = _getTransactionLabel(
@@ -1425,6 +1428,15 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                     color: Colors.grey[600],
                   ),
                 ),
+                // OLD CODE:
+                // if (transaction.orderId != null ||
+                //     isManualPoint ||
+                //     isManualReward ||
+                //     isQuizReward) ...[
+                //   ...
+                // ],
+                //
+                // New Code: keep legacy label row, plus rich poll details block.
                 if (transaction.orderId != null ||
                     isManualPoint ||
                     isManualReward ||
@@ -1459,6 +1471,10 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                       ),
                     ],
                   ),
+                ],
+                if (hasPollDetails) ...[
+                  const SizedBox(height: 8),
+                  _buildPollDetailsCard(pollDetails!),
                 ],
                 if (isPending) ...[
                   SizedBox(height: 6),
@@ -1542,6 +1558,109 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                   ),
                 ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPollDetailsCard(PollTransactionDetails details) {
+    final status = (details.resultStatus ?? 'pending').toLowerCase();
+    final Color statusColor;
+    final IconData statusIcon;
+    final String statusLabel;
+
+    // OLD CODE: poll transaction details UI did not exist.
+    if (status == 'won') {
+      statusColor = Colors.green;
+      statusIcon = Icons.emoji_events;
+      statusLabel = 'Win';
+    } else if (status == 'lost') {
+      statusColor = Colors.red;
+      statusIcon = Icons.cancel_outlined;
+      statusLabel = 'Loss';
+    } else {
+      statusColor = Colors.orange;
+      statusIcon = Icons.hourglass_top;
+      statusLabel = 'Pending';
+    }
+
+    final selectedText = details.selectedOptions
+        .map((option) => '${option.label} (${option.betPnp} PNP)')
+        .join(', ');
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(statusIcon, size: 14, color: statusColor),
+              const SizedBox(width: 4),
+              Text(
+                statusLabel,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: statusColor,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                'Bet ${details.totalBetPnp} PNP',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade700,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          if ((details.pollTitle ?? '').isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              details.pollTitle!,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            'Your Option: $selectedText',
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey.shade700,
+            ),
+          ),
+          if (details.winningOption != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Winning Option: ${details.winningOption!.label}',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            'Won ${details.wonAmountPnp} PNP (Net ${details.netAmountPnp >= 0 ? '+' : ''}${details.netAmountPnp} PNP)',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: details.netAmountPnp >= 0 ? Colors.green : Colors.red,
+            ),
           ),
         ],
       ),

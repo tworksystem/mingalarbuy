@@ -106,10 +106,14 @@ class TWork_Poll_Auto_Run {
 
         $mode = strtoupper((string) ($quiz_data['poll_mode'] ?? 'MANUAL'));
         $poll_duration_min = max(1, (int) ($quiz_data['poll_duration'] ?? 15));
-        $result_duration_min = max(0, (int) ($quiz_data['result_display_duration'] ?? 1));
+        // Result phase: total seconds (canonical). Legacy minute-only values resolved in TWork_Rewards_System.
+        $result_display_sec = class_exists('TWork_Rewards_System')
+            ? TWork_Rewards_System::resolve_result_display_duration_seconds($quiz_data)
+            : max(0, (int) ($quiz_data['result_display_duration'] ?? 1)) * 60;
 
-        $cycle_seconds = ($poll_duration_min + $result_duration_min) * 60;
+        // Cycle = voting window (minutes→seconds) + result phase (seconds).
         $voting_seconds = $poll_duration_min * 60;
+        $cycle_seconds = $voting_seconds + $result_display_sec;
 
         $poll_base_cost = isset($quiz_data['poll_base_cost']) ? max(0, (int) $quiz_data['poll_base_cost']) : 0;
         $reward_multiplier = isset($quiz_data['reward_multiplier']) ? max(0, (float) $quiz_data['reward_multiplier']) : 4;
@@ -145,7 +149,7 @@ class TWork_Poll_Auto_Run {
                     'current_session_id' => '',
                     'ends_at' => $end_time ?: null,
                     'poll_duration' => $poll_duration_min,
-                    'result_display_duration' => $result_duration_min,
+                    'result_display_duration_seconds' => $result_display_sec,
                     'mode' => $mode,
                     'poll_base_cost' => $poll_base_cost,
                     'reward_multiplier' => $reward_multiplier,
@@ -195,6 +199,26 @@ class TWork_Poll_Auto_Run {
             $ends_at = gmdate('Y-m-d\TH:i:s\Z', $voting_ends_ts);
         }
 
+        // Throttled server tick: run AUTO_RUN process (awards, cycle reset) when any client requests state.
+        // Supplements WP-Cron so narrow award windows are not missed when the app is backgrounded/closed.
+        if (class_exists('TWork_Rewards_System')) {
+            try {
+                TWork_Rewards_System::get_instance()->twork_rewards_throttled_auto_run_process($poll_id, 45);
+            } catch (\Throwable $e) {
+                if (defined('WP_DEBUG') && WP_DEBUG) {
+                    error_log(
+                        sprintf(
+                            '[TWork auto_run] rest_poll_state tick poll_id=%d err=%s',
+                            (int) $poll_id,
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+        }
+
+        // Old Code:        // (no throttled twork_rewards_throttled_auto_run_process — relied only on WP-Cron + feed paths)
+
         return new WP_REST_Response(array(
             'success' => true,
             'data' => array(
@@ -202,7 +226,7 @@ class TWork_Poll_Auto_Run {
                 'current_session_id' => $session_id,
                 'ends_at' => $ends_at,
                 'poll_duration' => $poll_duration_min,
-                'result_display_duration' => $result_duration_min,
+                'result_display_duration_seconds' => $result_display_sec,
                 'mode' => 'AUTO_RUN',
                 'poll_base_cost' => $poll_base_cost,
                 'reward_multiplier' => $reward_multiplier,
@@ -431,20 +455,19 @@ class TWork_Poll_Auto_Run {
             }
         }
 
-        // PROFESSIONAL FIX: Eliminate Race Conditions & Ghost Balances
-        // 1. Force the core system to award points BEFORE we calculate the response.
-        if ($winning_index >= 0 && class_exists('TWork_Rewards_System')) {
-            // Idempotent check inside ensures this only pays out once
-            TWork_Rewards_System::get_instance()->award_poll_winner_points($poll_id);
-            
-            // Re-fetch interactions to get the EXACT 'points_awarded' from the database
-            $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT * FROM $table_interactions WHERE item_id = %d AND session_id = %s",
-                $poll_id,
-                $session_id
-            ), ARRAY_A);
-            if (!is_array($rows)) $rows = array();
-        }
+        // Old Code: Payout on GET (client-dependent) — [award_poll_winner_points] was called only when the app hit this REST route.
+        // Now poll resolution + [award_poll_winner_points] run from WP-Cron (see twork_rewards_auto_run_poll_cron in twork-rewards-system.php).
+        // Old Code:        // PROFESSIONAL FIX: Eliminate Race Conditions & Ghost Balances
+        // Old Code:        if ($winning_index >= 0 && class_exists('TWork_Rewards_System')) {
+        // Old Code:            TWork_Rewards_System::get_instance()->award_poll_winner_points($poll_id, $session_id);
+        // Old Code:            $rows = $wpdb->get_results($wpdb->prepare(
+        // Old Code:                "SELECT * FROM $table_interactions WHERE item_id = %d AND session_id = %s",
+        // Old Code:                $poll_id,
+        // Old Code:                $session_id
+        // Old Code:            ), ARRAY_A);
+        // Old Code:            if (!is_array($rows)) $rows = array();
+        // Old Code:        }
+        // [$rows] still from query above; Cron updates DB for poll awards — not on this GET.
 
         $winning_option = null;
         if ($winning_index >= 0 && isset($raw_options[$winning_index])) {
@@ -459,20 +482,51 @@ class TWork_Poll_Auto_Run {
         $user_won = false;
         $points_earned = 0;
         $current_balance = 0;
+        $user_bet_pnp = 0;
+        $user_detailed_bets = array(); // NEW: Store exact breakdown
 
         if ($requesting_user_id > 0 && $winning_index >= 0) {
             foreach ($rows as $row) {
                 if (!is_array($row)) continue;
                 if ((int) ($row['user_id'] ?? 0) !== $requesting_user_id) continue;
+
+                if (class_exists('TWork_Rewards_System') && method_exists('TWork_Rewards_System', 'calculate_poll_user_bet_amount_pnp')) {
+                    $user_bet_pnp = (int) TWork_Rewards_System::calculate_poll_user_bet_amount_pnp($quiz_data, $row);
+                }
                 
                 $value = trim((string) ($row['interaction_value'] ?? ''));
                 if ($value === '') continue;
+
+                // Per-option **Amount** units (1, 2, 3…), not PNP — clients display the raw multiplier.
+                $bet_amt = isset($row['bet_amount']) ? max(1, (int) $row['bet_amount']) : 1;
+                $per_opt_json = isset($row['bet_amount_per_option']) ? json_decode($row['bet_amount_per_option'], true) : array();
+                $allow_user_amount = !isset($quiz_data['allow_user_amount']) || $quiz_data['allow_user_amount'] === true || $quiz_data['allow_user_amount'] === 1 || $quiz_data['allow_user_amount'] === '1';
+
+                $selected_parts = array_unique(array_map('trim', explode(',', $value))); // Prevent duplicates
+                foreach ($selected_parts as $part) {
+                    if ($part !== '' && is_numeric($part)) {
+                        $idx = (int) $part;
+                        if (isset($raw_options[$idx])) {
+                            $opt_label = self::normalize_option($raw_options[$idx])['text'];
+                            if ($allow_user_amount) {
+                                if (is_array($per_opt_json) && isset($per_opt_json[(string)$idx])) {
+                                    $units = max(1, (int)$per_opt_json[(string)$idx]);
+                                    $user_detailed_bets[$opt_label] = $units;
+                                } else {
+                                    $user_detailed_bets[$opt_label] = $bet_amt;
+                                }
+                            } else {
+                                $user_detailed_bets[$opt_label] = 1;
+                            }
+                        }
+                    }
+                }
                 
-                foreach (array_map('trim', explode(',', $value)) as $part) {
+                foreach ($selected_parts as $part) {
                     if ($part !== '' && is_numeric($part) && (int) $part === $winning_index) {
                         $user_won = true;
                         
-                        // Fetch EXACT points awarded from DB (No manual recalculation)
+                        // Fetch EXACT points awarded from DB
                         $points_earned = isset($row['points_awarded']) ? (int) $row['points_awarded'] : 0;
                             
                         // Fetch TRUE real-time balance
@@ -484,9 +538,10 @@ class TWork_Poll_Auto_Run {
                         } else {
                             $current_balance = (int) get_user_meta($requesting_user_id, 'points_balance', true);
                         }
-                        break 2;
+                        break;
                     }
                 }
+                break; // Process only the exact row for this user
             }
         }
 
@@ -499,6 +554,8 @@ class TWork_Poll_Auto_Run {
             $response_data['user_won'] = $user_won;
             $response_data['points_earned'] = $points_earned;
             $response_data['current_balance'] = $current_balance;
+            $response_data['user_bet_pnp'] = (int) $user_bet_pnp;
+            $response_data['user_detailed_bets'] = $user_detailed_bets; // SEND EXACT MAP TO APP
         }
 
         return new WP_REST_Response(array(

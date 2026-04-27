@@ -46,6 +46,15 @@ class PointService {
   static const int expirationWarningDays =
       30; // Warn when expiring within 30 days
 
+  static Map<String, dynamic> _requestHeaders() {
+    return const <String, dynamic>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+    };
+  }
+
   /// Parse balance from API response — handles num, String (e.g. "18200"), and null
   static int _parseBalanceInt(Map<String, dynamic> data, String key) {
     final v = data[key];
@@ -80,9 +89,12 @@ class PointService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          // Old Code:
+          // headers: const <String, dynamic>{
+          //   'Content-Type': 'application/json',
+          // },
+          // New Code:
+          headers: _requestHeaders(),
         ),
         context: 'getPointBalance',
       );
@@ -119,6 +131,16 @@ class PointService {
             tag: 'PointService');
         return balance;
       }
+
+      // Old Code: return null;
+      //
+      // New Code: log actionable diagnostics for easier debugging.
+      final status = response?.statusCode;
+      final body = ApiService.responseBodyString(response);
+      Logger.error(
+        'Point balance invalid response: status=$status, body=$body',
+        tag: 'PointService',
+      );
 
       return null;
     } catch (e, stackTrace) {
@@ -162,9 +184,12 @@ class PointService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          // Old Code:
+          // headers: const <String, dynamic>{
+          //   'Content-Type': 'application/json',
+          // },
+          // New Code:
+          headers: _requestHeaders(),
         ),
         context: 'getAllPointTransactions',
       );
@@ -317,9 +342,12 @@ class PointService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          // Old Code:
+          // headers: const <String, dynamic>{
+          //   'Content-Type': 'application/json',
+          // },
+          // New Code:
+          headers: _requestHeaders(),
         ),
         context: 'getPointTransactions',
       );
@@ -445,13 +473,24 @@ class PointService {
             return await getCachedTransactions(userId);
           }
 
-          // Cache transactions locally (sorted inside)
-          await _cacheTransactions(userId, transactions);
+          // OLD CODE:
+          // // Cache transactions locally (sorted inside)
+          // await _cacheTransactions(userId, transactions);
+          //
+          // New Code:
+          // Merge API payload with cached details before caching to prevent
+          // null poll_details from overwriting previously-enriched rows.
+          final cachedBeforeWrite = await getCachedTransactions(userId);
+          final mergedForCache = _mergeTransactionsPreservingPollDetails(
+            existing: cachedBeforeWrite,
+            incoming: transactions,
+          );
+          await _cacheTransactions(userId, mergedForCache);
 
           Logger.info(
               'Successfully loaded ${transactions.length} point transactions from API (${transactionsData.length} raw items, ${transactionsData.length - transactions.length} failed to parse)',
               tag: 'PointService');
-          return transactions;
+          return mergedForCache;
         } catch (parseError, parseStackTrace) {
           Logger.error('Error parsing API response: $parseError',
               tag: 'PointService',
@@ -1195,6 +1234,35 @@ class PointService {
           tag: 'PointService', error: e);
       return [];
     }
+  }
+
+  static Future<void> clearTransactionsCache(String userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('$_transactionsKey$userId');
+      Logger.info('Cleared point transaction cache for user $userId',
+          tag: 'PointService');
+    } catch (e) {
+      Logger.error('Error clearing transactions cache: $e',
+          tag: 'PointService', error: e);
+    }
+  }
+
+  static List<PointTransaction> _mergeTransactionsPreservingPollDetails({
+    required List<PointTransaction> existing,
+    required List<PointTransaction> incoming,
+  }) {
+    final existingById = <String, PointTransaction>{
+      for (final tx in existing) tx.id: tx,
+    };
+
+    return incoming.map((tx) {
+      final old = existingById[tx.id];
+      if (old == null) return tx;
+      if (tx.pollDetails != null) return tx;
+      if (old.pollDetails == null) return tx;
+      return tx.copyWith(pollDetails: old.pollDetails);
+    }).toList();
   }
 
   /// Save balance to local storage

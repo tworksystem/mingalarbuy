@@ -204,7 +204,11 @@ class PointProvider with ChangeNotifier {
           final guardActive =
               guardUntil != null && !now.isAfter(guardUntil);
           final currentFromSnapshot = _balance?.currentBalance ?? 0;
-          if ((isRecentSnapshot || guardActive) &&
+          // Old Code: if ((isRecentSnapshot || guardActive) &&
+          // Old Code:     currentFromSnapshot > 0 &&
+          // Old Code:     balance.currentBalance < currentFromSnapshot) {
+          if (!forceRefresh &&
+              (isRecentSnapshot || guardActive) &&
               currentFromSnapshot > 0 &&
               balance.currentBalance < currentFromSnapshot) {
             Logger.info(
@@ -309,12 +313,12 @@ class PointProvider with ChangeNotifier {
 
   /// OPTIMIZED: Debounced notifyListeners to prevent excessive rebuilds
   /// Only notifies if data actually changed
-  /// PROFESSIONAL FIX: Include status in hash to detect status changes
+  /// PROFESSIONAL FIX: Include balance AND status in hash to detect all state changes
   void _notifyListenersDebounced({bool force = false}) {
     if (!force) {
-      // Calculate hash of current transactions to detect changes
-      // Include status to detect when transactions change from pending to approved
-      final currentHash = _transactions.length.hashCode ^
+      // Calculate hash of current balance AND transactions to detect changes
+      final currentHash = (_balance?.currentBalance.hashCode ?? 0) ^
+          _transactions.length.hashCode ^
           (_transactions.isNotEmpty ? _transactions.first.id.hashCode : 0) ^
           (_transactions.isNotEmpty ? _transactions.first.status.hashCode : 0) ^
           (_transactions.isNotEmpty ? _transactions.last.id.hashCode : 0) ^
@@ -403,7 +407,9 @@ class PointProvider with ChangeNotifier {
         Logger.info(
             'PointProvider - Force refresh requested, will load fresh data from API',
             tag: 'PointProvider');
-        // Don't load from cache on force refresh - go straight to API
+        // OLD CODE: Don't load from cache on force refresh - go straight to API
+        // New Code: clear local transaction cache first to rebuild with latest schema/data.
+        await PointService.clearTransactionsCache(userId);
       } else if (_transactions.isEmpty) {
         // Only load cached transactions if we don't have any AND not forcing refresh
         try {
@@ -467,7 +473,14 @@ class PointProvider with ChangeNotifier {
 
       // BEST PRACTICE: show ALL transactions (including pending) in history.
       // Pending transactions are informational and do not affect balance.
-      final filteredTransactions = sortedTransactions;
+      var filteredTransactions = sortedTransactions;
+
+      // OLD CODE: final filteredTransactions = sortedTransactions;
+      // New Code: preserve already-known poll details if API row is temporarily missing them.
+      filteredTransactions = _mergeTransactionsPreservingPollDetails(
+        current: _transactions,
+        incoming: filteredTransactions,
+      );
 
       Logger.info(
           'PointProvider - After filtering: ${filteredTransactions.length} transactions',
@@ -552,6 +565,23 @@ class PointProvider with ChangeNotifier {
     } finally {
       _setLoading(false);
     }
+  }
+
+  List<PointTransaction> _mergeTransactionsPreservingPollDetails({
+    required List<PointTransaction> current,
+    required List<PointTransaction> incoming,
+  }) {
+    final currentById = <String, PointTransaction>{
+      for (final tx in current) tx.id: tx,
+    };
+
+    return incoming.map((tx) {
+      final old = currentById[tx.id];
+      if (old == null) return tx;
+      if (tx.pollDetails != null) return tx;
+      if (old.pollDetails == null) return tx;
+      return tx.copyWith(pollDetails: old.pollDetails);
+    }).toList();
   }
 
   /// Earn points (e.g., on purchase, signup, review)

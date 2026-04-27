@@ -71,6 +71,100 @@ class TWork_Rewards_System
         return self::$instance;
     }
 
+    /**
+     * Result phase length for AUTO_RUN / schedule math: stored as total seconds in quiz_data
+     * under `result_display_duration_seconds`.
+     *
+     * Backward compatibility: older polls only had `result_display_duration` meaning **whole minutes**
+     * (0–60). When the seconds key is absent, legacy minutes are converted: minutes × 60 = total seconds.
+     *
+     * @param array|null $quiz_data Decoded quiz_data JSON from twork_engagement_items.
+     * @return int Total seconds (>= 0). Defaults to 60 (legacy default was 1 minute).
+     */
+    public static function resolve_result_display_duration_seconds($quiz_data)
+    {
+        if (!is_array($quiz_data)) {
+            return 60;
+        }
+        if (array_key_exists('result_display_duration_seconds', $quiz_data)) {
+            return max(0, (int) $quiz_data['result_display_duration_seconds']);
+        }
+        $legacy_minutes = isset($quiz_data['result_display_duration']) ? (int) $quiz_data['result_display_duration'] : 1;
+        if ($legacy_minutes < 0) {
+            $legacy_minutes = 0;
+        }
+        if ($legacy_minutes > 60) {
+            $legacy_minutes = 60;
+        }
+
+        return $legacy_minutes * 60;
+    }
+
+    /**
+     * Calculate exact poll bet spend in PNP from interaction payload.
+     *
+     * Canonical formula:
+     * - Per-option mode: bet_step * sum(bet_amount_per_option values)
+     * - Legacy single amount mode: bet_step * bet_amount * selected_option_count
+     *
+     * @param array|null $quiz_data Poll quiz_data config (for bet_amount_step fallback)
+     * @param array|null $interaction Interaction row/array with bet_amount, bet_amount_per_option, interaction_value
+     * @return int Total PNP spent for the interaction (>= 0)
+     */
+    public static function calculate_poll_user_bet_amount_pnp($quiz_data, $interaction)
+    {
+        if (!is_array($interaction)) {
+            return 0;
+        }
+
+        $bet_step = 1000;
+        if (is_array($quiz_data)) {
+            if (isset($quiz_data['bet_amount_step'])) {
+                $bet_step = max(1, (int) $quiz_data['bet_amount_step']);
+            } elseif (isset($quiz_data['poll_base_cost'])) {
+                $base = max(0, (int) $quiz_data['poll_base_cost']);
+                if ($base > 0) {
+                    $bet_step = ($base < 1000) ? ($base * 1000) : $base;
+                }
+            }
+        }
+
+        $per_option = null;
+        $per_opt_raw = $interaction['bet_amount_per_option'] ?? null;
+        if (is_array($per_opt_raw)) {
+            $per_option = $per_opt_raw;
+        } elseif (is_string($per_opt_raw) && trim($per_opt_raw) !== '') {
+            $decoded = json_decode($per_opt_raw, true);
+            if (is_array($decoded) && !empty($decoded)) {
+                $per_option = $decoded;
+            }
+        }
+
+        if (is_array($per_option) && !empty($per_option)) {
+            $units_sum = 0;
+            foreach ($per_option as $amt) {
+                $units_sum += max(1, (int) $amt);
+            }
+            return max(0, $bet_step * $units_sum);
+        }
+
+        $bet_amt = max(1, (int) ($interaction['bet_amount'] ?? 1));
+        $selected_count = 0;
+        $raw_answer = isset($interaction['interaction_value']) ? (string) $interaction['interaction_value'] : '';
+        if ($raw_answer !== '') {
+            foreach (array_map('trim', explode(',', $raw_answer)) as $part) {
+                if ($part !== '' && is_numeric($part)) {
+                    $selected_count++;
+                }
+            }
+        }
+        if ($selected_count <= 0) {
+            $selected_count = 1;
+        }
+
+        return max(0, $bet_step * $bet_amt * $selected_count);
+    }
+
     private function __construct()
     {
         $this->init_hooks();
@@ -79,6 +173,11 @@ class TWork_Rewards_System
     private function init_hooks()
     {
         register_activation_hook(__FILE__, array($this, 'activate'));
+        register_deactivation_hook(__FILE__, array($this, 'deactivate_plugin_cron'));
+
+        add_filter('cron_schedules', array($this, 'add_cron_intervals'));
+        add_action('twork_rewards_auto_run_poll_cron', array($this, 'cron_process_auto_run_polls'));
+        add_action('init', array($this, 'maybe_schedule_auto_run_cron'), 30);
 
         add_action('plugins_loaded', array($this, 'init'));
 
@@ -247,7 +346,9 @@ class TWork_Rewards_System
         // OPTIMIZED: Only run migrations once per day or when forced via option
         // This prevents expensive database queries on every page load
         $migration_version = get_option('twork_rewards_migration_version', '0');
-        $current_version = '1.0.8';  // 1.0.8: composite indexes (user_id,status), (item_id,user_id); sync_user_points cache fix
+        // OLD CODE: $current_version = '1.0.8';
+        // New Code: 1.0.9 includes point transaction meta_json persistence for poll/game history UI.
+        $current_version = '1.0.9';
 
         // CRITICAL: Always load Poll PNP and Auto-Run (required for award_poll_winner_points).
         // Previously loaded only during migrations — caused points not to be awarded when
@@ -304,6 +405,7 @@ class TWork_Rewards_System
         // Ensure usage tracking table exists
         $this->create_usage_tracking_table();
 
+        $this->maybe_schedule_auto_run_cron();
     }
 
     private function table_name()
@@ -485,6 +587,7 @@ class TWork_Rewards_System
             item_id bigint(20) UNSIGNED NOT NULL,
             interaction_type varchar(50), -- 'quiz_answer', 'click', 'view'
             interaction_value text, -- User answer or value
+            interaction_meta longtext DEFAULT NULL, -- JSON snapshot (selected_option, bet_amount, winning_option, won_amount)
             is_correct boolean DEFAULT FALSE,
             points_awarded int(11) DEFAULT 0,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
@@ -632,6 +735,21 @@ class TWork_Rewards_System
                     $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . '` ADD COLUMN `bet_amount_per_option` text DEFAULT NULL AFTER `bet_amount`');
                 }
                 update_option('twork_rewards_poll_bet_amount_per_option_migration_done', true);
+            }
+        }
+
+        // Poll transaction UX metadata snapshot on interactions table.
+        $interaction_meta_migration_done = get_option('twork_rewards_poll_interaction_meta_migration_done', false);
+        if (!$interaction_meta_migration_done) {
+            $table_interactions = $wpdb->prefix . 'twork_user_interactions';
+            if ($wpdb->get_var("SHOW TABLES LIKE '$table_interactions'") === $table_interactions) {
+                $meta_col = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table_interactions) . "` LIKE 'interaction_meta'");
+                if (empty($meta_col)) {
+                    // OLD CODE: no interaction_meta column.
+                    // New code: add JSON metadata snapshot for poll transaction details.
+                    $wpdb->query('ALTER TABLE `' . esc_sql($table_interactions) . '` ADD COLUMN `interaction_meta` longtext DEFAULT NULL AFTER `bet_amount_per_option`');
+                }
+                update_option('twork_rewards_poll_interaction_meta_migration_done', true);
             }
         }
 
@@ -948,6 +1066,7 @@ class TWork_Rewards_System
             expires_at datetime DEFAULT NULL,
             is_expired tinyint(1) DEFAULT 0,
             status varchar(20) NOT NULL DEFAULT 'approved',
+            meta_json longtext DEFAULT NULL,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             KEY idx_user_id (user_id),
@@ -1169,6 +1288,26 @@ class TWork_Rewards_System
                 $wpdb->query("ALTER TABLE $table ADD INDEX idx_updated_by (updated_by)");
             } else {
                 error_log('T-Work Rewards: Failed to add updated_by column. Error: ' . $wpdb->last_error);
+            }
+        }
+
+        // PROFESSIONAL FIX: Ensure point transaction table has meta_json column
+        // for durable poll/game transaction details.
+        $points_table = $wpdb->prefix . 'twork_point_transactions';
+        $points_table_exists = $wpdb->get_var($wpdb->prepare(
+            'SHOW TABLES LIKE %s',
+            $points_table
+        ));
+        if ($points_table_exists) {
+            $points_columns = $wpdb->get_col("DESCRIBE $points_table");
+            $points_columns_lower = array_map('strtolower', $points_columns);
+            if (!in_array('meta_json', $points_columns_lower)) {
+                $result = $wpdb->query("ALTER TABLE $points_table ADD COLUMN meta_json longtext DEFAULT NULL AFTER status");
+                if ($result !== false) {
+                    error_log('T-Work Rewards: Added meta_json column to ' . $points_table);
+                } else {
+                    error_log('T-Work Rewards: Failed to add meta_json column. Error: ' . $wpdb->last_error);
+                }
             }
         }
     }
@@ -3951,6 +4090,260 @@ class TWork_Rewards_System
     }
 
     /**
+     * Structured error_log lines for auto-run / poll award (PHP error_log, JSON line).
+     *
+     * @param string $stage   e.g. catch_up, resolve_winner, award_returned_error, reset_deferred_lock
+     * @param int    $item_id Poll engagement item id
+     * @param array  $data    Optional context
+     * @return void
+     */
+    private function twork_rewards_log_auto_run($stage, $item_id, $data = array())
+    {
+        if (!is_array($data)) {
+            $data = array('value' => $data);
+        }
+        $line = array(
+            'twork_auto_run' => (string) $stage,
+            'poll_id' => (int) $item_id,
+            'ts' => current_time('mysql'),
+        );
+        if (!empty($data) && is_array($data)) {
+            $line = array_merge($line, $data);
+        }
+        $json = @wp_json_encode(
+            $line,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+        if ($json) {
+            error_log('[TWork auto_run] ' . $json);
+        } else {
+            error_log(
+                sprintf(
+                    '[TWork auto_run] %s poll_id=%d (json_encode failed)',
+                    (string) $stage,
+                    (int) $item_id
+                )
+            );
+        }
+    }
+
+    /**
+     * Picks a winning option (override or random), persists quiz_data, calls award_poll_winner_points,
+     * and records session rewards — shared by in-window resolution and "catch-up" before cycle reset.
+     *
+     * @param int   $item_id
+     * @param array $item
+     * @param array $user_interactions
+     * @param mixed $current_time
+     * @param int   $current_ts
+     * @param int   $period_minutes
+     * @param int   $result_display_seconds
+     * @return array{resolved: bool, award: array|null, deferred_due_to_lock?: bool, error?: string}
+     */
+    private function auto_run_locked_resolve_random_winner_and_award(
+        $item_id,
+        array &$item,
+        array &$user_interactions,
+        $current_time,
+        $current_ts,
+        $period_minutes,
+        $result_display_seconds
+    ) {
+        global $wpdb;
+
+        $table_items = $wpdb->prefix . 'twork_engagement_items';
+        $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
+        $quiz_data = json_decode($item['quiz_data'] ?? '', true);
+        if (!is_array($quiz_data)) {
+            $this->twork_rewards_log_auto_run('resolve_invalid_quiz', $item_id, array());
+            return array(
+                'resolved' => false,
+                'award' => null,
+                'error' => 'invalid_quiz_data',
+            );
+        }
+        $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
+        if ($correct_index >= 0) {
+            return array(
+                'resolved' => false,
+                'award' => null,
+                'error' => 'already_resolved',
+            );
+        }
+
+        $lock_key = 'twork_poll_lock_' . $item_id;
+        if (get_transient($lock_key)) {
+            $this->twork_rewards_log_auto_run('lock_busy', $item_id, array('stage' => 'resolve'));
+            return array(
+                'resolved' => false,
+                'award' => null,
+                'deferred_due_to_lock' => true,
+            );
+        }
+        set_transient($lock_key, true, 60);
+
+        $award_out = null;
+        $session_id = 's0';
+
+        try {
+            $options = $quiz_data['options'] ?? array();
+            $num_options = count($options);
+            $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? '';
+            $start_ts = strtotime($started_at);
+            if (!$start_ts) {
+                $start_ts = time();
+            }
+            $result_display_seconds = (int) $result_display_seconds;
+            $cycle_seconds = ((int) $period_minutes * 60) + $result_display_seconds;
+            $elapsed = max(0, (int) $current_ts - $start_ts);
+            $iteration = (int) floor($elapsed / $cycle_seconds);
+            $session_id = 's' . $iteration;
+
+            if ($override_index >= 0 && $override_index < $num_options) {
+                $correct_index = $override_index;
+            } else {
+                if ($num_options > 0) {
+                    $correct_index = random_int(0, $num_options - 1);
+                } else {
+                    $correct_index = 0;
+                }
+            }
+            $quiz_data['correct_index'] = (int) $correct_index;
+            $quiz_data['poll_correct_answer_mode'] = ($override_index >= 0) ? 'fixed' : 'random';
+            $quiz_data['poll_resolved_at'] = $current_time;
+            $wpdb->update(
+                $table_items,
+                array('quiz_data' => wp_json_encode($quiz_data)),
+                array('id' => $item_id),
+                array('%s'),
+                array('%d')
+            );
+
+            $this->twork_rewards_log_auto_run(
+                'resolve_winner',
+                $item_id,
+                array(
+                    'session' => $session_id,
+                    'correct_index' => (int) $correct_index,
+                )
+            );
+
+            $award_out = $this->award_poll_winner_points($item_id);
+            if (is_array($award_out) && !empty($award_out['error'])) {
+                $this->twork_rewards_log_auto_run(
+                    'award_returned_error',
+                    $item_id,
+                    (array) $award_out
+                );
+            } elseif (is_array($award_out)) {
+                $this->twork_rewards_log_auto_run(
+                    'award_ok',
+                    $item_id,
+                    array(
+                        'awarded' => isset($award_out['awarded']) ? (int) $award_out['awarded'] : 0,
+                        'total_points' => isset($award_out['total_points']) ? (int) $award_out['total_points'] : 0,
+                    )
+                );
+            }
+
+            $wpdb->replace(
+                $table_rewards,
+                array(
+                    'poll_id' => $item_id,
+                    'session_id' => $session_id,
+                    'rewards_distributed' => 1,
+                    'distributed_at' => current_time('mysql'),
+                ),
+                array('%d', '%s', '%d', '%s')
+            );
+
+            $fresh = $wpdb->get_row(
+                $wpdb->prepare("SELECT * FROM $table_items WHERE id = %d", $item_id),
+                ARRAY_A
+            );
+            if (is_array($fresh)) {
+                $item = $fresh;
+            } else {
+                $item['quiz_data'] = wp_json_encode($quiz_data);
+            }
+        } catch (\Throwable $e) {
+            $this->twork_rewards_log_auto_run(
+                'resolve_throw',
+                $item_id,
+                array('message' => $e->getMessage(), 'code' => $e->getCode())
+            );
+            return array(
+                'resolved' => false,
+                'award' => $award_out,
+                'error' => $e->getMessage(),
+            );
+        } finally {
+            delete_transient($lock_key);
+        }
+
+        return array('resolved' => true, 'award' => $award_out);
+    }
+
+    /**
+     * Throttled entry: run one AUTO_RUN process tick for a single poll.
+     * Supplements WP-Cron when the app (or any client) calls GET /poll/state so awards are not
+     * missed if server cron lags the narrow result window.
+     *
+     * @param int $poll_id Engagement item id
+     * @param int $throttle_seconds Min seconds between full process runs (default 45)
+     * @return void
+     */
+    public function twork_rewards_throttled_auto_run_process($poll_id, $throttle_seconds = 45)
+    {
+        $poll_id = absint($poll_id);
+        if ($poll_id <= 0) {
+            return;
+        }
+        $t = (int) $throttle_seconds;
+        if ($t < 10) {
+            $t = 10;
+        }
+        if ($t > 300) {
+            $t = 300;
+        }
+        $k = 'twork_arun_tick_' . $poll_id;
+        if (get_transient($k)) {
+            return;
+        }
+        set_transient($k, 1, $t);
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'twork_engagement_items';
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT * FROM $table WHERE id = %d AND type = 'poll'",
+                $poll_id
+            ),
+            ARRAY_A
+        );
+        if (!is_array($row) || ($row['type'] ?? '') !== 'poll') {
+            $this->twork_rewards_log_auto_run('throttle_no_item', $poll_id, array());
+            return;
+        }
+        $q = json_decode($row['quiz_data'] ?? '', true);
+        if (!is_array($q) || strtolower((string) ($q['poll_mode'] ?? '')) !== 'auto_run') {
+            return;
+        }
+
+        $user_interactions = array();
+        try {
+            $this->process_auto_run_poll($row, $user_interactions);
+        } catch (\Throwable $e) {
+            $this->twork_rewards_log_auto_run(
+                'throttle_process_throw',
+                $poll_id,
+                array('message' => $e->getMessage())
+            );
+        }
+    }
+
+    /**
      * Process Auto Run poll: auto-resolve when period ends, auto-reset when result display ends.
      * Modifies item and user_interactions in place.
      *
@@ -3967,7 +4360,8 @@ class TWork_Rewards_System
         }
 
         $quiz_data = json_decode($item['quiz_data'], true);
-        if (!is_array($quiz_data) || ($quiz_data['poll_mode'] ?? '') !== 'auto_run') {
+        // Accept 'auto_run', 'AUTO_RUN', etc. (admin/JSON may vary).
+        if (!is_array($quiz_data) || strtolower((string) ($quiz_data['poll_mode'] ?? '')) !== 'auto_run') {
             return;
         }
 
@@ -3982,8 +4376,7 @@ class TWork_Rewards_System
         if ($period_minutes < 1) {
             $period_minutes = 15;
         }
-        $result_duration_min = isset($quiz_data['result_display_duration']) ? max(0, absint($quiz_data['result_display_duration'])) : 1;
-        $result_display_seconds = $result_duration_min * 60;
+        $result_display_seconds = self::resolve_result_display_duration_seconds($quiz_data);
         $result_end_ts = $end_ts + $result_display_seconds;
         $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
 
@@ -4000,7 +4393,8 @@ class TWork_Rewards_System
                 $start_ts = strtotime($now);
             }
             
-            $cycle_seconds = ($period_minutes + $result_duration_min) * 60;
+            // Cycle length = voting window (minutes → seconds) + result phase (seconds, precise).
+            $cycle_seconds = ($period_minutes * 60) + $result_display_seconds;
             $current_ts = strtotime($now);
             $elapsed = max(0, $current_ts - $start_ts);
             $iteration = (int) floor($elapsed / $cycle_seconds);
@@ -4023,6 +4417,82 @@ class TWork_Rewards_System
         }
 
         if ($current_ts > $result_end_ts) {
+            // PROFESSIONAL: If WP-Cron / feed missed the in-window block below, we can reach here with
+            // correct_index still -1 and votes still in twork_user_interactions — deleting them would
+            // skip award_poll_winner_points entirely. Catch up resolve + award BEFORE wipe.
+            if ($correct_index < 0) {
+                $n_pending = (int) $wpdb->get_var(
+                    $wpdb->prepare(
+                        "SELECT COUNT(*) FROM $table_interactions WHERE item_id = %d",
+                        $item_id
+                    )
+                );
+                if ($n_pending > 0) {
+                    $this->twork_rewards_log_auto_run(
+                        'catch_up_begin',
+                        $item_id,
+                        array(
+                            'pending_interactions' => $n_pending,
+                            'result_end_ts' => (int) $result_end_ts,
+                            'current_ts' => (int) $current_ts,
+                        )
+                    );
+                    $catch = $this->auto_run_locked_resolve_random_winner_and_award(
+                        $item_id,
+                        $item,
+                        $user_interactions,
+                        $current_time,
+                        $current_ts,
+                        $period_minutes,
+                        $result_display_seconds
+                    );
+                    if (!empty($catch['deferred_due_to_lock'])) {
+                        $this->twork_rewards_log_auto_run(
+                            'reset_deferred_lock',
+                            $item_id,
+                            array('message' => 'Another worker holds twork_poll_lock; skip cycle reset this tick')
+                        );
+                        return;
+                    }
+                    $ce = isset($catch['error']) ? (string) $catch['error'] : '';
+                    if ($ce !== '' && $ce !== 'already_resolved' && empty($catch['resolved'])) {
+                        $this->twork_rewards_log_auto_run(
+                            'catch_up_failed',
+                            $item_id,
+                            array('error' => $ce)
+                        );
+                        return;
+                    }
+                }
+            }
+
+            // Old Code:        if ($current_ts > $result_end_ts) {
+            // Old Code:            $wpdb->delete($table_interactions, array('item_id' => $item_id), array('%d'));
+            // Old Code:            unset($user_interactions[$item_id]);
+            // Old Code:            $quiz_data['correct_index'] = -1;
+            // Old Code:            unset($quiz_data['poll_correct_answer_mode']);
+            // Old Code:            unset($quiz_data['poll_resolved_at']);
+            // Old Code:            $now = current_time('mysql');
+            // Old Code:            $now_ts = strtotime($now);
+            // Old Code:            $new_end_ts = $now_ts + ($period_minutes * 60);
+            // Old Code:            $quiz_data['poll_actual_start_at'] = $now;
+            // Old Code:            $quiz_data['poll_voting_start_time'] = $now;
+            // Old Code:            $quiz_data['poll_voting_end_time'] = date('Y-m-d H:i:s', $new_end_ts);
+            // Old Code:            $wpdb->update(
+            // Old Code:                $table_items,
+            // Old Code:                array('quiz_data' => wp_json_encode($quiz_data)),
+            // Old Code:                array('id' => $item_id),
+            // Old Code:                array('%s'),
+            // Old Code:                array('%d')
+            // Old Code:            );
+            // Old Code:            $item['quiz_data'] = wp_json_encode($quiz_data);
+            // Old Code:            return;
+            // Old Code:        }
+            $quiz_data = json_decode($item['quiz_data'] ?? '', true);
+            if (!is_array($quiz_data)) {
+                $this->twork_rewards_log_auto_run('reset_invalid_quiz_after_catchup', $item_id, array());
+                return;
+            }
             $wpdb->delete($table_interactions, array('item_id' => $item_id), array('%d'));
             unset($user_interactions[$item_id]);
 
@@ -4045,76 +4515,151 @@ class TWork_Rewards_System
             );
 
             $item['quiz_data'] = wp_json_encode($quiz_data);
+            $this->twork_rewards_log_auto_run('cycle_reset', $item_id, array('ok' => 1));
             return;
         }
 
         if ($current_ts > $end_ts && $correct_index < 0) {
-            // Atomic Lock to prevent DB choking from concurrent feed requests
-            $lock_key = 'twork_poll_lock_' . $item_id;
-            if (get_transient($lock_key)) {
-                return; // Another process is already resolving this poll
-            }
-            set_transient($lock_key, true, 60); // Lock for 60 seconds
-
-            $options = $quiz_data['options'] ?? array();
-            $num_options = count($options);
-
-            $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
-
-            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? '';
-            $start_ts = strtotime($started_at);
-            // Senior guard: fallback if strtotime fails
-            if (!$start_ts) {
-                $start_ts = time();
-            }
-
-            $cycle_seconds = ($period_minutes + $result_duration_min) * 60;
-            $elapsed = max(0, $current_ts - $start_ts);
-            $iteration = (int) floor($elapsed / $cycle_seconds);
-            $session_id = 's' . $iteration;
-
-            if ($override_index >= 0 && $override_index < $num_options) {
-                $correct_index = $override_index;
-            } else {
-                // Pure random — aligned with class-poll-auto-run.php (cryptographic RNG per resolution).
-                if ($num_options > 0) {
-                    $correct_index = random_int(0, $num_options - 1);
-                } else {
-                    $correct_index = 0;
-                }
-            }
-
-            $quiz_data['correct_index'] = (int) $correct_index;
-            $quiz_data['poll_correct_answer_mode'] = ($override_index >= 0) ? 'fixed' : 'random';
-            $quiz_data['poll_resolved_at'] = $current_time;
-
-            $wpdb->update(
-                $table_items,
-                array('quiz_data' => wp_json_encode($quiz_data)),
-                array('id' => $item_id),
-                array('%s'),
-                array('%d')
+            // Old Code:        if ($current_ts > $end_ts && $correct_index < 0) {
+            // Old Code:            // Atomic Lock to prevent DB choking from concurrent feed requests
+            // Old Code:            $lock_key = 'twork_poll_lock_' . $item_id;
+            // Old Code:            if (get_transient($lock_key)) {
+            // Old Code:                return; // Another process is already resolving this poll
+            // Old Code:            }
+            // Old Code:            set_transient($lock_key, true, 60); // Lock for 60 seconds
+            // Old Code:            $options = $quiz_data['options'] ?? array();
+            // Old Code:            $num_options = count($options);
+            // Old Code:            $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
+            // Old Code:            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? '';
+            // Old Code:            $start_ts = strtotime($started_at);
+            // Old Code:            if (!$start_ts) {
+            // Old Code:                $start_ts = time();
+            // Old Code:            }
+            // Old Code:            $cycle_seconds = ($period_minutes * 60) + $result_display_seconds;
+            // Old Code:            $elapsed = max(0, $current_ts - $start_ts);
+            // Old Code:            $iteration = (int) floor($elapsed / $cycle_seconds);
+            // Old Code:            $session_id = 's' . $iteration;
+            // Old Code:            if ($override_index >= 0 && $override_index < $num_options) {
+            // Old Code:                $correct_index = $override_index;
+            // Old Code:            } else {
+            // Old Code:                if ($num_options > 0) {
+            // Old Code:                    $correct_index = random_int(0, $num_options - 1);
+            // Old Code:                } else {
+            // Old Code:                    $correct_index = 0;
+            // Old Code:                }
+            // Old Code:            }
+            // Old Code:            $quiz_data['correct_index'] = (int) $correct_index;
+            // Old Code:            $quiz_data['poll_correct_answer_mode'] = ($override_index >= 0) ? 'fixed' : 'random';
+            // Old Code:            $quiz_data['poll_resolved_at'] = $current_time;
+            // Old Code:            $wpdb->update(
+            // Old Code:                $table_items,
+            // Old Code:                array('quiz_data' => wp_json_encode($quiz_data)),
+            // Old Code:                array('id' => $item_id),
+            // Old Code:                array('%s'),
+            // Old Code:                array('%d')
+            // Old Code:            );
+            // Old Code:            // Point ပေးတဲ့ Code (၁) ခါတည်းသာ ပါဝင်ပါသည်
+            // Old Code:            $this->award_poll_winner_points($item_id);
+            // Old Code:            $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
+            // Old Code:            $wpdb->replace(
+            // Old Code:                $table_rewards,
+            // Old Code:                array(
+            // Old Code:                    'poll_id' => $item_id,
+            // Old Code:                    'session_id' => $session_id,
+            // Old Code:                    'rewards_distributed' => 1,
+            // Old Code:                    'distributed_at' => current_time('mysql'),
+            // Old Code:                ),
+            // Old Code:                array('%d', '%s', '%d', '%s')
+            // Old Code:            );
+            // Old Code:            $item['quiz_data'] = wp_json_encode($quiz_data);
+            // Old Code:            delete_transient($lock_key);
+            // Old Code:        }
+            $resolve = $this->auto_run_locked_resolve_random_winner_and_award(
+                $item_id,
+                $item,
+                $user_interactions,
+                $current_time,
+                $current_ts,
+                $period_minutes,
+                $result_display_seconds
             );
+            if (!empty($resolve['deferred_due_to_lock'])) {
+                $this->twork_rewards_log_auto_run('inwindow_deferred_lock', $item_id, array());
+            }
+        }
+    }
 
-            // Point ပေးတဲ့ Code (၁) ခါတည်းသာ ပါဝင်ပါသည်
-            $this->award_poll_winner_points($item_id);
+    /**
+     * WP-Cron callback: advance AUTO_RUN polls and award winners (server-side; no app required).
+     */
+    public function cron_process_auto_run_polls()
+    {
+        global $wpdb;
+        $this->twork_rewards_log_auto_run('cron_tick_start', 0, array('source' => 'twork_rewards_auto_run_poll_cron'));
+        $table = $wpdb->prefix . 'twork_engagement_items';
+        $items = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM $table WHERE type = %s",
+                'poll'
+            ),
+            ARRAY_A
+        );
+        if (!is_array($items) || empty($items)) {
+            return;
+        }
+        foreach ($items as $row) {
+            if (!is_array($row) || ($row['type'] ?? '') !== 'poll') {
+                continue;
+            }
+            $qd = json_decode($row['quiz_data'] ?? '', true);
+            if (!is_array($qd)) {
+                continue;
+            }
+            if (strtolower((string) ($qd['poll_mode'] ?? '')) !== 'auto_run') {
+                continue;
+            }
+            $user_interactions = array();
+            $item = $row;
+            $this->process_auto_run_poll($item, $user_interactions);
+        }
+    }
 
-            // Prevent double payout by marking this session as rewarded
-            $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
-            $wpdb->replace(
-                $table_rewards,
-                array(
-                    'poll_id' => $item_id,
-                    'session_id' => $session_id,
-                    'rewards_distributed' => 1,
-                    'distributed_at' => current_time('mysql'),
-                ),
-                array('%d', '%s', '%d', '%s')
+    /**
+     * Register 5-minute interval for WP-Cron.
+     *
+     * @param array $schedules Schedules.
+     * @return array
+     */
+    public function add_cron_intervals($schedules)
+    {
+        if (!isset($schedules['twork_rewards_every_5_minutes'])) {
+            $schedules['twork_rewards_every_5_minutes'] = array(
+                'interval' => 300,
+                'display'  => __('Every 5 minutes (TWork poll auto-run)', 'twork-rewards'),
             );
+        }
+        return $schedules;
+    }
 
-            $item['quiz_data'] = wp_json_encode($quiz_data);
+    /**
+     * Schedule recurring cron if not already scheduled (new installs + updates).
+     */
+    public function maybe_schedule_auto_run_cron()
+    {
+        if (wp_next_scheduled('twork_rewards_auto_run_poll_cron')) {
+            return;
+        }
+        wp_schedule_event(time() + 60, 'twork_rewards_every_5_minutes', 'twork_rewards_auto_run_poll_cron');
+    }
 
-            delete_transient($lock_key);
+    /**
+     * Plugin deactivation: unschedule auto-run cron.
+     */
+    public function deactivate_plugin_cron()
+    {
+        $ts = wp_next_scheduled('twork_rewards_auto_run_poll_cron');
+        if ($ts) {
+            wp_unschedule_event($ts, 'twork_rewards_auto_run_poll_cron');
         }
     }
 
@@ -4147,7 +4692,7 @@ class TWork_Rewards_System
      * @param int $item_id Engagement item ID (must be poll type)
      * @return array{ awarded: int, total_points: int, error?: string }
      */
-    public function award_poll_winner_points($item_id)
+    public function award_poll_winner_points($item_id, $session_id = '')
     {
         global $wpdb;
 
@@ -4202,17 +4747,30 @@ class TWork_Rewards_System
 
         $item_title = $item['title'] ?? 'Poll #' . $item_id;
 
-        $interactions = $wpdb->get_results($wpdb->prepare(
-            "SELECT id, user_id, interaction_value, bet_amount, bet_amount_per_option, is_correct, points_awarded FROM $table_interactions WHERE item_id = %d",
-            $item_id
-        ), ARRAY_A);
+        if (is_string($session_id) && $session_id !== '') {
+            $interactions = $wpdb->get_results($wpdb->prepare(
+                "SELECT id, user_id, interaction_value, bet_amount, bet_amount_per_option, interaction_meta, is_correct, points_awarded
+                 FROM $table_interactions
+                 WHERE item_id = %d AND session_id = %s",
+                $item_id,
+                $session_id
+            ), ARRAY_A);
+        } else {
+            $interactions = $wpdb->get_results($wpdb->prepare(
+                "SELECT id, user_id, interaction_value, bet_amount, bet_amount_per_option, interaction_meta, is_correct, points_awarded
+                 FROM $table_interactions
+                 WHERE item_id = %d",
+                $item_id
+            ), ARRAY_A);
+        }
 
         $awarded = 0;
         $total_points = 0;
 
         foreach ($interactions as $row) {
-            // IDEMPOTENCY FIX: Prevent double awarding points to the same interaction
-            if (isset($row['is_correct']) && (int)$row['is_correct'] === 1) {
+            // Idempotency: only skip when points were actually awarded.
+            // If legacy/bad rows have is_correct=1 but points_awarded=0, recover by recalculating now.
+            if ((int) ($row['points_awarded'] ?? 0) > 0) {
                 continue;
             }
 
@@ -4221,28 +4779,40 @@ class TWork_Rewards_System
             }
 
             $user_id = (int) $row['user_id'];
-            $user_bet_amount = max(1, (int) ($row['bet_amount'] ?? 1));
+            $winning_option_bet = max(1, (int) ($row['bet_amount'] ?? 1));
             $per_option_raw = isset($row['bet_amount_per_option']) ? trim((string) $row['bet_amount_per_option']) : '';
             if ($per_option_raw !== '' && $allow_user_amount) {
                 $per_option = json_decode($per_option_raw, true);
                 if (is_array($per_option) && isset($per_option[(string) $correct_index])) {
-                    $user_bet_amount = max(1, (int) $per_option[(string) $correct_index]);
+                    $winning_option_bet = max(1, (int) $per_option[(string) $correct_index]);
                 }
             }
-            // User Amount: reward = (PNP user bet on winning option) × multiplier
-            $user_bet_pnp = $bet_amount_step * $user_bet_amount;
+            // Reward must be based ONLY on the winning option bet.
+            $user_bet_pnp = $bet_amount_step * $winning_option_bet;
             $user_reward_points = $allow_user_amount
                 ? (int) round($user_bet_pnp * $reward_multiplier)
                 : $reward_points;
+
+            $resolved_meta = $this->build_poll_interaction_meta_payload(
+                $row['interaction_value'],
+                $bet_amount_step,
+                max(1, (int) ($row['bet_amount'] ?? 1)),
+                isset($row['bet_amount_per_option']) ? $row['bet_amount_per_option'] : null,
+                $quiz_data,
+                $correct_index,
+                $user_reward_points,
+                'won'
+            );
 
             $wpdb->update(
                 $table_interactions,
                 array(
                     'is_correct' => 1,
                     'points_awarded' => $user_reward_points,
+                    'interaction_meta' => $resolved_meta,
                 ),
                 array('id' => (int) $row['id']),
-                array('%d', '%d'),
+                array('%d', '%d', '%s'),
                 array('%d')
             );
 
@@ -4253,7 +4823,26 @@ class TWork_Rewards_System
                     $item_title,
                     $user_reward_points
                 );
-                $this->sync_user_points($user_id, (float) $user_reward_points, $order_id, $description, true);
+                $winner_txn_meta = array(
+                    'poll_id' => (int) $item_id,
+                    'poll_title' => (string) $item_title,
+                    'session_id' => (string) $session_id,
+                    'result_status' => 'won',
+                    'won_amount_pnp' => (int) $user_reward_points,
+                    'total_bet_pnp' => 0,
+                );
+                $resolved_meta_decoded = json_decode($resolved_meta, true);
+                if (is_array($resolved_meta_decoded)) {
+                    $winner_txn_meta = array_merge($resolved_meta_decoded, $winner_txn_meta);
+                }
+                $this->sync_user_points(
+                    $user_id,
+                    (float) $user_reward_points,
+                    $order_id,
+                    $description,
+                    true,
+                    wp_json_encode($winner_txn_meta)
+                );
 
                 $this->send_points_fcm_notification(
                     $user_id,
@@ -4409,6 +4998,10 @@ class TWork_Rewards_System
                         $feed_item['user_bet_amount_per_option'] = $decoded;
                     }
                 }
+                $feed_item['user_bet_amount_pnp'] = self::calculate_poll_user_bet_amount_pnp(
+                    is_array($quiz_data) ? $quiz_data : array(),
+                    $interaction_data
+                );
             }
             if ($item['type'] === 'poll' && is_array($quiz_data)) {
                 $current_time = current_time('mysql');
@@ -4419,8 +5012,7 @@ class TWork_Rewards_System
                 $result_display_ends_at = null;
                 $poll_mode = $quiz_data['poll_mode'] ?? 'schedule';
                 $poll_period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
-                $result_display_min = isset($quiz_data['result_display_duration']) ? max(0, (int) $quiz_data['result_display_duration']) : 1;
-                $result_display_seconds = $result_display_min * 60;
+                $result_display_seconds = self::resolve_result_display_duration_seconds($quiz_data);
 
                 if (!empty($quiz_data['poll_voting_start_time'])) {
                     if ($current_timestamp < strtotime($quiz_data['poll_voting_start_time'])) {
@@ -4447,9 +5039,11 @@ class TWork_Rewards_System
                     'current_time' => $current_time,
                     'poll_mode' => $poll_mode,
                     'poll_period_minutes' => $poll_period_minutes,
+                    'poll_duration' => $poll_period_minutes,
                     'seconds_until_close' => $seconds_until_close,
                     'result_display_ends_at' => $result_display_ends_at,
                     'result_display_seconds' => $result_display_seconds,
+                    'result_display_duration_seconds' => $result_display_seconds,
                 );
                 if (!empty($quiz_data['poll_voting_start_time'])) {
                     $feed_item['poll_voting_schedule']['start_time'] = $quiz_data['poll_voting_start_time'];
@@ -4633,8 +5227,7 @@ class TWork_Rewards_System
                     $end_time = $quiz_data['poll_voting_end_time'] ?? '';
                     $end_ts = !empty($end_time) ? strtotime($end_time) : 0;
                     $period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
-                    $result_dur_min = isset($quiz_data['result_display_duration']) ? max(0, (int) $quiz_data['result_display_duration']) : 1;
-                    $result_display_sec = $result_dur_min * 60;
+                    $result_display_sec = self::resolve_result_display_duration_seconds($quiz_data);
                     $voting_allowed = true;
                     $voting_status = 'open';
                     $seconds_until_close = 0;
@@ -4658,9 +5251,11 @@ class TWork_Rewards_System
                         'voting_status' => $voting_status,
                         'poll_mode' => $quiz_data['poll_mode'] ?? 'schedule',
                         'poll_period_minutes' => $period_minutes,
+                        'poll_duration' => $period_minutes,
                         'seconds_until_close' => $seconds_until_close,
                         'result_display_ends_at' => $result_display_ends_at,
                         'result_display_seconds' => $result_display_sec,
+                        'result_display_duration_seconds' => $result_display_sec,
                     );
                     if ($voting_status === 'showing_result' || $voting_status === 'ended') {
                         $stats = $this->get_engagement_item_statistics($id);
@@ -4879,6 +5474,10 @@ class TWork_Rewards_System
                                     $feed_item['user_bet_amount_per_option'] = $decoded;
                                 }
                             }
+                            $feed_item['user_bet_amount_pnp'] = self::calculate_poll_user_bet_amount_pnp(
+                                is_array($quiz_data) ? $quiz_data : array(),
+                                $interaction_data
+                            );
                         }
 
                         // PROFESSIONAL FEATURE: Include poll voting schedule info for polls
@@ -4893,8 +5492,7 @@ class TWork_Rewards_System
                             $result_display_ends_at = null;
                             $poll_mode = $quiz_data['poll_mode'] ?? 'schedule';
                             $poll_period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
-                            $result_dur_min = isset($quiz_data['result_display_duration']) ? max(0, (int) $quiz_data['result_display_duration']) : 1;
-                            $result_display_sec = $result_dur_min * 60;
+                            $result_display_sec = self::resolve_result_display_duration_seconds($quiz_data);
 
                             if (!empty($quiz_data['poll_voting_start_time'])) {
                                 $start_timestamp = strtotime($quiz_data['poll_voting_start_time']);
@@ -4924,9 +5522,11 @@ class TWork_Rewards_System
                                 'current_time' => $current_time,
                                 'poll_mode' => $poll_mode,
                                 'poll_period_minutes' => $poll_period_minutes,
+                                'poll_duration' => $poll_period_minutes,
                                 'seconds_until_close' => $seconds_until_close,
                                 'result_display_ends_at' => $result_display_ends_at,
                                 'result_display_seconds' => $result_display_sec,
+                                'result_display_duration_seconds' => $result_display_sec,
                             );
 
                             if (!empty($quiz_data['poll_voting_start_time'])) {
@@ -5290,8 +5890,8 @@ class TWork_Rewards_System
                         );
                     }
                     $poll_dur = max(1, (int) ($qd['poll_duration'] ?? 15));
-                    $result_dur = max(0, (int) ($qd['result_display_duration'] ?? 1));
-                    $cycle_sec = ($poll_dur + $result_dur) * 60;
+                    $result_sec = self::resolve_result_display_duration_seconds($qd);
+                    $cycle_sec = ($poll_dur * 60) + $result_sec;
                     $voting_sec = $poll_dur * 60;
                     $start_ts = strtotime($started_at);
                     $now_ts = time();
@@ -5338,6 +5938,11 @@ class TWork_Rewards_System
                         "SELECT * FROM $table_interactions WHERE user_id = %d AND item_id = %d AND session_id = %s",
                         $user_id, $item_id, $check_session_id
                     ), ARRAY_A);
+                    $existing_quiz_data = json_decode($item['quiz_data'] ?? '', true);
+                    $existing_user_bet_amount_pnp = self::calculate_poll_user_bet_amount_pnp(
+                        is_array($existing_quiz_data) ? $existing_quiz_data : array(),
+                        is_array($existing_interaction) ? $existing_interaction : array()
+                    );
 
                     // Polls: one-time vote only
                     return new WP_REST_Response(array(
@@ -5350,6 +5955,7 @@ class TWork_Rewards_System
                             'points_earned' => (int) ($existing_interaction['points_awarded'] ?? 0),
                             'user_answer' => $existing_interaction['interaction_value'] ?? null,
                             'user_bet_amount' => max(1, (int) ($existing_interaction['bet_amount'] ?? 1)),
+                            'user_bet_amount_pnp' => (int) $existing_user_bet_amount_pnp,
                         )
                     ), 400);
                 } else {
@@ -5500,42 +6106,105 @@ class TWork_Rewards_System
                     $balance = 0;
                     $use_points_system = false;
 
+                    // Old Code:
                     // Prefer T-Work Points System (actual point balance: points_balance / my_points)
-                    if (class_exists('TWork_Points_System')) {
-                        $pts = TWork_Points_System::get_instance();
-                        if (method_exists($pts, 'get_user_point_balance')) {
-                            $balance = (int) $pts->get_user_point_balance($user_id);
-                            $use_points_system = true;
+                    // if (class_exists('TWork_Points_System')) {
+                    //     $pts = TWork_Points_System::get_instance();
+                    //     if (method_exists($pts, 'get_user_point_balance')) {
+                    //         $balance = (int) $pts->get_user_point_balance($user_id);
+                    //         $use_points_system = true;
+                    //     }
+                    // }
+                    //
+                    // New Code:
+                    // Normalize point values before compare/deduct.
+                    // This prevents "(int) '16,500' => 16" truncation from causing false insufficient_balance.
+                    $normalize_point_value = static function ($value) {
+                        if ($value === null || $value === '' || $value === false) {
+                            return 0;
                         }
-                    }
-                    // Fallback to TWork_Poll_PNP (legacy _user_pnp_balance)
-                    if (!$use_points_system && class_exists('TWork_Poll_PNP')) {
-                        $balance = (int) TWork_Poll_PNP::get_user_pnp($user_id);
-                    }
-
-                    // Defensive: if balance still 0, read meta directly (avoids cache/timing mismatch with /users/me)
-                    if ($balance <= 0 && $user_id > 0) {
-                        foreach (array('points_balance', 'my_points', 'my_point', '_user_pnp_balance') as $meta_key) {
-                            $raw = get_user_meta($user_id, $meta_key, true);
-                            if ($raw !== '' && $raw !== false) {
-                                $normalized = is_string($raw) ? str_replace(',', '', trim($raw)) : $raw;
-                                if (is_numeric($normalized)) {
-                                    $b = (int) $normalized;
-                                    if ($b > $balance) {
-                                        $balance = $b;
-                                    }
-                                }
+                        if (is_int($value)) {
+                            return max(0, $value);
+                        }
+                        if (is_float($value)) {
+                            return max(0, (int) round($value));
+                        }
+                        if (is_string($value)) {
+                            $normalized = str_replace(',', '', trim($value));
+                            // Keep only digits, optional leading minus, and optional decimal point.
+                            $normalized = preg_replace('/[^0-9\.\-]/', '', $normalized);
+                            if ($normalized === '' || $normalized === '-' || !is_numeric($normalized)) {
+                                return 0;
                             }
+                            return max(0, (int) round((float) $normalized));
                         }
+                        if (is_numeric($value)) {
+                            return max(0, (int) round((float) $value));
+                        }
+                        return 0;
+                    };
+
+                    // Old Code:
+                    // Prefer T-Work Points System (actual point balance: points_balance / my_points)
+                    // if (class_exists('TWork_Points_System')) {
+                    //     $pts = TWork_Points_System::get_instance();
+                    //     if (method_exists($pts, 'get_user_point_balance')) {
+                    //         $raw_points_system_balance = $pts->get_user_point_balance($user_id);
+                    //         $balance = $normalize_point_value($raw_points_system_balance);
+                    //         $use_points_system = true;
+                    //     }
+                    // }
+                    // Fallback to TWork_Poll_PNP (legacy _user_pnp_balance)
+                    // if (!$use_points_system && class_exists('TWork_Poll_PNP')) {
+                    //     $raw_legacy_balance = TWork_Poll_PNP::get_user_pnp($user_id);
+                    //     $balance = $normalize_point_value($raw_legacy_balance);
+                    // }
+                    // Defensive: if balance still 0, read meta directly (avoids cache/timing mismatch with /users/me)
+                    // if ($balance <= 0 && $user_id > 0) {
+                    //     foreach (array('points_balance', 'my_points', 'my_point', '_user_pnp_balance') as $meta_key) {
+                    //         $raw = get_user_meta($user_id, $meta_key, true);
+                    //         if ($raw !== '' && $raw !== false) {
+                    //             $b = $normalize_point_value($raw);
+                    //             if ($b > $balance) {
+                    //                 $balance = $b;
+                    //             }
+                    //         }
+                    //     }
+                    // }
+
+                    // New Code:
+                    $use_points_system = false;
+                    if (class_exists('TWork_Points_System')) {
+                        $use_points_system = true;
+                        $pts = TWork_Points_System::get_instance();
                     }
 
-                    if ($balance < $total_cost) {
+                    // PROFESSIONAL FIX: Always use the unified transaction-based calculation as the single source of truth.
+                    // Ignores stale legacy meta (_user_pnp_balance) which caused the 16000 limit error.
+                    $balance = $this->calculate_points_balance_from_transactions($user_id);
+
+                    // Old Code:
+                    // if ($balance < $total_cost) {
+                    //     return new WP_REST_Response(array(
+                    //         'success' => false,
+                    //         'message' => 'Insufficient Balance',
+                    //         'code' => 'insufficient_balance',
+                    //         'required' => $total_cost,
+                    //         'balance' => $balance,
+                    //     ), 400);
+                    // }
+                    //
+                    // New Code:
+                    // Compare normalized integer values only.
+                    $safe_total_cost = $normalize_point_value($total_cost);
+                    $safe_balance = $normalize_point_value($balance);
+                    if ($safe_balance < $safe_total_cost) {
                         return new WP_REST_Response(array(
                             'success' => false,
                             'message' => 'Insufficient Balance',
                             'code' => 'insufficient_balance',
-                            'required' => $total_cost,
-                            'balance' => $balance,
+                            'required' => $safe_total_cost,
+                            'balance' => $safe_balance,
                         ), 400);
                     }
 
@@ -5543,7 +6212,7 @@ class TWork_Rewards_System
                     if ($use_points_system) {
                         // When T-Work Points System is active, delegate deduction there.
                         $description = sprintf('Poll vote - item %d', $item_id);
-                        $new_balance = $pts->deduct_for_poll_vote($user_id, $total_cost, $description);
+                        $new_balance = $pts->deduct_for_poll_vote($user_id, $safe_total_cost, $description);
                         if ($new_balance === false) {
                             return new WP_REST_Response(array(
                                 'success' => false,
@@ -5558,13 +6227,36 @@ class TWork_Rewards_System
                         $description = sprintf(
                             'Poll entry cost: %s (-%d points)',
                             isset($item['title']) ? $item['title'] : ('Poll #' . $item_id),
-                            $total_cost
+                            $safe_total_cost
                         );
-                        $this->sync_user_points($user_id, -1 * (float) $total_cost, $order_id, $description, true);
+                        $poll_txn_meta = array(
+                            'poll_id' => (int) $item_id,
+                            'poll_title' => isset($item['title']) ? (string) $item['title'] : '',
+                            'session_id' => (string) $check_session_id,
+                            'result_status' => 'lost',
+                            'won_amount_pnp' => 0,
+                            'total_bet_pnp' => (int) $safe_total_cost,
+                        );
+                        if (is_string($interaction_meta_payload) && $interaction_meta_payload !== '') {
+                            $decoded_interaction_meta = json_decode($interaction_meta_payload, true);
+                            if (is_array($decoded_interaction_meta)) {
+                                $poll_txn_meta = array_merge($decoded_interaction_meta, $poll_txn_meta);
+                            }
+                        }
+                        $this->sync_user_points(
+                            $user_id,
+                            -1 * (float) $safe_total_cost,
+                            $order_id,
+                            $description,
+                            true,
+                            wp_json_encode($poll_txn_meta)
+                        );
                     }
                 }
                 // PROFESSIONAL: Defer points until poll is resolved (Random or Manual).
                 // Points awarded only to winners after admin sets correct answer.
+                // CRITICAL: keep unresolved poll votes as is_correct=0 and points_awarded=0.
+                // award_poll_winner_points() relies on this to identify rows that still need payout.
                 $points_awarded = 0;
                 $is_correct = false;
                 $message = __('Thanks for voting! Points will be awarded to winners after the poll period ends.', 'twork-rewards');
@@ -5573,6 +6265,24 @@ class TWork_Rewards_System
             // Record interaction (or update if poll vote changed)
             $interaction_id = 0;
             $is_vote_update = false;  // Initialize flag for vote updates
+            $interaction_meta_payload = null;
+            if ($item['type'] === 'poll') {
+                $meta_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
+                if ($meta_step <= 0 && isset($quiz_data['poll_base_cost'])) {
+                    $base = max(0, (int) $quiz_data['poll_base_cost']);
+                    $meta_step = $base > 0 ? ($base < 1000 ? $base * 1000 : $base) : 1000;
+                }
+                $interaction_meta_payload = $this->build_poll_interaction_meta_payload(
+                    $answer,
+                    $meta_step,
+                    max(1, (int) $poll_bet_amount_to_store),
+                    isset($poll_bet_amount_per_option_to_store) ? $poll_bet_amount_per_option_to_store : null,
+                    isset($quiz_data) && is_array($quiz_data) ? $quiz_data : array(),
+                    null,
+                    0,
+                    'pending'
+                );
+            }
             if ($existing && $item['type'] === 'poll') {
                 // Update existing poll vote
                 $is_vote_update = true;
@@ -5580,10 +6290,11 @@ class TWork_Rewards_System
                     'interaction_value' => $answer,
                     'bet_amount' => ($item['type'] === 'poll') ? max(1, (int) $poll_bet_amount_to_store) : 1,
                     'bet_amount_per_option' => isset($poll_bet_amount_per_option_to_store) ? $poll_bet_amount_per_option_to_store : null,
+                    'interaction_meta' => $interaction_meta_payload,
                     'is_correct' => $is_correct ? 1 : 0,
                     'points_awarded' => $points_awarded
                 );
-                $update_format = array('%s', '%d', '%s', '%d', '%d');
+                $update_format = array('%s', '%d', '%s', '%s', '%d', '%d');
                 $update_result = $wpdb->update(
                     $table_interactions,
                     $update_data,
@@ -5638,11 +6349,12 @@ class TWork_Rewards_System
                     'interaction_type' => 'quiz_answer',
                     'interaction_value' => $answer,
                     'bet_amount' => ($item['type'] === 'poll') ? max(1, (int) $poll_bet_amount_to_store) : 1,
+                    'interaction_meta' => $interaction_meta_payload,
                     'is_correct' => $is_correct ? 1 : 0,
                     'points_awarded' => $points_awarded,
                     'created_at' => current_time('mysql')
                 );
-                $insert_format = array('%d', '%d', '%s', '%s', '%s', '%d', '%d', '%d', '%s');
+                $insert_format = array('%d', '%d', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%s');
                 if (isset($poll_bet_amount_per_option_to_store) && $poll_bet_amount_per_option_to_store !== null) {
                     $insert_data['bet_amount_per_option'] = $poll_bet_amount_per_option_to_store;
                     $insert_format[] = '%s';
@@ -5833,13 +6545,44 @@ class TWork_Rewards_System
             // Auto-update: include updated feed item so app can merge without refresh
             $updated_item = $this->build_single_engagement_feed_item($item_id, $user_id);
 
+            $user_bet_amount_pnp = 0;
+            if (($item['type'] ?? '') === 'poll') {
+                $quiz_data_for_bet = json_decode($item['quiz_data'] ?? '', true);
+                $interaction_for_bet = array(
+                    'interaction_value' => $answer,
+                    'bet_amount' => max(1, (int) $poll_bet_amount_to_store),
+                    'bet_amount_per_option' => isset($poll_bet_amount_per_option_to_store) ? $poll_bet_amount_per_option_to_store : null,
+                );
+                $user_bet_amount_pnp = self::calculate_poll_user_bet_amount_pnp(
+                    is_array($quiz_data_for_bet) ? $quiz_data_for_bet : array(),
+                    $interaction_for_bet
+                );
+            }
+
             // Return professional response with detailed data for dashboard
+            // Old Code:
+            // return new WP_REST_Response(array(
+            //     'success' => true,
+            //     'data' => array(
+            //         'is_correct' => $is_correct,
+            //         'points_earned' => $points_awarded,
+            //         'new_balance' => $new_balance,
+            //         ...
+            //     ),
+            //     'message' => $is_vote_update ? 'Vote updated successfully!' : $message
+            // ), 200);
+            //
+            // New Code:
+            // Include canonical spend/balance fields in success payload so client can render
+            // using server-authoritative values and avoid formula drift.
             return new WP_REST_Response(array(
                 'success' => true,
                 'data' => array(
                     'is_correct' => $is_correct,
                     'points_earned' => $points_awarded,
                     'new_balance' => $new_balance,
+                    'required' => isset($safe_total_cost) ? (int) $safe_total_cost : 0,
+                    'balance_before' => isset($safe_balance) ? (int) $safe_balance : max(0, (int) $new_balance),
                     'item_title' => $item['title'] ?? '',
                     'item_type' => $item['type'] ?? '',
                     'interaction_id' => $interaction_id,
@@ -5847,6 +6590,7 @@ class TWork_Rewards_System
                     'vote_updated' => $is_vote_update,  // Kept for backward compatibility (poll updates are now disabled)
                     'statistics' => $result_statistics,  // Vote counts, percentages, etc.
                     'result_details' => $result_details,  // Correct answer, user answer, etc.
+                    'user_bet_amount_pnp' => (int) $user_bet_amount_pnp,
                     'updated_item' => $updated_item,  // Same shape as feed item: merge into feed for auto-update without refresh
                 ),
                 'message' => $is_vote_update ? 'Vote updated successfully!' : $message
@@ -5954,6 +6698,14 @@ class TWork_Rewards_System
                     $answer_index = is_numeric($user_interaction['interaction_value'])
                         ? (int) $user_interaction['interaction_value']
                         : -1;
+                    $user_bet_pnp = 0;
+                    if (($item['type'] ?? '') === 'poll') {
+                        $quiz_data_for_bet = json_decode($item['quiz_data'] ?? '', true);
+                        $user_bet_pnp = self::calculate_poll_user_bet_amount_pnp(
+                            is_array($quiz_data_for_bet) ? $quiz_data_for_bet : array(),
+                            $user_interaction
+                        );
+                    }
 
                     $user_answer = array(
                         'answer_index' => $answer_index,
@@ -5962,6 +6714,7 @@ class TWork_Rewards_System
                             : null,
                         'is_correct' => (bool) $user_interaction['is_correct'],
                         'points_earned' => (int) $user_interaction['points_awarded'],
+                        'user_bet_pnp' => (int) $user_bet_pnp,
                         'answered_at' => $user_interaction['created_at'],
                     );
                     $user_is_correct = (bool) $user_interaction['is_correct'];
@@ -8252,7 +9005,7 @@ class TWork_Rewards_System
      *
      * @since 1.0.0
      */
-    private function sync_user_points($user_id, $delta, $order_id = '', $description = '', $create_transaction = true)
+    private function sync_user_points($user_id, $delta, $order_id = '', $description = '', $create_transaction = true, $meta_json = null)
     {
         if (!$user_id || 0 == $delta) {
             return false;
@@ -8316,6 +9069,23 @@ class TWork_Rewards_System
             $transaction_type = $delta >= 0 ? 'earn' : 'redeem';
             $points_abs = abs((int) $delta);
 
+            // OLD CODE:
+            // $result = $wpdb->insert(
+            //     $points_table,
+            //     array(
+            //         'user_id' => $user_id,
+            //         'type' => $transaction_type,
+            //         'points' => $points_abs,
+            //         'description' => $description,
+            //         'order_id' => $order_id,
+            //         'expires_at' => null,
+            //         'created_at' => current_time('mysql'),
+            //         'status' => 'approved',
+            //     ),
+            //     array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
+            // );
+            //
+            // New Code: persist optional meta_json as part of transaction source-of-truth row.
             $result = $wpdb->insert(
                 $points_table,
                 array(
@@ -8327,8 +9097,9 @@ class TWork_Rewards_System
                     'expires_at' => null,
                     'created_at' => current_time('mysql'),
                     'status' => 'approved',
+                    'meta_json' => is_string($meta_json) ? $meta_json : null,
                 ),
-                array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
+                array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s')
             );
 
             if (false === $result) {
@@ -8670,6 +9441,19 @@ class TWork_Rewards_System
                     }
                 }
 
+                // OLD CODE:
+                // $formatted_transactions[] = array(
+                //   ...
+                // );
+                //
+                // New Code: enrich each row with structured poll details (if this is poll-related).
+                $poll_details = $this->build_poll_transaction_details(
+                    $user_id,
+                    isset($transaction->order_id) ? (string) $transaction->order_id : '',
+                    (string) $this->map_transaction_type($transaction->type, $transaction->order_id),
+                    $points_int,
+                    isset($transaction->meta_json) ? (string) $transaction->meta_json : null
+                );
                 $formatted_transactions[] = array(
                     'id' => $transaction->id,
                     'user_id' => $transaction->user_id,
@@ -8681,6 +9465,7 @@ class TWork_Rewards_System
                     'expires_at' => null,
                     'is_expired' => false,
                     'status' => $transaction->status ?: 'approved',
+                    'poll_details' => $poll_details,
                 );
             }
         } elseif ($total > 0) {
@@ -8691,6 +9476,13 @@ class TWork_Rewards_System
                     // Keep negative value for negative adjustments
                 }
 
+                $poll_details = $this->build_poll_transaction_details(
+                    $user_id,
+                    isset($transaction->order_id) ? (string) $transaction->order_id : '',
+                    isset($transaction->type) ? (string) $transaction->type : '',
+                    $points_int,
+                    isset($transaction->meta_json) ? (string) $transaction->meta_json : null
+                );
                 $formatted_transactions[] = array(
                     'id' => $transaction->id,
                     'user_id' => $transaction->user_id,
@@ -8702,6 +9494,7 @@ class TWork_Rewards_System
                     'expires_at' => $transaction->expires_at,
                     'is_expired' => (bool) $transaction->is_expired,
                     'status' => isset($transaction->status) ? $transaction->status : 'approved',
+                    'poll_details' => $poll_details,
                 );
             }
         } else {
@@ -8736,6 +9529,13 @@ class TWork_Rewards_System
                     }
                 }
 
+                $poll_details = $this->build_poll_transaction_details(
+                    $user_id,
+                    isset($transaction->order_id) ? (string) $transaction->order_id : '',
+                    (string) $this->map_transaction_type($transaction->type, $transaction->order_id),
+                    $points_int,
+                    null
+                );
                 $formatted_transactions[] = array(
                     'id' => $transaction->id,
                     'user_id' => $transaction->user_id,
@@ -8747,6 +9547,7 @@ class TWork_Rewards_System
                     'expires_at' => null,
                     'is_expired' => false,
                     'status' => $transaction->status ?: 'approved',
+                    'poll_details' => $poll_details,
                 );
             }
         }
@@ -8787,6 +9588,312 @@ class TWork_Rewards_System
             'page' => $page,
             'per_page' => $per_page,
             'total_pages' => ceil($total / $per_page),
+        ));
+    }
+
+    /**
+     * Build structured poll transaction details for mobile history UX.
+     *
+     * Uses interaction snapshot (interaction_value, bet_amount, bet_amount_per_option)
+     * and current poll config to return selected options, winning option, and win/loss summary.
+     *
+     * @param int    $user_id
+     * @param string $order_id
+     * @param string $txn_type
+     * @param int    $points
+     * @return array|null
+     */
+    private function build_poll_transaction_details($user_id, $order_id, $txn_type, $points, $transaction_meta_json = null)
+    {
+        if (!is_string($order_id) || $order_id === '') {
+            return null;
+        }
+
+        // Match both poll reward and poll entry-cost order IDs.
+        // Examples: engagement:poll:123:..., engagement:poll_cost:123:...
+        if (!preg_match('/^engagement:(poll|poll_cost):(\d+):/i', $order_id, $m)) {
+            return null;
+        }
+
+        $poll_id = isset($m[2]) ? (int) $m[2] : 0;
+        if ($poll_id <= 0) {
+            return null;
+        }
+
+        // OLD CODE: always reconstruct details from interactions table at read time.
+        // New Code: if transaction row already has persisted meta_json, use it directly.
+        if (is_string($transaction_meta_json) && trim($transaction_meta_json) !== '') {
+            $decoded_txn_meta = json_decode($transaction_meta_json, true);
+            if (is_array($decoded_txn_meta)) {
+                $selected_options = isset($decoded_txn_meta['selected_options']) && is_array($decoded_txn_meta['selected_options'])
+                    ? $decoded_txn_meta['selected_options']
+                    : array();
+                $winning_option = isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])
+                    ? $decoded_txn_meta['winning_option']
+                    : null;
+                $total_bet = isset($decoded_txn_meta['total_bet_pnp']) ? (int) $decoded_txn_meta['total_bet_pnp'] : 0;
+                $won = isset($decoded_txn_meta['won_amount_pnp']) ? (int) $decoded_txn_meta['won_amount_pnp'] : 0;
+                $status = isset($decoded_txn_meta['result_status']) ? (string) $decoded_txn_meta['result_status'] : 'pending';
+                $session = isset($decoded_txn_meta['session_id']) ? (string) $decoded_txn_meta['session_id'] : '';
+                $title = isset($decoded_txn_meta['poll_title']) ? (string) $decoded_txn_meta['poll_title'] : '';
+                return array(
+                    'poll_id' => $poll_id,
+                    'poll_title' => $title,
+                    'session_id' => $session,
+                    'result_status' => $status,
+                    'total_bet_pnp' => max(0, $total_bet),
+                    'won_amount_pnp' => max(0, $won),
+                    'net_amount_pnp' => (int) ($won - max(0, $total_bet)),
+                    'winning_option' => $winning_option,
+                    'selected_options' => $selected_options,
+                );
+            }
+        }
+
+        global $wpdb;
+        $table_items = $wpdb->prefix . 'twork_engagement_items';
+        $table_interactions = $wpdb->prefix . 'twork_user_interactions';
+
+        $item = $wpdb->get_row($wpdb->prepare(
+            "SELECT id, title, quiz_data FROM $table_items WHERE id = %d",
+            $poll_id
+        ), ARRAY_A);
+        if (!$item || !is_array($item)) {
+            return null;
+        }
+
+        $quiz_data = json_decode($item['quiz_data'] ?? '', true);
+        if (!is_array($quiz_data)) {
+            $quiz_data = array();
+        }
+
+        // Latest interaction for this user/poll is used as the per-user betting snapshot.
+        $interaction = $wpdb->get_row($wpdb->prepare(
+            "SELECT interaction_value, bet_amount, bet_amount_per_option, interaction_meta, session_id
+             FROM $table_interactions
+             WHERE user_id = %d AND item_id = %d
+             ORDER BY id DESC LIMIT 1",
+            (int) $user_id,
+            (int) $poll_id
+        ), ARRAY_A);
+        if (!$interaction || !is_array($interaction)) {
+            return null;
+        }
+
+        $options = isset($quiz_data['options']) && is_array($quiz_data['options'])
+            ? $quiz_data['options']
+            : array();
+
+        $bet_step = 1000;
+        if (isset($quiz_data['bet_amount_step'])) {
+            $bet_step = max(1, (int) $quiz_data['bet_amount_step']);
+        } elseif (isset($quiz_data['poll_base_cost'])) {
+            $base = max(0, (int) $quiz_data['poll_base_cost']);
+            if ($base > 0) {
+                $bet_step = $base < 1000 ? ($base * 1000) : $base;
+            }
+        }
+
+        $selected_indices = array();
+        $raw_answer = isset($interaction['interaction_value']) ? (string) $interaction['interaction_value'] : '';
+        if ($raw_answer !== '') {
+            foreach (array_map('trim', explode(',', $raw_answer)) as $part) {
+                if ($part !== '' && is_numeric($part)) {
+                    $selected_indices[] = (int) $part;
+                }
+            }
+        }
+        $selected_indices = array_values(array_unique($selected_indices));
+
+        $per_option_units = array();
+        $per_option_raw = isset($interaction['bet_amount_per_option']) ? trim((string) $interaction['bet_amount_per_option']) : '';
+        if ($per_option_raw !== '') {
+            $decoded = json_decode($per_option_raw, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $k => $v) {
+                    $idx = is_numeric($k) ? (int) $k : (int) trim((string) $k);
+                    $units = is_numeric($v) ? max(1, (int) $v) : 1;
+                    $per_option_units[(string) $idx] = $units;
+                }
+            }
+        }
+
+        $single_units = max(1, (int) ($interaction['bet_amount'] ?? 1));
+
+        $selected_options = array();
+        $total_bet_pnp = 0;
+        foreach ($selected_indices as $idx) {
+            $label = isset($options[$idx])
+                ? (is_array($options[$idx]) ? (string) ($options[$idx]['text'] ?? '') : (string) $options[$idx])
+                : ('Option ' . ($idx + 1));
+
+            $units = isset($per_option_units[(string) $idx])
+                ? max(1, (int) $per_option_units[(string) $idx])
+                : $single_units;
+            $bet_pnp = $units * $bet_step;
+            $total_bet_pnp += $bet_pnp;
+
+            $selected_options[] = array(
+                'index' => $idx,
+                'label' => $label,
+                'bet_units' => $units,
+                'bet_pnp' => $bet_pnp,
+            );
+        }
+
+        $winning_option = null;
+        $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
+        if ($correct_index >= 0) {
+            $winning_label = isset($options[$correct_index])
+                ? (is_array($options[$correct_index]) ? (string) ($options[$correct_index]['text'] ?? '') : (string) $options[$correct_index])
+                : ('Option ' . ($correct_index + 1));
+            $winning_option = array(
+                'index' => $correct_index,
+                'label' => $winning_label,
+            );
+        }
+
+        $won_amount = 0;
+        $result_status = 'pending';
+
+        $meta_json = isset($interaction['interaction_meta']) ? (string) $interaction['interaction_meta'] : '';
+        if ($meta_json !== '') {
+            $decoded_meta = json_decode($meta_json, true);
+            if (is_array($decoded_meta)) {
+                if (isset($decoded_meta['selected_options']) && is_array($decoded_meta['selected_options'])) {
+                    $selected_options = array();
+                    $total_bet_pnp = 0;
+                    foreach ($decoded_meta['selected_options'] as $opt) {
+                        if (!is_array($opt)) {
+                            continue;
+                        }
+                        $bet_pnp = isset($opt['bet_pnp']) ? (int) $opt['bet_pnp'] : 0;
+                        $total_bet_pnp += max(0, $bet_pnp);
+                        $selected_options[] = array(
+                            'index' => isset($opt['index']) ? (int) $opt['index'] : 0,
+                            'label' => isset($opt['label']) ? (string) $opt['label'] : '',
+                            'bet_units' => isset($opt['bet_units']) ? (int) $opt['bet_units'] : 0,
+                            'bet_pnp' => max(0, $bet_pnp),
+                        );
+                    }
+                }
+                if (isset($decoded_meta['winning_option']) && is_array($decoded_meta['winning_option'])) {
+                    $winning_option = array(
+                        'index' => isset($decoded_meta['winning_option']['index']) ? (int) $decoded_meta['winning_option']['index'] : -1,
+                        'label' => isset($decoded_meta['winning_option']['label']) ? (string) $decoded_meta['winning_option']['label'] : '',
+                    );
+                }
+                if (isset($decoded_meta['won_amount_pnp'])) {
+                    $won_amount = max(0, (int) $decoded_meta['won_amount_pnp']);
+                }
+                if (isset($decoded_meta['result_status'])) {
+                    $result_status = (string) $decoded_meta['result_status'];
+                }
+            }
+        }
+
+        $normalized_type = strtolower((string) $txn_type);
+        $is_win = ($normalized_type === 'earn') && stripos($order_id, 'engagement:poll:') === 0 && $points > 0;
+        $is_cost = stripos($order_id, 'engagement:poll_cost:') === 0;
+        if ($is_win) {
+            $result_status = 'won';
+        } elseif ($is_cost) {
+            $result_status = 'lost';
+        }
+        if ($won_amount <= 0) {
+            $won_amount = $is_win ? max(0, (int) $points) : 0;
+        }
+        $net_amount = $won_amount - max(0, (int) $total_bet_pnp);
+
+        return array(
+            'poll_id' => $poll_id,
+            'poll_title' => isset($item['title']) ? (string) $item['title'] : '',
+            'session_id' => isset($interaction['session_id']) ? (string) $interaction['session_id'] : '',
+            'result_status' => $result_status,
+            'total_bet_pnp' => (int) $total_bet_pnp,
+            'won_amount_pnp' => (int) $won_amount,
+            'net_amount_pnp' => (int) $net_amount,
+            'winning_option' => $winning_option,
+            'selected_options' => $selected_options,
+        );
+    }
+
+    /**
+     * Build poll interaction metadata JSON payload.
+     * Stored on user interaction row to keep a durable per-vote snapshot.
+     *
+     * @param mixed      $answer
+     * @param int        $bet_step
+     * @param int        $bet_amount
+     * @param string|null $bet_amount_per_option_json
+     * @param array      $quiz_data
+     * @param int|null   $winning_index
+     * @param int        $won_amount_pnp
+     * @param string     $result_status
+     * @return string JSON payload
+     */
+    private function build_poll_interaction_meta_payload($answer, $bet_step, $bet_amount, $bet_amount_per_option_json, $quiz_data, $winning_index = null, $won_amount_pnp = 0, $result_status = 'pending')
+    {
+        $options = isset($quiz_data['options']) && is_array($quiz_data['options'])
+            ? $quiz_data['options']
+            : array();
+
+        $selected_indices = array();
+        foreach (array_map('trim', explode(',', (string) $answer)) as $p) {
+            if ($p !== '' && is_numeric($p)) {
+                $selected_indices[] = (int) $p;
+            }
+        }
+        $selected_indices = array_values(array_unique($selected_indices));
+
+        $per_opt_units = array();
+        if (is_string($bet_amount_per_option_json) && trim($bet_amount_per_option_json) !== '') {
+            $decoded = json_decode($bet_amount_per_option_json, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $k => $v) {
+                    $idx = is_numeric($k) ? (int) $k : (int) trim((string) $k);
+                    $per_opt_units[(string) $idx] = max(1, (int) $v);
+                }
+            }
+        }
+
+        $selected_options = array();
+        $total_bet = 0;
+        foreach ($selected_indices as $idx) {
+            $label = isset($options[$idx])
+                ? (is_array($options[$idx]) ? (string) ($options[$idx]['text'] ?? '') : (string) $options[$idx])
+                : ('Option ' . ($idx + 1));
+            $units = isset($per_opt_units[(string) $idx]) ? $per_opt_units[(string) $idx] : max(1, (int) $bet_amount);
+            $bet_pnp = $units * max(1, (int) $bet_step);
+            $total_bet += $bet_pnp;
+            $selected_options[] = array(
+                'index' => $idx,
+                'label' => $label,
+                'bet_units' => $units,
+                'bet_pnp' => $bet_pnp,
+            );
+        }
+
+        $winning_option = null;
+        if ($winning_index !== null && $winning_index >= 0) {
+            $winning_label = isset($options[$winning_index])
+                ? (is_array($options[$winning_index]) ? (string) ($options[$winning_index]['text'] ?? '') : (string) $options[$winning_index])
+                : ('Option ' . ($winning_index + 1));
+            $winning_option = array(
+                'index' => (int) $winning_index,
+                'label' => $winning_label,
+            );
+        }
+
+        return wp_json_encode(array(
+            'selected_option' => implode(',', $selected_indices),
+            'selected_options' => $selected_options,
+            'bet_amount' => max(1, (int) $bet_amount),
+            'bet_amount_step' => max(1, (int) $bet_step),
+            'total_bet_pnp' => (int) $total_bet,
+            'winning_option' => $winning_option,
+            'won_amount_pnp' => max(0, (int) $won_amount_pnp),
+            'result_status' => (string) $result_status,
         ));
     }
 
@@ -15086,9 +16193,17 @@ class TWork_Rewards_System
                                 if ($poll_duration < 1 || $poll_duration > 1440) {
                                     $poll_duration = 15;
                                 }
-                                $result_display_duration = isset($quiz_data['result_display_duration']) ? absint($quiz_data['result_display_duration']) : 1;
-                                if ($result_display_duration < 0 || $result_display_duration > 60) {
-                                    $result_display_duration = 1;
+                                // Display: split total seconds (DB) into minutes + seconds fields. Max 60:59.
+                                $result_total_sec = self::resolve_result_display_duration_seconds(is_array($quiz_data) ? $quiz_data : array());
+                                $max_result_cfg_sec = (60 * 60) + 59;
+                                if ($result_total_sec > $max_result_cfg_sec) {
+                                    $result_total_sec = $max_result_cfg_sec;
+                                }
+                                $result_duration_minutes_field = intdiv($result_total_sec, 60);
+                                $result_duration_seconds_field = $result_total_sec % 60;
+                                if ($result_duration_minutes_field > 60) {
+                                    $result_duration_minutes_field = 60;
+                                    $result_duration_seconds_field = 59;
                                 }
                                 ?>
                                 <select name="poll_mode" id="poll_mode" style="min-width: 200px;">
@@ -15102,11 +16217,15 @@ class TWork_Rewards_System
                                         <span class="description"><?php esc_html_e('Voting closes after this many minutes (1–1440)', 'twork-rewards'); ?></span>
                                     </div>
                                     <div>
-                                        <label for="result_display_duration"><?php esc_html_e('Result Display Duration (minutes):', 'twork-rewards'); ?></label>
-                                        <input type="number" name="result_display_duration" id="result_display_duration" value="<?php echo esc_attr($result_display_duration); ?>" min="0" max="60" step="1" style="width: 100px; margin-left: 8px; padding: 6px;">
-                                        <span class="description"><?php esc_html_e('How long to show the result before next vote (0–60)', 'twork-rewards'); ?></span>
+                                        <span class="description" style="display: inline-block; margin-right: 8px;"><?php esc_html_e('Result Display Duration:', 'twork-rewards'); ?></span>
+                                        <label for="result_duration_minutes" class="screen-reader-text"><?php esc_html_e('Minutes', 'twork-rewards'); ?></label>
+                                        <input type="number" name="result_duration_minutes" id="result_duration_minutes" value="<?php echo esc_attr($result_duration_minutes_field); ?>" min="0" max="60" step="1" style="width: 72px; padding: 6px;" aria-label="<?php echo esc_attr(__('Result display minutes', 'twork-rewards')); ?>">
+                                        <span class="description" style="margin: 0 6px;"><?php esc_html_e('min', 'twork-rewards'); ?></span>
+                                        <label for="result_duration_seconds" class="screen-reader-text"><?php esc_html_e('Seconds', 'twork-rewards'); ?></label>
+                                        <input type="number" name="result_duration_seconds" id="result_duration_seconds" value="<?php echo esc_attr($result_duration_seconds_field); ?>" min="0" max="59" step="1" style="width: 72px; padding: 6px;" aria-label="<?php echo esc_attr(__('Result display seconds', 'twork-rewards')); ?>">
+                                        <span class="description" style="margin-left: 6px;"><?php esc_html_e('sec (stored as total seconds)', 'twork-rewards'); ?></span>
                                     </div>
-                                    <p class="description" style="margin-top: 8px;"><?php esc_html_e('Custom timer: type any valid integer. Poll auto-closes after poll duration, shows result, then resets.', 'twork-rewards'); ?></p>
+                                    <p class="description" style="margin-top: 8px;"><?php esc_html_e('Custom timer: poll auto-closes after poll duration, shows result for the time above, then resets. Minutes 0–60, seconds 0–59.', 'twork-rewards'); ?></p>
                                     <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #ccc;">
                                         <label for="auto_run_override_index" style="font-weight: 600; color: #d63638;">
                                             <span class="dashicons dashicons-admin-network" style="vertical-align: middle;"></span>
@@ -15997,19 +17116,26 @@ class TWork_Rewards_System
                 if (!in_array($poll_mode, array('auto_run', 'manual'), true)) {
                     $poll_mode = 'manual';
                 }
-                // Custom timer: poll_duration and result_display_duration (both in minutes)
+                // Custom timer: poll_duration (minutes); result phase stored as result_display_duration_seconds only.
                 $poll_duration = isset($_POST['poll_duration']) ? absint($_POST['poll_duration']) : (isset($_POST['poll_period_minutes']) ? absint($_POST['poll_period_minutes']) : 15);
                 if ($poll_duration < 1 || $poll_duration > 1440) {
                     $poll_duration = 15;
                 }
-                $result_display_duration = isset($_POST['result_display_duration']) ? absint($_POST['result_display_duration']) : 1;
-                if ($result_display_duration < 0 || $result_display_duration > 60) {
-                    $result_display_duration = 1;
+                $rm = isset($_POST['result_duration_minutes']) ? absint($_POST['result_duration_minutes']) : 0;
+                $rs = isset($_POST['result_duration_seconds']) ? absint($_POST['result_duration_seconds']) : 0;
+                if ($rm > 60) {
+                    $rm = 60;
                 }
+                if ($rs > 59) {
+                    $rs = 59;
+                }
+                // Total seconds = minutes×60 + seconds (matches mobile app and REST contract).
+                $result_display_total_seconds = ($rm * 60) + $rs;
                 $quiz_data_array['poll_mode'] = $poll_mode;
                 $quiz_data_array['poll_period_minutes'] = $poll_duration;  // backward compat
                 $quiz_data_array['poll_duration'] = $poll_duration;
-                $quiz_data_array['result_display_duration'] = $result_display_duration;
+                $quiz_data_array['result_display_duration_seconds'] = $result_display_total_seconds;
+                unset($quiz_data_array['result_display_duration']);
 
                 if ($poll_mode === 'auto_run' && $status === 'active') {
                     $now = current_time('mysql');

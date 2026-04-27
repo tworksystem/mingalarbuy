@@ -14,14 +14,101 @@ class InAppNotificationService {
   static const String _notificationsKey = 'in_app_notifications';
   static const int _maxNotifications = 100; // Limit stored notifications
 
+  /// Normalize notification timestamp for stable sorting.
+  /// If date is missing/invalid, return epoch so it goes to the bottom in DESC order.
+  DateTime _safeNotificationDate(InAppNotification notification) {
+    try {
+      final date = notification.createdAt;
+      // Treat epoch-like values as "missing" (already used by model fallback).
+      if (date.millisecondsSinceEpoch <= 0) {
+        return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      }
+      return date.toUtc();
+    } catch (_) {
+      return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+    }
+  }
+
+  /// Canonical ordering: latest first (DESC by createdAt).
+  /// Tie-breaker: id DESC for deterministic order.
+  List<InAppNotification> _sortNotificationsLatestFirst(
+      List<InAppNotification> notifications) {
+    notifications.sort((a, b) {
+      final aDate = _safeNotificationDate(a);
+      final bDate = _safeNotificationDate(b);
+
+      // DESC order: latest at top.
+      final byDate = bDate.compareTo(aDate);
+      if (byDate != 0) return byDate;
+
+      // Deterministic fallback to prevent flicker when timestamps are equal/missing.
+      return b.id.compareTo(a.id);
+    });
+    return notifications;
+  }
+
+  String _sanitizeKey(String value) {
+    return value.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+  }
+
+  String _canonicalPointNotificationKey({
+    required String type,
+    String? transactionId,
+    String? requestId,
+    Map<String, dynamic>? additionalData,
+  }) {
+    // Prefer immutable backend identifiers first.
+    if (transactionId != null && transactionId.trim().isNotEmpty) {
+      return 'txn_${type}_${transactionId.trim()}';
+    }
+    if (requestId != null && requestId.trim().isNotEmpty) {
+      return 'req_${type}_${requestId.trim()}';
+    }
+
+    final pollId = (additionalData?['pollId'] ??
+            additionalData?['poll_id'] ??
+            additionalData?['itemId'] ??
+            additionalData?['item_id'])
+        ?.toString();
+    final sessionId =
+        (additionalData?['sessionId'] ?? additionalData?['session_id'])
+            ?.toString();
+    final itemType =
+        (additionalData?['itemType'] ?? additionalData?['item_type'])
+            ?.toString()
+            .toLowerCase();
+    if (type == 'engagement_points' &&
+        itemType == 'poll' &&
+        pollId != null &&
+        pollId.isNotEmpty &&
+        sessionId != null &&
+        sessionId.isNotEmpty) {
+      return 'poll_${type}_${pollId}_$sessionId';
+    }
+
+    // Last fallback: content-stable key (without wall-clock timestamp).
+    final points = (additionalData?['points'] ?? '').toString();
+    final currentBalance = (additionalData?['currentBalance'] ??
+            additionalData?['current_balance'] ??
+            '')
+        .toString();
+    return 'fallback_${type}_${points}_$currentBalance';
+  }
+
   /// Save notification to storage
   Future<void> saveNotification(InAppNotification notification) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final notifications = await getNotifications();
 
+      // OLD CODE:
       // Add new notification at the beginning
+      // notifications.insert(0, notification);
+      //
+      // New Code:
+      // Add first, then apply canonical latest-first sort.
       notifications.insert(0, notification);
+      _sortNotificationsLatestFirst(notifications);
 
       // Limit to max notifications
       if (notifications.length > _maxNotifications) {
@@ -50,9 +137,18 @@ class InAppNotificationService {
 
       if (notificationsJson != null) {
         final List<dynamic> notificationsData = json.decode(notificationsJson);
-        return notificationsData
-            .map((json) => InAppNotification.fromJson(json as Map<String, dynamic>))
+        // OLD CODE:
+        // return notificationsData
+        //     .map((json) => InAppNotification.fromJson(json as Map<String, dynamic>))
+        //     .toList();
+        //
+        // New Code:
+        // Canonical sort at data layer so all UIs receive consistent latest-first order.
+        final notifications = notificationsData
+            .map((json) =>
+                InAppNotification.fromJson(json as Map<String, dynamic>))
             .toList();
+        return _sortNotificationsLatestFirst(notifications);
       }
 
       return [];
@@ -248,41 +344,31 @@ class InAppNotificationService {
     String? points,
     String? currentBalance,
     Map<String, dynamic>? additionalData,
+    /// When set (e.g. transaction time or FCM `created_at`), avoids "Just now" for old events.
+    DateTime? eventOccurredAt,
   }) async {
+    // OLD CODE:
     // Check for duplicate notifications (same type and transaction/request ID within last 5 minutes)
+    // final existingNotifications = await getNotifications();
+    // final now = DateTime.now();
+    // final fiveMinutesAgo = now.subtract(Duration(minutes: 5));
+    // final duplicateExists = existingNotifications.any((n) { ... });
+    // if (duplicateExists) { return false; }
+
+    // New Code:
+    // Use canonical idempotency key and UPSERT semantics to preserve read/unread state.
     final existingNotifications = await getNotifications();
-    final now = DateTime.now();
-    final fiveMinutesAgo = now.subtract(Duration(minutes: 5));
-    
-    final duplicateExists = existingNotifications.any((n) {
-      if (n.type != NotificationType.points) return false;
-      final nType = n.data?['notificationType']?.toString();
-      final nTransactionId = n.data?['transactionId']?.toString();
-      final nRequestId = n.data?['requestId']?.toString();
-      
-      // Check if same type and same transaction/request ID, and created within last 5 minutes
-      if (nType != type) return false;
-      
-      if (transactionId != null && nTransactionId == transactionId) {
-        return n.createdAt.isAfter(fiveMinutesAgo);
-      }
-      
-      if (requestId != null && nRequestId == requestId) {
-        return n.createdAt.isAfter(fiveMinutesAgo);
-      }
-      
-      return false;
-    });
-    
-    if (duplicateExists) {
-      Logger.info('Duplicate point notification prevented for type: $type, transactionId: $transactionId, requestId: $requestId',
-          tag: 'InAppNotificationService');
-      return false;
-    }
     
     // Build notification data
+    final canonicalKey = _canonicalPointNotificationKey(
+      type: type,
+      transactionId: transactionId,
+      requestId: requestId,
+      additionalData: additionalData,
+    );
     final notificationData = <String, dynamic>{
       'notificationType': type,
+      'canonicalKey': canonicalKey,
       if (transactionId != null) 'transactionId': transactionId,
       if (requestId != null) 'requestId': requestId,
       if (points != null) 'points': points,
@@ -308,20 +394,56 @@ class InAppNotificationService {
         actionUrl = '/points/history'; // Default to point history
     }
     
+    final createdAt = eventOccurredAt ?? DateTime.now();
+
+    final existingIndex = existingNotifications.indexWhere((n) {
+      if (n.type != NotificationType.points) return false;
+      final nCanonical = n.data?['canonicalKey']?.toString();
+      if (nCanonical != null && nCanonical.isNotEmpty) {
+        return nCanonical == canonicalKey;
+      }
+      final nType = n.data?['notificationType']?.toString();
+      final nTxn = n.data?['transactionId']?.toString();
+      final nReq = n.data?['requestId']?.toString();
+      if (nType != type) return false;
+      if (transactionId != null && transactionId.isNotEmpty) return nTxn == transactionId;
+      if (requestId != null && requestId.isNotEmpty) return nReq == requestId;
+      return false;
+    });
+
+    if (existingIndex != -1) {
+      // Keep read state from existing row (critical for app restart consistency).
+      final existing = existingNotifications[existingIndex];
+      existingNotifications[existingIndex] = existing.copyWith(
+        title: title,
+        body: body,
+        createdAt: createdAt,
+        data: notificationData,
+        actionUrl: actionUrl,
+        isRead: existing.isRead,
+      );
+      await _saveNotifications(existingNotifications);
+      Logger.info(
+          'Point notification upserted (existing row preserved): key=$canonicalKey',
+          tag: 'InAppNotificationService');
+      return false;
+    }
+
     final notification = InAppNotification(
-      id: 'points_${type}_${transactionId ?? requestId ?? DateTime.now().millisecondsSinceEpoch}',
+      id: 'points_${_sanitizeKey(canonicalKey)}',
       title: title,
       body: body,
       type: NotificationType.points,
-      createdAt: DateTime.now(),
-      isRead: false, // New notifications are unread
+      createdAt: createdAt,
+      isRead: false,
       data: notificationData,
       actionUrl: actionUrl,
     );
 
     await saveNotification(notification);
-    
-    Logger.info('Point notification created and saved: type=$type, transactionId=$transactionId, requestId=$requestId',
+
+    Logger.info(
+        'Point notification created and saved: key=$canonicalKey, type=$type, transactionId=$transactionId, requestId=$requestId',
         tag: 'InAppNotificationService');
     return true;
   }
@@ -330,6 +452,8 @@ class InAppNotificationService {
   Future<void> _saveNotifications(List<InAppNotification> notifications) async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      // Ensure storage also remains in canonical latest-first order.
+      _sortNotificationsLatestFirst(notifications);
       final notificationsJson = json.encode(
         notifications.map((n) => n.toJson()).toList(),
       );

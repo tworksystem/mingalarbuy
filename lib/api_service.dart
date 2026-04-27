@@ -28,9 +28,19 @@ class ApiService {
       baseUrl: AppConfig.backendUrl,
       connectTimeout: AppConfig.networkTimeout,
       receiveTimeout: AppConfig.networkTimeout,
+      // Old Code:
+      // headers: <String, dynamic>{
+      //   Headers.contentTypeHeader: Headers.jsonContentType,
+      //   Headers.acceptHeader: Headers.jsonContentType,
+      // },
+      //
+      // New Code:
       headers: <String, dynamic>{
         Headers.contentTypeHeader: Headers.jsonContentType,
         Headers.acceptHeader: Headers.jsonContentType,
+        'Accept': 'application/json',
+        'User-Agent':
+            'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
       },
       validateStatus: (status) =>
           status != null && status >= 200 && status < 600,
@@ -403,6 +413,15 @@ class ApiService {
     if (headers != null) {
       mergedHeaders.addAll(headers);
     }
+    // Old Code: request-specific headers were passed through without guaranteed UA/Accept.
+    //
+    // New Code: enforce browser-like headers on every request (unless explicitly overridden).
+    mergedHeaders.putIfAbsent('Accept', () => 'application/json');
+    mergedHeaders.putIfAbsent(
+      'User-Agent',
+      () =>
+          'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+    );
     return Options(
       extra: extra,
       headers: mergedHeaders.isEmpty ? null : mergedHeaders,
@@ -428,8 +447,17 @@ class ApiService {
         uri,
         options: Options(
           extra: const <String, Object?>{'skipAuth': true},
-          headers: const <String, dynamic>{
+          // Old Code:
+          // headers: const <String, dynamic>{
+          //   Headers.contentTypeHeader: Headers.jsonContentType,
+          // },
+          //
+          // New Code:
+          headers: <String, dynamic>{
             Headers.contentTypeHeader: Headers.jsonContentType,
+            'Accept': 'application/json',
+            'User-Agent':
+                'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
           },
         ),
       );

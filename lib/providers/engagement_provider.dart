@@ -10,8 +10,7 @@ bool _pollResultEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   return jsonEncode(a) == jsonEncode(b);
 }
 
-bool _scheduleEquals(
-    Map<String, dynamic>? a, Map<String, dynamic>? b) {
+bool _scheduleEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   if (a == b) return true;
   if (a == null || b == null) return false;
   return jsonEncode(a) == jsonEncode(b);
@@ -37,6 +36,32 @@ class EngagementProvider with ChangeNotifier {
   String? get error => _error;
   bool get hasItems => _items.isNotEmpty;
   bool get isAutoPollPaused => _isAutoPollPaused;
+
+  String _toUserFriendlyError(String? raw) {
+    // Old Code: provider used raw service error directly in UI.
+    //
+    // New Code: map low-level transport/auth errors to user-friendly messages.
+    final msg = (raw ?? '').trim();
+    if (msg.isEmpty) {
+      return 'Network အခက်အခဲရှိနေပါသည်။ ကျေးဇူးပြု၍ ပြန်လည်ကြိုးစားပါ။';
+    }
+    final lower = msg.toLowerCase();
+    if (lower.contains('401') ||
+        lower.contains('403') ||
+        lower.contains('unauthorized') ||
+        lower.contains('forbidden') ||
+        lower.contains('session')) {
+      return 'Session ကုန်သွားပါသည်၊ ပြန်လည် Login ဝင်ပါ။';
+    }
+    if (lower.contains('timeout') ||
+        lower.contains('socket') ||
+        lower.contains('network') ||
+        lower.contains('connection') ||
+        lower.contains('invalid response')) {
+      return 'Network အခက်အခဲရှိနေပါသည်။ ကျေးဇူးပြု၍ ပြန်လည်ကြိုးစားပါ။';
+    }
+    return msg;
+  }
 
   /// Handle authentication state changes
   /// Automatically loads feed when user becomes authenticated
@@ -154,7 +179,11 @@ class EngagementProvider with ChangeNotifier {
       );
 
       _items = items;
-      _error = EngagementService.lastError;
+      // Old Code:
+      // _error = EngagementService.lastError;
+      //
+      // New Code:
+      _error = _toUserFriendlyError(EngagementService.lastError);
 
       if (_error != null) {
         app_logger.Logger.error(
@@ -173,7 +202,11 @@ class EngagementProvider with ChangeNotifier {
       // Start automatic polling after successful load
       _startPolling(userId: userId, token: token);
     } catch (e) {
-      _error = 'Failed to load engagement feed: ${e.toString()}';
+      // Old Code:
+      // _error = 'Failed to load engagement feed: ${e.toString()}';
+      //
+      // New Code:
+      _error = _toUserFriendlyError('Network error: ${e.toString()}');
       app_logger.Logger.error('Engagement feed exception',
           tag: 'EngagementProvider', error: e);
       _items = []; // Ensure items is empty on error
@@ -183,7 +216,8 @@ class EngagementProvider with ChangeNotifier {
   }
 
   /// Apply interaction update locally (fallback when backend does not return updated_item).
-  void _applyLocalInteractionUpdate(int itemId, String answer, {int? betAmount, Map<int, int>? betAmountPerOption}) {
+  void _applyLocalInteractionUpdate(int itemId, String answer,
+      {int? betAmount, Map<int, int>? betAmountPerOption}) {
     final index = _items.indexWhere((item) => item.id == itemId);
     if (index == -1) {
       app_logger.Logger.warning(
@@ -203,8 +237,11 @@ class EngagementProvider with ChangeNotifier {
       hasInteracted: true,
       userAnswer: answer,
       userBetAmount: betAmount ?? existing.userBetAmount,
+      userBetUnitsPerOption: betAmountPerOption,
       rotationDurationSeconds: existing.rotationDurationSeconds,
       interactionCount: existing.interactionCount + 1,
+      pollVotingSchedule: existing.pollVotingSchedule,
+      pollResult: existing.pollResult,
     );
     _items[index] = updatedItem;
     notifyListeners();
@@ -225,7 +262,8 @@ class EngagementProvider with ChangeNotifier {
     String? sessionId, // Optional - for poll session scoping (AUTO_RUN mode)
     List<int>? selectedOptionIds, // Optional - for multi-select polls
     int? betAmount, // Optional - for polls: single amount for all options
-    Map<int, int>? betAmountPerOption, // Optional - for polls: per-option amounts
+    Map<int, int>?
+        betAmountPerOption, // Optional - for polls: per-option amounts
   }) async {
     // PROFESSIONAL FIX: Validate that userId matches current user
     // This prevents submitting interactions for wrong user after account switch
@@ -285,10 +323,12 @@ class EngagementProvider with ChangeNotifier {
                 tag: 'EngagementProvider',
                 error: e,
                 stackTrace: st);
-            _applyLocalInteractionUpdate(itemId, answer, betAmount: betAmount, betAmountPerOption: betAmountPerOption);
+            _applyLocalInteractionUpdate(itemId, answer,
+                betAmount: betAmount, betAmountPerOption: betAmountPerOption);
           }
         } else {
-          _applyLocalInteractionUpdate(itemId, answer, betAmount: betAmount, betAmountPerOption: betAmountPerOption);
+          _applyLocalInteractionUpdate(itemId, answer,
+              betAmount: betAmount, betAmountPerOption: betAmountPerOption);
         }
       } else {
         final message = result['message']?.toString() ?? '';
@@ -306,11 +346,12 @@ class EngagementProvider with ChangeNotifier {
           final serverAnswer =
               data?['user_answer']?.toString() ?? _items[index].userAnswer;
           final serverBetAmount = data?['user_bet_amount'];
-          final int? parsedBetAmount = (serverBetAmount is int && serverBetAmount > 0)
-              ? serverBetAmount
-              : (serverBetAmount is num
-                  ? (serverBetAmount).toInt()
-                  : int.tryParse(serverBetAmount?.toString() ?? ''));
+          final int? parsedBetAmount =
+              (serverBetAmount is int && serverBetAmount > 0)
+                  ? serverBetAmount
+                  : (serverBetAmount is num
+                      ? (serverBetAmount).toInt()
+                      : int.tryParse(serverBetAmount?.toString() ?? ''));
           final updatedItem = EngagementItem(
             id: _items[index].id,
             type: _items[index].type,
@@ -324,8 +365,11 @@ class EngagementProvider with ChangeNotifier {
             userBetAmount: (parsedBetAmount != null && parsedBetAmount > 0)
                 ? parsedBetAmount
                 : _items[index].userBetAmount,
+            userBetUnitsPerOption: _items[index].userBetUnitsPerOption,
             rotationDurationSeconds: _items[index].rotationDurationSeconds,
             interactionCount: _items[index].interactionCount,
+            pollVotingSchedule: _items[index].pollVotingSchedule,
+            pollResult: _items[index].pollResult,
           );
           _items[index] = updatedItem;
           notifyListeners();

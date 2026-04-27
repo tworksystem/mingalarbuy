@@ -4,10 +4,9 @@ import 'package:ecommerce_int2/providers/in_app_notification_provider.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:ecommerce_int2/widgets/network_status_banner.dart';
 import 'package:ecommerce_int2/screens/points/point_history_page.dart';
+import 'package:ecommerce_int2/utils/in_app_notification_time.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
-
 /// Professional enhanced notifications page
 /// Shows all in-app notifications with read/unread status
 class EnhancedNotificationsPage extends StatefulWidget {
@@ -456,26 +455,11 @@ class _EnhancedNotificationsPageState extends State<EnhancedNotificationsPage> {
     );
   }
 
-  /// Format date
+  /// Format date (timeago) for in-app notification rows.
   String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final difference = now.difference(date);
-
-    if (difference.inDays == 0) {
-      if (difference.inHours == 0) {
-        if (difference.inMinutes == 0) {
-          return 'Just now';
-        }
-        return '${difference.inMinutes}m ago';
-      }
-      return '${difference.inHours}h ago';
-    } else if (difference.inDays == 1) {
-      return 'Yesterday';
-    } else if (difference.inDays < 7) {
-      return '${difference.inDays}d ago';
-    } else {
-      return DateFormat('MMM d, y').format(date);
-    }
+    // Old Code: final now = DateTime.now(); final difference = now.difference(date);
+    // Old Code: if (difference.inDays == 0) { ... } else if (difference.inDays == 1) { 'Yesterday' } ...
+    return formatInAppNotificationRelativeTime(date);
   }
 }
 

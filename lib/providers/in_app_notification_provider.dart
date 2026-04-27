@@ -40,7 +40,7 @@ class InAppNotificationProvider with ChangeNotifier {
     await loadNotifications();
   }
 
-  /// Load notifications from storage
+  /// Load notifications from storage (see [InAppNotification.fromJson] for timestamp keys and fallbacks).
   Future<void> loadNotifications() async {
     // Prevent duplicate loads
     if (_isLoading) {
@@ -79,9 +79,24 @@ class InAppNotificationProvider with ChangeNotifier {
       await _notificationService.saveNotification(notification);
       
       // Update local state immediately for real-time UI update
-      _notifications.insert(0, notification);
-      if (!notification.isRead) {
-        _unreadCount++;
+      // OLD CODE:
+      // _notifications.insert(0, notification);
+      // if (!notification.isRead) {
+      //   _unreadCount++;
+      // }
+      //
+      // New Code:
+      // De-dupe in-memory list by id to avoid temporary duplicate rows between
+      // optimistic insert and subsequent loadNotifications refresh.
+      final existingIndex = _notifications.indexWhere((n) => n.id == notification.id);
+      if (existingIndex != -1) {
+        final old = _notifications[existingIndex];
+        _notifications[existingIndex] = notification.copyWith(isRead: old.isRead);
+      } else {
+        _notifications.insert(0, notification);
+        if (!notification.isRead) {
+          _unreadCount++;
+        }
       }
       notifyListeners();
       
