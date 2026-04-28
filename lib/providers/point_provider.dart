@@ -28,7 +28,9 @@ class PointProvider with ChangeNotifier {
 
   PointBalance? _balance;
   List<PointTransaction> _transactions = [];
+  PointHistorySummary? _historySummary;
   bool _isLoading = false;
+  bool _isLoadingMore = false;
   String? _errorMessage;
   StreamSubscription<PointSyncEvent>? _syncSubscription;
   String? _currentUserId;
@@ -59,8 +61,16 @@ class PointProvider with ChangeNotifier {
   // Getters
   PointBalance? get balance => _balance;
   List<PointTransaction> get transactions => List.unmodifiable(_transactions);
+  PointHistorySummary? get historySummary => _historySummary;
   bool get isLoading => _isLoading;
+  bool get isLoadingMore => _isLoadingMore;
   String? get errorMessage => _errorMessage;
+  int _currentTransactionsPage = 1;
+  int _transactionsPerPage = 20;
+  int _totalTransactionPages = 1;
+  int get currentTransactionsPage => _currentTransactionsPage;
+  int get totalTransactionPages => _totalTransactionPages;
+  bool get hasMoreTransactions => _currentTransactionsPage < _totalTransactionPages;
   int get currentBalance => _balance?.currentBalance ?? 0;
   bool get hasPoints => currentBalance > 0;
   String get formattedBalance => _balance?.formattedBalance ?? '0 points';
@@ -99,6 +109,10 @@ class PointProvider with ChangeNotifier {
         // Clear old user's data immediately
         _balance = null;
         _transactions = [];
+        _historySummary = null;
+        _currentTransactionsPage = 1;
+        _transactionsPerPage = 20;
+        _totalTransactionPages = 1;
         _hasLoadedForCurrentUser = false;
         _lastTransactionsHash = null;
         _lastPushBalanceSnapshotAt = null;
@@ -128,6 +142,10 @@ class PointProvider with ChangeNotifier {
       _hasLoadedForCurrentUser = false;
       _balance = null;
       _transactions = [];
+      _historySummary = null;
+      _currentTransactionsPage = 1;
+      _transactionsPerPage = 20;
+      _totalTransactionPages = 1;
       _lastTransactionsHash = null;
       _lastPushBalanceSnapshotAt = null;
       _balanceNonDowngradeUntil = null;
@@ -170,6 +188,7 @@ class PointProvider with ChangeNotifier {
             'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
             tag: 'PointProvider');
         _balance = null;
+        _historySummary = null;
         _hasLoadedForCurrentUser = false;
       }
     }
@@ -253,6 +272,7 @@ class PointProvider with ChangeNotifier {
     if (_currentUserId != null && _currentUserId != userId) {
       _balance = null;
       _transactions = [];
+      _historySummary = null;
       _lastTransactionsHash = null;
       _hasLoadedForCurrentUser = false;
     }
@@ -354,13 +374,44 @@ class PointProvider with ChangeNotifier {
     return true;
   }
 
+  bool _isHistorySummaryEqual(
+    PointHistorySummary? a,
+    PointHistorySummary? b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a == null || b == null) return false;
+    return a.openingBalance == b.openingBalance &&
+        a.closingBalance == b.closingBalance &&
+        a.totalAdded == b.totalAdded &&
+        a.totalDeducted == b.totalDeducted &&
+        a.actualCurrentBalance == b.actualCurrentBalance &&
+        a.rangeDays == b.rangeDays;
+  }
+
   /// Load point transactions for user
   /// IMPORTANT: Pending transactions SHOULD be shown in history (transparency),
   /// but they do NOT affect balance until approved.
   /// Loads cached transactions first for immediate display, then refreshes from API
   /// PROFESSIONAL FIX: Validates user ID and clears old data on user change
   Future<void> loadTransactions(String userId,
-      {int page = 1, int perPage = 20, bool forceRefresh = false}) async {
+      {int page = 1,
+      int perPage = 20,
+      bool forceRefresh = false,
+      int rangeDays = 90,
+      DateTime? dateFrom,
+      DateTime? dateTo}) async {
+    DateTime? effectiveFrom = dateFrom;
+    DateTime? effectiveTo = dateTo;
+    // OLD CODE: date range was passed-through as-is.
+    // New Code: normalize reversed inputs defensively for API reliability.
+    if (effectiveFrom != null &&
+        effectiveTo != null &&
+        effectiveFrom.isAfter(effectiveTo)) {
+      final swapped = effectiveFrom;
+      effectiveFrom = effectiveTo;
+      effectiveTo = swapped;
+    }
+
     Logger.info(
         'PointProvider.loadTransactions called: userId=$userId, page=$page, perPage=$perPage, forceRefresh=$forceRefresh, currentUserId=$_currentUserId, hasTransactions=${_transactions.isNotEmpty}',
         tag: 'PointProvider');
@@ -369,7 +420,11 @@ class PointProvider with ChangeNotifier {
     // If userId changed, we need to reload even if transactions exist
     // CRITICAL: Always reload if userId doesn't match, even if transactions exist
     // CRITICAL FIX: Also check if _currentUserId is null (first load) - don't skip in that case
-    if (!forceRefresh && _transactions.isNotEmpty && _currentUserId != null) {
+    final bool isLoadMoreRequest = page > 1 && !forceRefresh;
+    if (!forceRefresh &&
+        !isLoadMoreRequest &&
+        _transactions.isNotEmpty &&
+        _currentUserId != null) {
       if (_currentUserId == userId) {
         Logger.info('Transactions already loaded for user $userId, skipping',
             tag: 'PointProvider');
@@ -381,6 +436,8 @@ class PointProvider with ChangeNotifier {
             tag: 'PointProvider');
         _transactions = [];
         _lastTransactionsHash = null;
+        _currentTransactionsPage = 1;
+        _totalTransactionPages = 1;
         _hasLoadedForCurrentUser = false;
       }
     }
@@ -391,11 +448,20 @@ class PointProvider with ChangeNotifier {
           'User changed from $_currentUserId to $userId, clearing old transactions',
           tag: 'PointProvider');
       _transactions = [];
+      _currentTransactionsPage = 1;
+      _totalTransactionPages = 1;
       _lastTransactionsHash = null;
       _hasLoadedForCurrentUser = false;
     }
 
-    _setLoading(true);
+    if (isLoadMoreRequest) {
+      // OLD CODE: all transaction requests shared the same full-page loading state.
+      // New Code: use a dedicated incremental loading flag for pagination UX.
+      _isLoadingMore = true;
+      notifyListeners();
+    } else {
+      _setLoading(true);
+    }
     _clearError();
 
     try {
@@ -410,7 +476,7 @@ class PointProvider with ChangeNotifier {
         // OLD CODE: Don't load from cache on force refresh - go straight to API
         // New Code: clear local transaction cache first to rebuild with latest schema/data.
         await PointService.clearTransactionsCache(userId);
-      } else if (_transactions.isEmpty) {
+      } else if (_transactions.isEmpty && !isLoadMoreRequest) {
         // Only load cached transactions if we don't have any AND not forcing refresh
         try {
           final cachedTransactions =
@@ -445,8 +511,25 @@ class PointProvider with ChangeNotifier {
       }
 
       // Now load fresh data from API
-      final transactions = await PointService.getPointTransactions(userId,
-          page: page, perPage: perPage);
+      // OLD CODE:
+      // final transactions = await PointService.getPointTransactions(userId,
+      //     page: page, perPage: perPage);
+      //
+      // New Code: keep transactions plus timeframe summary in sync.
+      final previousSummary = _historySummary;
+      final historyResult = await PointService.getPointTransactions(
+        userId,
+        page: page,
+        perPage: perPage,
+        rangeDays: rangeDays,
+        dateFrom: effectiveFrom,
+        dateTo: effectiveTo,
+      );
+      final transactions = historyResult.transactions;
+      _historySummary = historyResult.summary;
+      _currentTransactionsPage = historyResult.page;
+      _transactionsPerPage = historyResult.perPage;
+      _totalTransactionPages = historyResult.totalPages;
 
       Logger.info(
           'PointProvider - API returned ${transactions.length} transactions before filtering',
@@ -482,6 +565,18 @@ class PointProvider with ChangeNotifier {
         incoming: filteredTransactions,
       );
 
+      if (isLoadMoreRequest) {
+        // OLD CODE: new API results replaced the whole list.
+        // New Code: append additional pages while preserving existing enriched rows.
+        final existingById = <String, PointTransaction>{
+          for (final tx in _transactions) tx.id: tx,
+        };
+        for (final tx in filteredTransactions) {
+          existingById[tx.id] = tx;
+        }
+        filteredTransactions = existingById.values.toList();
+      }
+
       Logger.info(
           'PointProvider - After filtering: ${filteredTransactions.length} transactions',
           tag: 'PointProvider');
@@ -491,6 +586,7 @@ class PointProvider with ChangeNotifier {
       // Also ensure we update if transactions list is empty (to show empty state)
       final shouldUpdate =
           !_areTransactionsEqual(_transactions, filteredTransactions) ||
+              !_isHistorySummaryEqual(previousSummary, historyResult.summary) ||
               forceRefresh ||
               _transactions.isEmpty != filteredTransactions.isEmpty;
 
@@ -512,6 +608,7 @@ class PointProvider with ChangeNotifier {
               tag: 'PointProvider');
         }
       } else {
+        _historySummary = historyResult.summary;
         Logger.info(
             'PointProvider - Transactions unchanged, skipping UI update',
             tag: 'PointProvider');
@@ -536,6 +633,11 @@ class PointProvider with ChangeNotifier {
             // Only update if different
             if (!_areTransactionsEqual(_transactions, fallbackTransactions)) {
               _transactions = fallbackTransactions;
+              _historySummary = PointHistorySummary(
+                rangeDays: rangeDays,
+                startDate: effectiveFrom,
+                endDate: effectiveTo,
+              );
               _currentUserId = userId;
               _notifyListenersDebounced(force: true);
               Logger.info(
@@ -548,6 +650,11 @@ class PointProvider with ChangeNotifier {
                 'No transactions found: API failed and no cached transactions available',
                 tag: 'PointProvider');
             _transactions = [];
+            _historySummary = PointHistorySummary(
+              rangeDays: rangeDays,
+              startDate: effectiveFrom,
+              endDate: effectiveTo,
+            );
             _currentUserId = userId;
             _notifyListenersDebounced(force: true);
           }
@@ -558,12 +665,79 @@ class PointProvider with ChangeNotifier {
               error: cacheError);
           // Even if cache fails, ensure UI is notified
           _transactions = [];
+          _historySummary = PointHistorySummary(
+            rangeDays: rangeDays,
+            startDate: effectiveFrom,
+            endDate: effectiveTo,
+          );
           _currentUserId = userId;
           _notifyListenersDebounced(force: true);
         }
       }
     } finally {
-      _setLoading(false);
+      if (isLoadMoreRequest) {
+        _isLoadingMore = false;
+        notifyListeners();
+      } else {
+        _setLoading(false);
+      }
+    }
+  }
+
+  Future<void> loadMoreTransactions(
+    String userId, {
+    int rangeDays = 90,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+  }) async {
+    if (_isLoading || _isLoadingMore || !hasMoreTransactions) {
+      return;
+    }
+    await loadTransactions(
+      userId,
+      page: _currentTransactionsPage + 1,
+      perPage: _transactionsPerPage,
+      forceRefresh: false,
+      rangeDays: rangeDays,
+      dateFrom: dateFrom,
+      dateTo: dateTo,
+    );
+  }
+
+  Future<void> loadProfileHistorySummary(
+    String userId, {
+    DateTime? dateFrom,
+    DateTime? dateTo,
+  }) async {
+    try {
+      final now = DateTime.now();
+      final effectiveStart =
+          dateFrom ?? DateTime(now.year, now.month, 1);
+      final effectiveEnd = dateTo ?? now;
+
+      // OLD CODE: only loadTransactions() refreshed historySummary, which also
+      // replaced the visible transaction list state.
+      // New Code: fetch a summary-only payload for profile/dashboard surfaces.
+      final historyResult = await PointService.getPointTransactions(
+        userId,
+        page: 1,
+        perPage: 1,
+        rangeDays: 31,
+        dateFrom: effectiveStart,
+        dateTo: effectiveEnd,
+      );
+
+      if (!_isHistorySummaryEqual(_historySummary, historyResult.summary)) {
+        _historySummary = historyResult.summary;
+        _notifyListenersDebounced(force: true);
+      }
+    } catch (e, stackTrace) {
+      Logger.error(
+        'Error loading profile history summary: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 

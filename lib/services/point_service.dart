@@ -225,11 +225,12 @@ class PointService {
 
             // CRITICAL: getPointTransactions already includes orderby/order params
             // But we need to ensure it's called with the same parameters
-            final pageTransactions = await getPointTransactions(
+            final pageResult = await getPointTransactions(
               userId,
               page: page,
               perPage: perPage,
             );
+            final pageTransactions = pageResult.transactions;
 
             // CRITICAL FIX: Sort each page by date (newest first) as defensive measure
             // Even though API should return sorted, we ensure it here
@@ -257,12 +258,12 @@ class PointService {
         Logger.warning(
             'Failed to get pagination info, loading single page as fallback',
             tag: 'PointService');
-        final fallbackTransactions = await getPointTransactions(
+        final fallbackResult = await getPointTransactions(
           userId,
           page: 1,
           perPage: perPage,
         );
-        allTransactions.addAll(fallbackTransactions);
+        allTransactions.addAll(fallbackResult.transactions);
       }
 
       // CRITICAL FIX: Sort all transactions by date (newest first) after loading all pages
@@ -310,8 +311,14 @@ class PointService {
   }
 
   /// Get point transactions from API
-  static Future<List<PointTransaction>> getPointTransactions(String userId,
-      {int page = 1, int perPage = 20}) async {
+  static Future<PointTransactionHistoryResult> getPointTransactions(
+    String userId, {
+    int page = 1,
+    int perPage = 20,
+    int rangeDays = 90,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+  }) async {
     try {
       // Use custom WordPress REST endpoint
       // CRITICAL FIX: Request transactions sorted by date (newest first)
@@ -320,8 +327,11 @@ class PointService {
         ..._getWooCommerceAuthQueryParams(),
         'page': page.toString(),
         'per_page': perPage.toString(),
+        'range_days': rangeDays.toString(),
         'orderby': 'created_at', // Request sorting by creation date
         'order': 'DESC', // Descending order (newest first)
+        if (dateFrom != null) 'date_from': _formatHistoryDate(dateFrom),
+        if (dateTo != null) 'date_to': _formatHistoryDate(dateTo),
       };
 
       final uri = Uri.parse(
@@ -384,6 +394,7 @@ class PointService {
           // CRITICAL FIX: Handle different response formats
           // Some APIs might return transactions directly as a list, others wrap in 'data' or 'transactions'
           List<dynamic> transactionsData;
+          PointHistorySummary? summary;
           if (data is List) {
             // Response is directly a list of transactions
             transactionsData = data;
@@ -394,6 +405,12 @@ class PointService {
             // Response is an object - check for 'transactions' key first
             if (data.containsKey('transactions')) {
               transactionsData = data['transactions'] as List<dynamic>? ?? [];
+              final summaryRaw = data['summary'];
+              if (summaryRaw is Map) {
+                summary = PointHistorySummary.fromJson(
+                  Map<String, dynamic>.from(summaryRaw),
+                );
+              }
             } else if (data.containsKey('data')) {
               // Some APIs wrap in 'data'
               final dataWrapper = data['data'];
@@ -403,6 +420,12 @@ class PointService {
                   dataWrapper.containsKey('transactions')) {
                 transactionsData =
                     dataWrapper['transactions'] as List<dynamic>? ?? [];
+                final summaryRaw = dataWrapper['summary'];
+                if (summaryRaw is Map) {
+                  summary = PointHistorySummary.fromJson(
+                    Map<String, dynamic>.from(summaryRaw),
+                  );
+                }
               } else {
                 transactionsData = [];
               }
@@ -435,11 +458,30 @@ class PointService {
             // This prevents wiping a previously-good cache due to a transient backend issue.
             if (page == 1 && total == 0) {
               await _cacheTransactions(userId, []);
-              return [];
+              return PointTransactionHistoryResult(
+                transactions: const [],
+                summary: summary ??
+                    PointHistorySummary(
+                      rangeDays: rangeDays,
+                      startDate: dateFrom,
+                      endDate: dateTo,
+                    ),
+                total: 0,
+                page: page,
+                perPage: perPage,
+                totalPages: 1,
+              );
             }
 
             // Otherwise, fall back to cache (best UX) instead of showing blank history.
-            return await getCachedTransactions(userId);
+            return PointTransactionHistoryResult(
+              transactions: await getCachedTransactions(userId),
+              summary: summary,
+              total: total,
+              page: page,
+              perPage: perPage,
+              totalPages: totalPages,
+            );
           }
 
           final transactions = <PointTransaction>[];
@@ -470,7 +512,14 @@ class PointService {
               'API returned ${transactionsData.length} transactions but 0 parsed successfully. Falling back to cache.',
               tag: 'PointService',
             );
-            return await getCachedTransactions(userId);
+            return PointTransactionHistoryResult(
+              transactions: await getCachedTransactions(userId),
+              summary: summary,
+              total: total,
+              page: page,
+              perPage: perPage,
+              totalPages: totalPages,
+            );
           }
 
           // OLD CODE:
@@ -490,7 +539,14 @@ class PointService {
           Logger.info(
               'Successfully loaded ${transactions.length} point transactions from API (${transactionsData.length} raw items, ${transactionsData.length - transactions.length} failed to parse)',
               tag: 'PointService');
-          return mergedForCache;
+          return PointTransactionHistoryResult(
+            transactions: mergedForCache,
+            summary: summary,
+            total: total,
+            page: page,
+            perPage: perPage,
+            totalPages: totalPages,
+          );
         } catch (parseError, parseStackTrace) {
           Logger.error('Error parsing API response: $parseError',
               tag: 'PointService',
@@ -512,7 +568,18 @@ class PointService {
           'Invalid response from API, using cached transactions (${cached.length})',
           tag: 'PointService',
         );
-        return cached;
+        return PointTransactionHistoryResult(
+          transactions: cached,
+          summary: PointHistorySummary(
+            rangeDays: rangeDays,
+            startDate: dateFrom,
+            endDate: dateTo,
+          ),
+          total: cached.length,
+          page: page,
+          perPage: perPage,
+          totalPages: 1,
+        );
       }
 
       final status = response?.statusCode;
@@ -542,8 +609,33 @@ class PointService {
     } catch (e, stackTrace) {
       Logger.error('Error getting point transactions: $e',
           tag: 'PointService', error: e, stackTrace: stackTrace);
-      return await getCachedTransactions(userId);
+      final cached = await getCachedTransactions(userId);
+      return PointTransactionHistoryResult(
+        transactions: cached,
+        summary: PointHistorySummary(
+          rangeDays: rangeDays,
+          startDate: dateFrom,
+          endDate: dateTo,
+        ),
+        total: cached.length,
+        page: page,
+        perPage: perPage,
+        totalPages: 1,
+      );
     }
+  }
+
+  static String _formatHistoryDate(DateTime value) {
+    final normalized = DateTime(
+      value.year,
+      value.month,
+      value.day,
+      value.hour,
+      value.minute,
+      value.second,
+    );
+    final two = (int v) => v.toString().padLeft(2, '0');
+    return '${normalized.year}-${two(normalized.month)}-${two(normalized.day)} ${two(normalized.hour)}:${two(normalized.minute)}:${two(normalized.second)}';
   }
 
   /// Earn points (e.g., on purchase, signup, review)
@@ -1351,8 +1443,9 @@ class PointService {
       }
 
       // Get existing transactions from backend to avoid duplicates
-      final existingTransactions =
+      final existingTransactionsResult =
           await getPointTransactions(userId, page: 1, perPage: 100);
+      final existingTransactions = existingTransactionsResult.transactions;
       final existingOrderIds = existingTransactions
           .where(
               (t) => t.orderId != null && t.type == PointTransactionType.earn)

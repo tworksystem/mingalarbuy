@@ -12,6 +12,7 @@ import 'package:ecommerce_int2/services/global_keys.dart';
 import 'package:ecommerce_int2/services/app_update_service.dart';
 import 'package:ecommerce_int2/services/app_download_service.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
+import 'package:ecommerce_int2/widgets/points_dashboard_card.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -381,6 +382,7 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),
+                      const PointsDashboardCard(),
                       // App Update Notification (if available)
                       if (!_isLoadingUpdate &&
                           _updateInfo != null &&

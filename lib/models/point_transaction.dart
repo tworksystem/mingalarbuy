@@ -5,6 +5,10 @@ class PointTransaction {
   final String userId;
   final PointTransactionType type;
   final int points;
+  final int originalBalance;
+  final int amountAdded;
+  final int amountDeducted;
+  final int currentBalance;
   final String? description;
   final String? orderId;
   final PollTransactionDetails? pollDetails;
@@ -18,6 +22,10 @@ class PointTransaction {
     required this.userId,
     required this.type,
     required this.points,
+    this.originalBalance = 0,
+    this.amountAdded = 0,
+    this.amountDeducted = 0,
+    this.currentBalance = 0,
     this.description,
     this.orderId,
     this.pollDetails,
@@ -175,6 +183,13 @@ class PointTransaction {
           json['type']?.toString() ?? 'earn'),
       // Backend may send points as int, double, or string depending on DB schema.
       points: _parseInt(json['points']),
+      originalBalance: _parseInt(
+          json['original_balance'] ?? json['originalBalance']),
+      amountAdded: _parseInt(json['amount_added'] ?? json['amountAdded']),
+      amountDeducted:
+          _parseInt(json['amount_deducted'] ?? json['amountDeducted']),
+      currentBalance:
+          _parseInt(json['current_balance'] ?? json['currentBalance']),
       description: json['description']?.toString(),
       orderId: json['order_id']?.toString() ?? json['orderId']?.toString(),
       pollDetails: parsedPollDetails,
@@ -201,6 +216,10 @@ class PointTransaction {
     String? userId,
     PointTransactionType? type,
     int? points,
+    int? originalBalance,
+    int? amountAdded,
+    int? amountDeducted,
+    int? currentBalance,
     String? description,
     String? orderId,
     PollTransactionDetails? pollDetails,
@@ -214,6 +233,10 @@ class PointTransaction {
       userId: userId ?? this.userId,
       type: type ?? this.type,
       points: points ?? this.points,
+      originalBalance: originalBalance ?? this.originalBalance,
+      amountAdded: amountAdded ?? this.amountAdded,
+      amountDeducted: amountDeducted ?? this.amountDeducted,
+      currentBalance: currentBalance ?? this.currentBalance,
       description: description ?? this.description,
       orderId: orderId ?? this.orderId,
       pollDetails: pollDetails ?? this.pollDetails,
@@ -275,6 +298,10 @@ class PointTransaction {
       'user_id': userId,
       'type': type.toValue(),
       'points': points,
+      'original_balance': originalBalance,
+      'amount_added': amountAdded,
+      'amount_deducted': amountDeducted,
+      'current_balance': currentBalance,
       'description': description,
       'order_id': orderId,
       if (pollDetails != null) 'poll_details': pollDetails!.toJson(),
@@ -342,6 +369,111 @@ class PointTransaction {
 
   /// Check if transaction is rejected
   bool get isRejected => status == PointTransactionStatus.rejected;
+}
+
+class PointHistorySummary {
+  final int openingBalance;
+  final int closingBalance;
+  final int totalAdded;
+  final int totalDeducted;
+  final int actualCurrentBalance;
+  final int rangeDays;
+  final DateTime? startDate;
+  final DateTime? endDate;
+
+  const PointHistorySummary({
+    this.openingBalance = 0,
+    this.closingBalance = 0,
+    this.totalAdded = 0,
+    this.totalDeducted = 0,
+    this.actualCurrentBalance = 0,
+    this.rangeDays = 90,
+    this.startDate,
+    this.endDate,
+  });
+
+  factory PointHistorySummary.fromJson(Map<String, dynamic> json) {
+    return PointHistorySummary(
+      openingBalance:
+          PointTransaction._parseInt(json['opening_balance'] ?? json['openingBalance']),
+      closingBalance:
+          PointTransaction._parseInt(json['closing_balance'] ?? json['closingBalance']),
+      totalAdded:
+          PointTransaction._parseInt(json['total_added'] ?? json['totalAdded']),
+      totalDeducted: PointTransaction._parseInt(
+          json['total_deducted'] ?? json['totalDeducted']),
+      actualCurrentBalance: PointTransaction._parseInt(
+          json['actual_current_balance'] ?? json['actualCurrentBalance']),
+      rangeDays:
+          PointTransaction._parseInt(json['range_days'] ?? json['rangeDays']),
+      startDate: json['start_date'] != null
+          ? PointTransaction._parseServerDateTime(json['start_date'])
+          : json['startDate'] != null
+              ? PointTransaction._parseServerDateTime(json['startDate'])
+              : null,
+      endDate: json['end_date'] != null
+          ? PointTransaction._parseServerDateTime(json['end_date'])
+          : json['endDate'] != null
+              ? PointTransaction._parseServerDateTime(json['endDate'])
+              : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'opening_balance': openingBalance,
+      'closing_balance': closingBalance,
+      'total_added': totalAdded,
+      'total_deducted': totalDeducted,
+      'actual_current_balance': actualCurrentBalance,
+      'range_days': rangeDays,
+      'start_date': startDate?.toIso8601String(),
+      'end_date': endDate?.toIso8601String(),
+    };
+  }
+}
+
+class PointTransactionHistoryResult {
+  final List<PointTransaction> transactions;
+  final PointHistorySummary? summary;
+  final int total;
+  final int page;
+  final int perPage;
+  final int totalPages;
+
+  const PointTransactionHistoryResult({
+    required this.transactions,
+    this.summary,
+    this.total = 0,
+    this.page = 1,
+    this.perPage = 20,
+    this.totalPages = 1,
+  });
+
+  factory PointTransactionHistoryResult.fromJson(Map<String, dynamic> json) {
+    final transactionsRaw = json['transactions'];
+    final transactions = transactionsRaw is List
+        ? transactionsRaw
+            .whereType<Map>()
+            .map((item) =>
+                PointTransaction.fromJson(Map<String, dynamic>.from(item)))
+            .toList()
+        : <PointTransaction>[];
+
+    final summaryRaw = json['summary'];
+
+    return PointTransactionHistoryResult(
+      transactions: transactions,
+      summary: summaryRaw is Map
+          ? PointHistorySummary.fromJson(Map<String, dynamic>.from(summaryRaw))
+          : null,
+      total: PointTransaction._parseInt(json['total']),
+      page: PointTransaction._parseInt(json['page']),
+      perPage: PointTransaction._parseInt(json['per_page'] ?? json['perPage']),
+      totalPages:
+          PointTransaction._parseInt(json['total_pages'] ?? json['totalPages']),
+    );
+  }
 }
 
 class PollTransactionDetails {

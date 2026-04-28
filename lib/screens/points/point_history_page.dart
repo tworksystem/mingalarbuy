@@ -41,6 +41,8 @@ enum BackendTransactionType {
 // }
 
 class _PointHistoryPageState extends State<PointHistoryPage> {
+  static const int _defaultHistoryRangeDays = 90;
+  static const int _historyPageSize = 20;
   // Warning banner color constants - using const Color values for type safety
   // These match Material Design color swatches but are non-nullable for better type safety
   static const Color _warningBackgroundColor = Color(0xFFFFF3E0); // Orange 50
@@ -71,10 +73,12 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
   // PROFESSIONAL FIX: Track last user ID to detect account switches
   String? _lastUserId;
+  late final ScrollController _scrollController;
 
   @override
   void initState() {
     super.initState();
+    _scrollController = ScrollController()..addListener(_handleScroll);
     // Load point balance and transactions immediately when page opens
     // PointProvider now loads cached transactions first for immediate display
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -82,6 +86,14 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
         _loadPoints();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _scrollController
+      ..removeListener(_handleScroll)
+      ..dispose();
+    super.dispose();
   }
 
   @override
@@ -227,8 +239,13 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
       final loadTransactionsFuture = pointProvider.loadTransactions(
         userId,
         page: 1,
-        perPage: 200, // Load more transactions to get all unique types
+        perPage: _historyPageSize,
         forceRefresh: true,
+        // OLD CODE: history endpoint did not support timeframe parameters.
+        // New Code: request the selected range (or the default 90-day window).
+        rangeDays: _selectedDateRange == null ? _defaultHistoryRangeDays : 90,
+        dateFrom: _selectedDateRange?.start,
+        dateTo: _selectedDateRange?.end,
       );
 
       // Load balance from PointProvider (primary source) in parallel
@@ -288,6 +305,8 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
           'Loading ALL transactions from API to get all unique types for filter chips',
           tag: 'PointHistoryPage',
         );
+        // OLD CODE: all transactions were loaded from backend for chip discovery.
+        // New Code: keep this for compatibility now; paginated history UI is separate.
         allApiTransactions = await PointService.getAllPointTransactions(userId);
         Logger.info(
           'Successfully loaded ${allApiTransactions.length} transactions from API',
@@ -367,6 +386,33 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     }
   }
 
+  void _handleScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    if (position.pixels >= position.maxScrollExtent - 240) {
+      _loadMoreTransactions();
+    }
+  }
+
+  Future<void> _loadMoreTransactions() async {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final pointProvider = Provider.of<PointProvider>(context, listen: false);
+    if (!mounted ||
+        !authProvider.isAuthenticated ||
+        authProvider.user == null ||
+        !pointProvider.hasMoreTransactions ||
+        pointProvider.isLoadingMore) {
+      return;
+    }
+
+    await pointProvider.loadMoreTransactions(
+      authProvider.user!.id.toString(),
+      rangeDays: _selectedDateRange == null ? _defaultHistoryRangeDays : 90,
+      dateFrom: _selectedDateRange?.start,
+      dateTo: _selectedDateRange?.end,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -429,6 +475,12 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
           final balance = pointProvider.balance;
           final transactions = pointProvider.transactions;
+          final historySummary = pointProvider.historySummary;
+          final hasMoreTransactions = pointProvider.hasMoreTransactions;
+          final isLoadingMore = pointProvider.isLoadingMore;
+          final hasInlineError = pointProvider.errorMessage != null &&
+              pointProvider.errorMessage!.trim().isNotEmpty &&
+              transactions.isNotEmpty;
 
           // Check if we have any balance data to display (from any source)
           // This allows us to show data immediately even if PointProvider is still loading
@@ -545,6 +597,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
             onRefresh: () => _loadPoints(forceRefresh: true),
             color: mediumYellow,
             child: CustomScrollView(
+              controller: _scrollController,
               slivers: [
                 // Expiration warning banner
                 if (_expiringSoon.isNotEmpty)
@@ -694,39 +747,65 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                   ),
                 ),
 
+                if (historySummary != null)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: _buildHistorySummaryCard(historySummary),
+                    ),
+                  ),
+
+                if (hasInlineError)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: _buildInlineErrorBanner(
+                        pointProvider.errorMessage!,
+                      ),
+                    ),
+                  ),
+
                 // Date filter section
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 16.0, vertical: 8),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        OutlinedButton.icon(
-                          icon: Icon(Icons.calendar_today_outlined,
-                              size: 16, color: darkGrey),
-                          label: Text(
-                            _selectedDateRange == null
-                                ? 'Date range'
-                                : '${DateFormat.MMMd().format(_selectedDateRange!.start)} - ${DateFormat.MMMd().format(_selectedDateRange!.end)}',
-                            style: TextStyle(color: darkGrey),
-                          ),
-                          onPressed: _pickDateRange,
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: darkGrey,
-                            side: BorderSide(color: Colors.grey.shade300),
-                          ),
+                        _buildTimeframeQuickFilters(),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            OutlinedButton.icon(
+                              icon: Icon(Icons.calendar_today_outlined,
+                                  size: 16, color: darkGrey),
+                              label: Text(
+                                _selectedDateRange == null
+                                    ? 'Custom range'
+                                    : '${DateFormat.MMMd().format(_selectedDateRange!.start)} - ${DateFormat.MMMd().format(_selectedDateRange!.end)}',
+                                style: TextStyle(color: darkGrey),
+                              ),
+                              onPressed: _pickDateRange,
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: darkGrey,
+                                side: BorderSide(color: Colors.grey.shade300),
+                              ),
+                            ),
+                            if (_selectedDateRange != null) ...[
+                              const SizedBox(width: 8),
+                              TextButton(
+                                onPressed: () {
+                                  setState(() {
+                                    _selectedDateRange = null;
+                                  });
+                                  _loadPoints(forceRefresh: true);
+                                },
+                                child: const Text('Reset'),
+                              ),
+                            ],
+                          ],
                         ),
-                        if (_selectedDateRange != null) ...[
-                          const SizedBox(width: 8),
-                          TextButton(
-                            onPressed: () {
-                              setState(() {
-                                _selectedDateRange = null;
-                              });
-                            },
-                            child: const Text('Clear'),
-                          ),
-                        ],
                       ],
                     ),
                   ),
@@ -924,6 +1003,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                                           _selectedFilter = null;
                                           _selectedDateRange = null;
                                         });
+                                        _loadPoints(forceRefresh: true);
                                       },
                                       icon: const Icon(Icons.clear, size: 18),
                                       label: const Text('Clear filters'),
@@ -970,6 +1050,15 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                     );
                   },
                 ),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                    child: _buildPaginationFooter(
+                      hasMoreTransactions: hasMoreTransactions,
+                      isLoadingMore: isLoadingMore,
+                    ),
+                  ),
+                ),
               ],
             ),
           );
@@ -998,6 +1087,301 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildTimeframeQuickFilters() {
+    final presets = <Map<String, dynamic>>[
+      {'label': '30D', 'days': 30},
+      {'label': '60D', 'days': 60},
+      {'label': '90D', 'days': 90},
+      {'label': '180D', 'days': 180},
+    ];
+
+    final now = DateTime.now();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Timeframe',
+          style: TextStyle(
+            color: Colors.grey.shade700,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final preset in presets)
+              ChoiceChip(
+                label: Text(preset['label'] as String),
+                selected: _isPresetSelected(preset['days'] as int),
+                onSelected: (_) {
+                  final days = preset['days'] as int;
+                  setState(() {
+                    _selectedDateRange = DateTimeRange(
+                      start: now.subtract(Duration(days: days)),
+                      end: now,
+                    );
+                  });
+                  _loadPoints(forceRefresh: true);
+                },
+              ),
+            ChoiceChip(
+              label: const Text('Default'),
+              selected: _selectedDateRange == null,
+              onSelected: (_) {
+                setState(() {
+                  _selectedDateRange = null;
+                });
+                _loadPoints(forceRefresh: true);
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  bool _isPresetSelected(int days) {
+    if (_selectedDateRange == null) return false;
+    final now = DateTime.now();
+    final expectedStart = DateTime(now.year, now.month, now.day)
+        .subtract(Duration(days: days));
+    final selectedStart = DateTime(
+      _selectedDateRange!.start.year,
+      _selectedDateRange!.start.month,
+      _selectedDateRange!.start.day,
+    );
+    final selectedEnd = DateTime(
+      _selectedDateRange!.end.year,
+      _selectedDateRange!.end.month,
+      _selectedDateRange!.end.day,
+    );
+    final today = DateTime(now.year, now.month, now.day);
+    return selectedStart == expectedStart && selectedEnd == today;
+  }
+
+  Widget _buildPaginationFooter({
+    required bool hasMoreTransactions,
+    required bool isLoadingMore,
+  }) {
+    final pointProvider = Provider.of<PointProvider>(context, listen: false);
+
+    if (isLoadingMore) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (!hasMoreTransactions) {
+      return Center(
+        child: Text(
+          'You have reached the end of your history',
+          style: TextStyle(
+            color: Colors.grey.shade500,
+            fontSize: 12,
+          ),
+        ),
+      );
+    }
+
+    if (pointProvider.errorMessage != null &&
+        pointProvider.errorMessage!.trim().isNotEmpty &&
+        hasMoreTransactions) {
+      return Center(
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
+          children: [
+            Text(
+              'Could not load more',
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+            ),
+            OutlinedButton.icon(
+              onPressed: _loadMoreTransactions,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Center(
+      child: OutlinedButton.icon(
+        onPressed: _loadMoreTransactions,
+        icon: const Icon(Icons.expand_more),
+        label: const Text('Load More'),
+      ),
+    );
+  }
+
+  Widget _buildInlineErrorBanner(String message) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.red.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.red.shade200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.error_outline, color: Colors.red.shade700, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                color: Colors.red.shade800,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHistorySummaryCard(PointHistorySummary summary) {
+    final currentRangeLabel = summary.startDate != null && summary.endDate != null
+        ? '${DateFormat.MMMd().format(summary.startDate!)} - ${DateFormat.MMMd().format(summary.endDate!)}'
+        : 'Last ${summary.rangeDays} days';
+    final showActualCurrentBalance =
+        summary.actualCurrentBalance != summary.closingBalance;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.account_balance_wallet_outlined,
+                  color: darkGrey, size: 18),
+              const SizedBox(width: 8),
+              Text(
+                'History Summary',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: darkGrey,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                currentRangeLabel,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _buildSummaryMetric(
+                'Opening',
+                summary.openingBalance,
+                Colors.blueGrey,
+              ),
+              _buildSummaryMetric('Added', summary.totalAdded, Colors.green),
+              _buildSummaryMetric(
+                  'Deducted', summary.totalDeducted, Colors.red),
+              _buildSummaryMetric(
+                'Closing',
+                summary.closingBalance,
+                mediumYellow,
+              ),
+            ],
+          ),
+          if (showActualCurrentBalance) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline,
+                      size: 16, color: Colors.grey.shade700),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Current balance now: ${summary.actualCurrentBalance} PNP',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade800,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryMetric(String label, int value, Color color) {
+    return Container(
+      width: 140,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '$value PNP',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1286,6 +1670,11 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final pollDetails = transaction.pollDetails;
     final hasPollDetails =
         pollDetails != null && pollDetails.selectedOptions.isNotEmpty;
+    final amountColor =
+        transaction.amountDeducted > 0 ? Colors.red : Colors.green;
+    final amountText = transaction.amountDeducted > 0
+        ? '-${transaction.amountDeducted} PNP'
+        : '+${transaction.amountAdded > 0 ? transaction.amountAdded : transaction.points} PNP';
 
     // Determine the transaction label
     final transactionLabel = _getTransactionLabel(
@@ -1474,7 +1863,14 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                 ],
                 if (hasPollDetails) ...[
                   const SizedBox(height: 8),
-                  _buildPollDetailsCard(pollDetails!),
+                  _buildPollDetailsCard(pollDetails),
+                ],
+                if (transaction.amountAdded > 0 ||
+                    transaction.amountDeducted > 0 ||
+                    transaction.currentBalance > 0 ||
+                    transaction.originalBalance > 0) ...[
+                  const SizedBox(height: 8),
+                  _buildTransactionBalanceFlow(transaction),
                 ],
                 if (isPending) ...[
                   SizedBox(height: 6),
@@ -1532,20 +1928,27 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                // PROFESSIONAL FIX: Handle negative adjustments properly
-                // For Exchange Request and negative adjustments, show in red
-                // Add "PNP" suffix after points value
-                isExchangeRequest
-                    ? '-${transaction.points} PNP'
-                    : '${transaction.formattedPoints} PNP',
+                // OLD CODE:
+                // isExchangeRequest
+                //     ? '-${transaction.points} PNP'
+                //     : '${transaction.formattedPoints} PNP',
+                //
+                // New Code: prefer explicit added/deducted values from backend.
+                (transaction.amountAdded > 0 || transaction.amountDeducted > 0)
+                    ? amountText
+                    : (isExchangeRequest
+                        ? '-${transaction.points} PNP'
+                        : '${transaction.formattedPoints} PNP'),
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
-                  // Show in red for exchange requests or negative adjustments
-                  color: (isExchangeRequest ||
-                          (isManualPoint && transaction.points < 0))
-                      ? Colors.red
-                      : color,
+                  color: (transaction.amountAdded > 0 ||
+                          transaction.amountDeducted > 0)
+                      ? amountColor
+                      : ((isExchangeRequest ||
+                              (isManualPoint && transaction.points < 0))
+                          ? Colors.red
+                          : color),
                 ),
               ),
               if (transaction.type == PointTransactionType.earn &&
@@ -1560,6 +1963,72 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTransactionBalanceFlow(PointTransaction transaction) {
+    final bool isDeducted = transaction.amountDeducted > 0;
+    final int changeAmount =
+        isDeducted ? transaction.amountDeducted : transaction.amountAdded;
+    final Color changeColor = isDeducted ? Colors.red : Colors.green;
+    final String changeLabel = isDeducted ? 'Deducted' : 'Added';
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _buildBalanceFlowPill(
+            'Before',
+            '${transaction.originalBalance} PNP',
+            Colors.blueGrey,
+          ),
+          _buildBalanceFlowPill(
+            changeLabel,
+            '${isDeducted ? '-' : '+'}$changeAmount PNP',
+            changeColor,
+          ),
+          _buildBalanceFlowPill(
+            'After',
+            '${transaction.currentBalance} PNP',
+            mediumYellow,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBalanceFlowPill(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: RichText(
+        text: TextSpan(
+          style: TextStyle(color: Colors.grey.shade800, fontSize: 11),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            TextSpan(
+              text: value,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1671,7 +2140,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final now = DateTime.now();
     final initialRange = _selectedDateRange ??
         DateTimeRange(
-          start: now.subtract(const Duration(days: 30)),
+          start: now.subtract(const Duration(days: _defaultHistoryRangeDays)),
           end: now,
         );
 
@@ -1684,9 +2153,21 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     );
 
     if (range != null) {
+      final normalized = range.start.isAfter(range.end)
+          ? DateTimeRange(start: range.end, end: range.start)
+          : range;
+      if (range.start.isAfter(range.end) && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Date range was corrected automatically.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
       setState(() {
-        _selectedDateRange = range;
+        _selectedDateRange = normalized;
       });
+      _loadPoints(forceRefresh: true);
     }
   }
 

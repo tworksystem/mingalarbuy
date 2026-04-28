@@ -223,6 +223,7 @@ class TWork_Rewards_System
         add_action('admin_post_twork_rewards_resolve_poll', array($this, 'handle_resolve_poll'));
         add_action('wp_ajax_twork_rewards_engagement_interaction_counts', array($this, 'ajax_engagement_interaction_counts'));
         add_action('wp_ajax_twork_rewards_get_poll_results_data', array($this, 'ajax_get_poll_results_data'));
+        add_action('wp_ajax_twork_rewards_search_users', array($this, 'ajax_search_users_for_point_transactions'));
         add_action('admin_post_twork_rewards_delete_engagement_item', array($this, 'handle_engagement_item_delete'));
         add_action('admin_post_twork_rewards_save_engagement_settings', array($this, 'handle_engagement_settings_save'));
         add_action('admin_post_twork_rewards_save_page_content', array($this, 'handle_page_content_save'));
@@ -248,6 +249,265 @@ class TWork_Rewards_System
         // This ensures notifications use fresh tokens from twork-fcm-notify plugin
         add_action('updated_user_meta', array($this, 'invalidate_fcm_cache_on_token_update'), 10, 4);
         add_action('added_user_meta', array($this, 'invalidate_fcm_cache_on_token_update'), 10, 4);
+
+        // Point Transactions: enqueue Select2 assets for scalable user search filter.
+        add_action('admin_enqueue_scripts', array($this, 'enqueue_point_transactions_admin_assets'));
+    }
+
+    /**
+     * Enqueue Select2 assets and initialization script for Point Transactions filter.
+     *
+     * Loads only on the Point Transactions admin page to avoid global admin bloat.
+     *
+     * @param string $hook_suffix Current admin page hook suffix.
+     * @return void
+     */
+    public function enqueue_point_transactions_admin_assets($hook_suffix)
+    {
+        $page = isset($_GET['page']) ? sanitize_text_field(wp_unslash($_GET['page'])) : '';
+        if ($page !== 'twork-rewards-point-transactions') {
+            return;
+        }
+
+        // Keep for rollback safety:
+        // wp_enqueue_script('select2');
+        // wp_enqueue_style('select2');
+
+        $select2_script_handle = '';
+        $select2_style_handle = '';
+
+        if (wp_script_is('select2', 'registered') || wp_script_is('select2', 'enqueued')) {
+            $select2_script_handle = 'select2';
+            wp_enqueue_script('select2');
+        } else {
+            $select2_script_handle = 'twork-rewards-select2-cdn';
+            wp_enqueue_script(
+                $select2_script_handle,
+                'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js',
+                array('jquery'),
+                '4.1.0-rc.0',
+                true
+            );
+        }
+
+        if (wp_style_is('select2', 'registered') || wp_style_is('select2', 'enqueued')) {
+            $select2_style_handle = 'select2';
+            wp_enqueue_style('select2');
+        } else {
+            $select2_style_handle = 'twork-rewards-select2-cdn';
+            wp_enqueue_style(
+                $select2_style_handle,
+                'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css',
+                array(),
+                '4.1.0-rc.0'
+            );
+        }
+
+        $custom_css = '
+            .twork-point-transactions-filters {
+                margin: 12px 0 18px;
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                flex-wrap: wrap;
+            }
+            .twork-user-filter-wrap {
+                min-width: 320px;
+                width: min(100%, 420px);
+                display: inline-block;
+                vertical-align: top;
+            }
+            .twork-user-filter-wrap .select2-container {
+                min-width: 320px;
+                width: 100% !important;
+            }
+            .twork-user-filter-wrap .select2-selection--single {
+                min-height: 32px;
+                border-color: #8c8f94;
+            }
+            .twork-user-filter-wrap .select2-selection__rendered {
+                line-height: 30px;
+                padding-left: 10px;
+            }
+            .twork-user-filter-wrap .select2-selection__arrow {
+                height: 30px;
+            }
+            .twork-point-transactions-filters input[type=\"date\"],
+            .twork-point-transactions-filters select:not(.twork-user-search-select) {
+                min-height: 32px;
+            }
+        ';
+        wp_add_inline_style($select2_style_handle, $custom_css);
+
+        $script_handle = 'twork-rewards-point-transaction-user-filter';
+        wp_register_script(
+            $script_handle,
+            '',
+            array('jquery', $select2_script_handle),
+            TWORK_REWARDS_VERSION,
+            true
+        );
+        wp_enqueue_script($script_handle);
+        wp_localize_script(
+            $script_handle,
+            'tworkRewardsUserSearchConfig',
+            array(
+                'ajaxUrl' => admin_url('admin-ajax.php'),
+                'nonce' => wp_create_nonce('twork_rewards_user_search'),
+                'minimumInputLength' => 2,
+                'searchPlaceholder' => __('Search user by username, display name, or email', 'twork-rewards'),
+                'searchingText' => __('Searching users...', 'twork-rewards'),
+                'inputTooShortText' => __('Type at least 2 characters to search users', 'twork-rewards'),
+                'noResultsText' => __('No matching users found', 'twork-rewards'),
+                'errorText' => __('Could not load users. Please try again.', 'twork-rewards'),
+            )
+        );
+
+        $inline_js = "
+            jQuery(function($) {
+                var \$userSelect = $('.twork-user-search-select');
+                if (!\$userSelect.length || typeof $.fn.select2 !== 'function') {
+                    return;
+                }
+
+                var isAutoSubmitting = false;
+
+                function submitFilterForm(\$field) {
+                    if (!\$field || !\$field.length || isAutoSubmitting) {
+                        return;
+                    }
+
+                    var \$form = \$field.closest('form');
+                    if (!\$form.length) {
+                        return;
+                    }
+
+                    isAutoSubmitting = true;
+                    \$form.trigger('submit');
+                }
+
+                \$userSelect.select2({
+                    width: '100%',
+                    allowClear: true,
+                    minimumInputLength: parseInt(tworkRewardsUserSearchConfig.minimumInputLength, 10) || 2,
+                    placeholder: tworkRewardsUserSearchConfig.searchPlaceholder,
+                    ajax: {
+                        url: tworkRewardsUserSearchConfig.ajaxUrl,
+                        dataType: 'json',
+                        delay: 250,
+                        data: function(params) {
+                            return {
+                                action: 'twork_rewards_search_users',
+                                nonce: tworkRewardsUserSearchConfig.nonce,
+                                q: params.term || '',
+                                page: params.page || 1
+                            };
+                        },
+                        processResults: function(response, params) {
+                            params.page = params.page || 1;
+                            return {
+                                results: response.results || [],
+                                pagination: { more: !!(response.pagination && response.pagination.more) }
+                            };
+                        },
+                        cache: true
+                    },
+                    language: {
+                        searching: function() { return tworkRewardsUserSearchConfig.searchingText; },
+                        inputTooShort: function() { return tworkRewardsUserSearchConfig.inputTooShortText; },
+                        noResults: function() { return tworkRewardsUserSearchConfig.noResultsText; },
+                        errorLoading: function() { return tworkRewardsUserSearchConfig.errorText; }
+                    }
+                });
+
+                \$userSelect.on('change.tworkAutoSubmit', function() {
+                    submitFilterForm($(this));
+                });
+
+                $('.twork-point-transactions-filters')
+                    .find('input[type=\"date\"], select')
+                    .not('.twork-user-search-select')
+                    .on('change.tworkAutoSubmit', function() {
+                        submitFilterForm($(this));
+                    });
+            });
+        ";
+        wp_add_inline_script($script_handle, $inline_js);
+    }
+
+    /**
+     * AJAX: Search users for Point Transactions Select2 filter.
+     *
+     * @return void
+     */
+    public function ajax_search_users_for_point_transactions()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => __('Insufficient permissions.', 'twork-rewards')), 403);
+        }
+
+        check_ajax_referer('twork_rewards_user_search', 'nonce');
+
+        $raw_term = isset($_GET['q']) ? wp_unslash($_GET['q']) : '';
+        $term = sanitize_text_field($raw_term);
+        $paged = isset($_GET['page']) ? max(1, absint($_GET['page'])) : 1;
+        $per_page = 20;
+
+        if (strlen($term) < 2) {
+            wp_send_json(
+                array(
+                    'results' => array(),
+                    'pagination' => array('more' => false),
+                )
+            );
+        }
+
+        $search_term = '*' . esc_attr($term) . '*';
+        $query_args = array(
+            'number' => $per_page,
+            'offset' => ($paged - 1) * $per_page,
+            'search' => $search_term,
+            'search_columns' => array('user_login', 'user_nicename', 'display_name', 'user_email'),
+            'fields' => array('ID', 'user_login', 'display_name', 'user_email'),
+            'orderby' => 'display_name',
+            'order' => 'ASC',
+            'count_total' => true,
+        );
+
+        $user_query = new WP_User_Query($query_args);
+        $users = $user_query->get_results();
+        $results = array();
+
+        if (!empty($users) && is_array($users)) {
+            foreach ($users as $user) {
+                $display_name = trim((string) $user->display_name);
+                $user_login = trim((string) $user->user_login);
+                $user_email = trim((string) $user->user_email);
+                if ($display_name === '') {
+                    $display_name = $user_login;
+                }
+
+                $label = sprintf('%1$s (%2$s) - #%3$d', $display_name, $user_login, (int) $user->ID);
+                if ($user_email !== '') {
+                    $label .= ' - ' . $user_email;
+                }
+
+                $results[] = array(
+                    'id' => (int) $user->ID,
+                    'text' => $label,
+                );
+            }
+        }
+
+        $total_users = (int) $user_query->get_total();
+        $has_more = ($paged * $per_page) < $total_users;
+
+        wp_send_json(
+            array(
+                'results' => $results,
+                'pagination' => array('more' => $has_more),
+            )
+        );
     }
 
     /**
@@ -1482,6 +1742,15 @@ class TWork_Rewards_System
             $capability,
             'twork-rewards-users',
             array($this, 'render_users_page')
+        );
+
+        add_submenu_page(
+            $parent_slug,
+            __('Point Transactions', 'twork-rewards'),
+            __('Point Transactions', 'twork-rewards'),
+            $capability,
+            'twork-rewards-point-transactions',
+            array($this, 'render_point_transactions_admin_page')
         );
 
         add_submenu_page(
@@ -3109,6 +3378,12 @@ class TWork_Rewards_System
                         return is_numeric($param);
                     }
                 ),
+                'limit' => array(
+                    'required' => false,
+                    'validate_callback' => function ($param) {
+                        return is_numeric($param);
+                    }
+                ),
                 'orderby' => array(
                     'default' => 'created_at',
                     'validate_callback' => function ($param) {
@@ -3121,6 +3396,21 @@ class TWork_Rewards_System
                     'validate_callback' => function ($param) {
                         return in_array(strtoupper($param), array('ASC', 'DESC'));
                     }
+                ),
+                'range_days' => array(
+                    'default' => 90,
+                    'validate_callback' => function ($param) {
+                        return is_numeric($param) && (int) $param > 0;
+                    }
+                ),
+                'date_from' => array(
+                    'required' => false,
+                ),
+                'date_to' => array(
+                    'required' => false,
+                ),
+                'include_summary' => array(
+                    'default' => 1,
                 ),
             ),
         ));
@@ -9363,12 +9653,19 @@ class TWork_Rewards_System
 
         $user_id = intval($request->get_param('user_id'));
         $page = intval($request->get_param('page')) ?: 1;
-        $per_page = intval($request->get_param('per_page')) ?: 20;
-        $offset = ($page - 1) * $per_page;
+        // OLD CODE: only `per_page` controlled page size.
+        // New Code: support `limit` as an alias for pagination clients.
+        $limit = intval($request->get_param('limit'));
+        $per_page = $limit > 0 ? $limit : (intval($request->get_param('per_page')) ?: 20);
+        $per_page = max(1, $per_page);
 
         // PROFESSIONAL FIX: Support orderby and order parameters from frontend
         $orderby_param = sanitize_text_field($request->get_param('orderby')) ?: 'created_at';
         $order = strtoupper(sanitize_text_field($request->get_param('order'))) === 'ASC' ? 'ASC' : 'DESC';
+        $range_days = intval($request->get_param('range_days')) ?: 90;
+        $date_from_raw = sanitize_text_field((string) $request->get_param('date_from'));
+        $date_to_raw = sanitize_text_field((string) $request->get_param('date_to'));
+        $include_summary = intval($request->get_param('include_summary')) !== 0;
 
         // Validate and map orderby field to prevent SQL injection
         $allowed_orderby = array(
@@ -9384,29 +9681,69 @@ class TWork_Rewards_System
             return new WP_Error('invalid_user', 'Invalid user ID', array('status' => 400));
         }
 
+        $range = $this->resolve_history_date_range($range_days, $date_from_raw, $date_to_raw);
+        $start_datetime = $range['start_datetime'];
+        $end_datetime = $range['end_datetime'];
+        $offset = max(0, ($page - 1) * $per_page);
+
         // PROFESSIONAL FIX: Use twork_point_transactions as SINGLE SOURCE OF TRUTH.
         // No SHOW TABLES — query directly; use $wpdb->last_error to fall back to legacy table.
         $points_table = $wpdb->prefix . 'twork_point_transactions';
 
+        // OLD CODE:
+        // $transactions = $wpdb->get_results($wpdb->prepare(
+        //     "SELECT * FROM $points_table
+        //     WHERE user_id = %d
+        //     ORDER BY $orderby $order, id DESC
+        //     LIMIT %d OFFSET %d",
+        //     $user_id,
+        //     $per_page,
+        //     $offset
+        // ));
+        //
+        // New Code: fetch the selected timeframe first, enrich each row with before/after balances,
+        // then paginate the already-computed response rows.
         $formatted_transactions = array();
         $total = 0;
+        $summary = array(
+            'range_days' => $range_days,
+            'start_date' => $start_datetime,
+            'end_date' => $end_datetime,
+            'opening_balance' => 0,
+            'closing_balance' => 0,
+            'total_added' => 0,
+            'total_deducted' => 0,
+            'actual_current_balance' => $this->calculate_points_balance_from_transactions($user_id),
+        );
+
+        $range_where_sql = " AND created_at >= %s AND created_at <= %s";
+        $range_where_args = array($start_datetime, $end_datetime);
 
         $transactions = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM $points_table 
-            WHERE user_id = %d 
-            ORDER BY $orderby $order, id DESC 
-            LIMIT %d OFFSET %d",
-            $user_id,
-            $per_page,
-            $offset
+            "SELECT * FROM $points_table
+            WHERE user_id = %d
+            $range_where_sql
+            ORDER BY created_at ASC, id ASC",
+            array_merge(array($user_id), $range_where_args)
         ));
 
         $points_table_ok = !$wpdb->last_error;
         if ($points_table_ok) {
             $total = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM $points_table WHERE user_id = %d",
-                $user_id
+                "SELECT COUNT(*) FROM $points_table WHERE user_id = %d $range_where_sql",
+                array_merge(array($user_id), $range_where_args)
             ));
+            $summary['opening_balance'] = $this->calculate_points_opening_balance(
+                $points_table,
+                $user_id,
+                $start_datetime
+            );
+            $summary = $this->build_points_history_rows(
+                $transactions ?: array(),
+                $summary,
+                $user_id
+            );
+            $formatted_transactions = $summary['transactions'];
         }
 
         if (!$points_table_ok) {
@@ -9414,142 +9751,59 @@ class TWork_Rewards_System
             $table_name = $wpdb->prefix . 'twork_reward_transactions';
 
             $transactions = $wpdb->get_results($wpdb->prepare(
-                "SELECT * FROM $table_name 
-                WHERE user_id = %d 
+                "SELECT * FROM $table_name
+                WHERE user_id = %d
                 AND deleted_at IS NULL
-                ORDER BY $orderby $order, id DESC 
-                LIMIT %d OFFSET %d",
-                $user_id,
-                $per_page,
-                $offset
+                $range_where_sql
+                ORDER BY created_at ASC, id ASC",
+                array_merge(array($user_id), $range_where_args)
             ));
 
             $total = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL",
-                $user_id
+                "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL $range_where_sql",
+                array_merge(array($user_id), $range_where_args)
             ));
-
-            foreach ($transactions ?: array() as $transaction) {
-                $points_value = $transaction->points_value;
-                $points_int = 0;
-
-                if ($points_value !== null && $points_value !== '') {
-                    if (is_numeric($points_value)) {
-                        $points_int = (int) floatval($points_value);
-                    } else {
-                        $points_int = intval($points_value);
-                    }
-                }
-
-                // OLD CODE:
-                // $formatted_transactions[] = array(
-                //   ...
-                // );
-                //
-                // New Code: enrich each row with structured poll details (if this is poll-related).
-                $poll_details = $this->build_poll_transaction_details(
-                    $user_id,
-                    isset($transaction->order_id) ? (string) $transaction->order_id : '',
-                    (string) $this->map_transaction_type($transaction->type, $transaction->order_id),
-                    $points_int,
-                    isset($transaction->meta_json) ? (string) $transaction->meta_json : null
-                );
-                $formatted_transactions[] = array(
-                    'id' => $transaction->id,
-                    'user_id' => $transaction->user_id,
-                    'type' => $this->map_transaction_type($transaction->type, $transaction->order_id),
-                    'points' => $points_int,
-                    'description' => $transaction->description ?: $this->get_default_description($transaction),
-                    'order_id' => $transaction->order_id,
-                    'created_at' => $transaction->created_at,
-                    'expires_at' => null,
-                    'is_expired' => false,
-                    'status' => $transaction->status ?: 'approved',
-                    'poll_details' => $poll_details,
-                );
-            }
+            $summary['opening_balance'] = $this->calculate_legacy_history_opening_balance(
+                $table_name,
+                $user_id,
+                $start_datetime
+            );
+            $summary = $this->build_legacy_history_rows(
+                $transactions ?: array(),
+                $summary,
+                $user_id
+            );
+            $formatted_transactions = $summary['transactions'];
         } elseif ($total > 0) {
-            foreach ($transactions ?: array() as $transaction) {
-                $points_int = isset($transaction->points) ? intval($transaction->points) : 0;
-
-                if ($transaction->type === 'adjust' && $points_int < 0) {
-                    // Keep negative value for negative adjustments
-                }
-
-                $poll_details = $this->build_poll_transaction_details(
-                    $user_id,
-                    isset($transaction->order_id) ? (string) $transaction->order_id : '',
-                    isset($transaction->type) ? (string) $transaction->type : '',
-                    $points_int,
-                    isset($transaction->meta_json) ? (string) $transaction->meta_json : null
-                );
-                $formatted_transactions[] = array(
-                    'id' => $transaction->id,
-                    'user_id' => $transaction->user_id,
-                    'type' => $transaction->type,
-                    'points' => $points_int,
-                    'description' => $transaction->description ?: '',
-                    'order_id' => $transaction->order_id,
-                    'created_at' => $transaction->created_at,
-                    'expires_at' => $transaction->expires_at,
-                    'is_expired' => (bool) $transaction->is_expired,
-                    'status' => isset($transaction->status) ? $transaction->status : 'approved',
-                    'poll_details' => $poll_details,
-                );
-            }
+            // Already formatted above using full timeframe calculation.
         } else {
             // Points table OK but no rows for this user — legacy rewards table
             $table_name = $wpdb->prefix . 'twork_reward_transactions';
 
             $transactions = $wpdb->get_results($wpdb->prepare(
-                "SELECT * FROM $table_name 
-                WHERE user_id = %d 
+                "SELECT * FROM $table_name
+                WHERE user_id = %d
                 AND deleted_at IS NULL
-                ORDER BY $orderby $order, id DESC 
-                LIMIT %d OFFSET %d",
-                $user_id,
-                $per_page,
-                $offset
+                $range_where_sql
+                ORDER BY created_at ASC, id ASC",
+                array_merge(array($user_id), $range_where_args)
             ));
 
             $total = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL",
-                $user_id
+                "SELECT COUNT(*) FROM $table_name WHERE user_id = %d AND deleted_at IS NULL $range_where_sql",
+                array_merge(array($user_id), $range_where_args)
             ));
-
-            foreach ($transactions ?: array() as $transaction) {
-                $points_value = $transaction->points_value;
-                $points_int = 0;
-
-                if ($points_value !== null && $points_value !== '') {
-                    if (is_numeric($points_value)) {
-                        $points_int = (int) floatval($points_value);
-                    } else {
-                        $points_int = intval($points_value);
-                    }
-                }
-
-                $poll_details = $this->build_poll_transaction_details(
-                    $user_id,
-                    isset($transaction->order_id) ? (string) $transaction->order_id : '',
-                    (string) $this->map_transaction_type($transaction->type, $transaction->order_id),
-                    $points_int,
-                    null
-                );
-                $formatted_transactions[] = array(
-                    'id' => $transaction->id,
-                    'user_id' => $transaction->user_id,
-                    'type' => $this->map_transaction_type($transaction->type, $transaction->order_id),
-                    'points' => $points_int,
-                    'description' => $transaction->description ?: $this->get_default_description($transaction),
-                    'order_id' => $transaction->order_id,
-                    'created_at' => $transaction->created_at,
-                    'expires_at' => null,
-                    'is_expired' => false,
-                    'status' => $transaction->status ?: 'approved',
-                    'poll_details' => $poll_details,
-                );
-            }
+            $summary['opening_balance'] = $this->calculate_legacy_history_opening_balance(
+                $table_name,
+                $user_id,
+                $start_datetime
+            );
+            $summary = $this->build_legacy_history_rows(
+                $transactions ?: array(),
+                $summary,
+                $user_id
+            );
+            $formatted_transactions = $summary['transactions'];
         }
 
         // BACKWARD COMPATIBILITY / DATA INTEGRITY SAFETY:
@@ -9575,20 +9829,535 @@ class TWork_Rewards_System
                     'expires_at' => null,
                     'is_expired' => false,
                     'status' => 'approved',
+                    'original_balance' => 0,
+                    'amount_added' => $meta_balance_int,
+                    'amount_deducted' => 0,
+                    'current_balance' => $meta_balance_int,
                     // Extra field for debugging (app ignores unknown keys safely)
                     'is_synthetic' => true,
                 );
                 $total = 1;
+                $summary['opening_balance'] = 0;
+                $summary['closing_balance'] = $meta_balance_int;
+                $summary['total_added'] = $meta_balance_int;
+                $summary['total_deducted'] = 0;
             }
         }
 
+        if (strtoupper($order) !== 'ASC') {
+            $formatted_transactions = array_reverse($formatted_transactions);
+        }
+
+        $paged_transactions = array_slice($formatted_transactions, $offset, $per_page);
+
         return rest_ensure_response(array(
-            'transactions' => $formatted_transactions,
+            'transactions' => $paged_transactions,
             'total' => intval($total),
             'page' => $page,
             'per_page' => $per_page,
-            'total_pages' => ceil($total / $per_page),
+            'total_pages' => $per_page > 0 ? ceil($total / $per_page) : 1,
+            'summary' => $include_summary ? array(
+                'range_days' => (int) $summary['range_days'],
+                'start_date' => $summary['start_date'],
+                'end_date' => $summary['end_date'],
+                'opening_balance' => (int) $summary['opening_balance'],
+                'closing_balance' => (int) $summary['closing_balance'],
+                'total_added' => (int) $summary['total_added'],
+                'total_deducted' => (int) $summary['total_deducted'],
+                'actual_current_balance' => (int) $summary['actual_current_balance'],
+            ) : null,
         ));
+    }
+
+    private function resolve_history_date_range($range_days, $date_from_raw, $date_to_raw)
+    {
+        $now_ts = current_time('timestamp');
+        $normalized_range_days = max(1, (int) $range_days);
+
+        $date_from_ts = $date_from_raw !== '' ? strtotime($date_from_raw) : false;
+        $date_to_ts = $date_to_raw !== '' ? strtotime($date_to_raw) : false;
+
+        if ($date_from_ts !== false && $date_to_ts !== false) {
+            $start_ts = strtotime(date('Y-m-d 00:00:00', $date_from_ts));
+            $end_ts = strtotime(date('Y-m-d 23:59:59', $date_to_ts));
+            if ($start_ts > $end_ts) {
+                $tmp = $start_ts;
+                $start_ts = $end_ts;
+                $end_ts = $tmp;
+            }
+        } else {
+            $end_ts = strtotime(date('Y-m-d 23:59:59', $now_ts));
+            $start_ts = strtotime('-' . ($normalized_range_days - 1) . ' days', strtotime(date('Y-m-d 00:00:00', $now_ts)));
+        }
+
+        return array(
+            'start_datetime' => date('Y-m-d H:i:s', $start_ts),
+            'end_datetime' => date('Y-m-d H:i:s', $end_ts),
+        );
+    }
+
+    private function calculate_points_opening_balance($table_name, $user_id, $start_datetime)
+    {
+        global $wpdb;
+        $balance = $wpdb->get_var($wpdb->prepare(
+            "SELECT
+                COALESCE(SUM(
+                    CASE
+                        WHEN type = 'earn' AND status = 'approved' THEN points
+                        WHEN type = 'refund' AND status = 'approved' THEN points
+                        WHEN type = 'redeem' AND status IN ('approved', 'pending') THEN -points
+                        ELSE 0
+                    END
+                ), 0)
+            FROM $table_name
+            WHERE user_id = %d
+            AND created_at < %s",
+            $user_id,
+            $start_datetime
+        ));
+
+        return max(0, (int) $balance);
+    }
+
+    private function calculate_legacy_history_opening_balance($table_name, $user_id, $start_datetime)
+    {
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, type, order_id, status, points_value
+             FROM $table_name
+             WHERE user_id = %d
+             AND deleted_at IS NULL
+             AND created_at < %s
+             ORDER BY created_at ASC, id ASC",
+            $user_id,
+            $start_datetime
+        ));
+
+        $running = 0;
+        foreach ($rows ?: array() as $row) {
+            $signed_points = isset($row->points_value) && $row->points_value !== ''
+                ? (int) floatval($row->points_value)
+                : 0;
+            $mapped_type = $this->map_transaction_type($row->type, $row->order_id);
+            $running += $this->calculate_legacy_history_effect($mapped_type, $row->status, $signed_points);
+        }
+
+        return max(0, (int) $running);
+    }
+
+    private function build_points_history_rows($transactions, $summary, $user_id)
+    {
+        $running_balance = (int) $summary['opening_balance'];
+        $rows = array();
+        $total_added = 0;
+        $total_deducted = 0;
+
+        foreach ($transactions ?: array() as $transaction) {
+            $points_int = isset($transaction->points) ? intval($transaction->points) : 0;
+            $effect = $this->calculate_points_history_effect(
+                isset($transaction->type) ? (string) $transaction->type : '',
+                isset($transaction->status) ? (string) $transaction->status : 'approved',
+                $points_int
+            );
+
+            $amount_added = $effect > 0 ? $effect : 0;
+            $amount_deducted = $effect < 0 ? abs($effect) : 0;
+            $original_balance = max(0, (int) $running_balance);
+            $current_balance = max(0, (int) ($running_balance + $effect));
+
+            $poll_details = $this->build_poll_transaction_details(
+                $user_id,
+                isset($transaction->order_id) ? (string) $transaction->order_id : '',
+                isset($transaction->type) ? (string) $transaction->type : '',
+                $points_int,
+                isset($transaction->meta_json) ? (string) $transaction->meta_json : null,
+                isset($transaction->created_at) ? (string) $transaction->created_at : null
+            );
+
+            $rows[] = array(
+                'id' => $transaction->id,
+                'user_id' => $transaction->user_id,
+                'type' => $transaction->type,
+                'points' => $points_int,
+                'description' => $transaction->description ?: '',
+                'order_id' => $transaction->order_id,
+                'created_at' => $transaction->created_at,
+                'expires_at' => $transaction->expires_at,
+                'is_expired' => (bool) $transaction->is_expired,
+                'status' => isset($transaction->status) ? $transaction->status : 'approved',
+                'poll_details' => $poll_details,
+                'original_balance' => $original_balance,
+                'amount_added' => $amount_added,
+                'amount_deducted' => $amount_deducted,
+                'current_balance' => $current_balance,
+            );
+
+            $total_added += $amount_added;
+            $total_deducted += $amount_deducted;
+            $running_balance = $current_balance;
+        }
+
+        $summary['transactions'] = $rows;
+        $summary['closing_balance'] = max(0, (int) $running_balance);
+        $summary['total_added'] = (int) $total_added;
+        $summary['total_deducted'] = (int) $total_deducted;
+
+        return $summary;
+    }
+
+    private function build_legacy_history_rows($transactions, $summary, $user_id)
+    {
+        $running_balance = (int) $summary['opening_balance'];
+        $rows = array();
+        $total_added = 0;
+        $total_deducted = 0;
+
+        foreach ($transactions ?: array() as $transaction) {
+            $signed_points = 0;
+            if (isset($transaction->points_value) && $transaction->points_value !== '') {
+                $signed_points = (int) floatval($transaction->points_value);
+            }
+
+            $mapped_type = $this->map_transaction_type($transaction->type, $transaction->order_id);
+            $effect = $this->calculate_legacy_history_effect(
+                $mapped_type,
+                isset($transaction->status) ? (string) $transaction->status : 'approved',
+                $signed_points
+            );
+            $amount_added = $effect > 0 ? $effect : 0;
+            $amount_deducted = $effect < 0 ? abs($effect) : 0;
+            $points_abs = abs($signed_points);
+            $original_balance = max(0, (int) $running_balance);
+            $current_balance = max(0, (int) ($running_balance + $effect));
+
+            $poll_details = $this->build_poll_transaction_details(
+                $user_id,
+                isset($transaction->order_id) ? (string) $transaction->order_id : '',
+                (string) $mapped_type,
+                $points_abs,
+                isset($transaction->meta_json) ? (string) $transaction->meta_json : null,
+                isset($transaction->created_at) ? (string) $transaction->created_at : null
+            );
+
+            $rows[] = array(
+                'id' => $transaction->id,
+                'user_id' => $transaction->user_id,
+                'type' => $mapped_type,
+                'points' => $points_abs,
+                'description' => $transaction->description ?: $this->get_default_description($transaction),
+                'order_id' => $transaction->order_id,
+                'created_at' => $transaction->created_at,
+                'expires_at' => null,
+                'is_expired' => false,
+                'status' => $transaction->status ?: 'approved',
+                'poll_details' => $poll_details,
+                'original_balance' => $original_balance,
+                'amount_added' => $amount_added,
+                'amount_deducted' => $amount_deducted,
+                'current_balance' => $current_balance,
+            );
+
+            $total_added += $amount_added;
+            $total_deducted += $amount_deducted;
+            $running_balance = $current_balance;
+        }
+
+        $summary['transactions'] = $rows;
+        $summary['closing_balance'] = max(0, (int) $running_balance);
+        $summary['total_added'] = (int) $total_added;
+        $summary['total_deducted'] = (int) $total_deducted;
+
+        return $summary;
+    }
+
+    private function calculate_points_history_effect($type, $status, $points)
+    {
+        $normalized_type = strtolower((string) $type);
+        $normalized_status = strtolower((string) $status);
+        $points = abs((int) $points);
+
+        if (($normalized_type === 'earn' || $normalized_type === 'refund') && $normalized_status === 'approved') {
+            return $points;
+        }
+
+        if ($normalized_type === 'redeem' && in_array($normalized_status, array('approved', 'pending'), true)) {
+            return -1 * $points;
+        }
+
+        // Manual/carry-over adjustments are treated as positive unless sign is provided elsewhere.
+        if ($normalized_type === 'adjust' && $normalized_status === 'approved') {
+            return $points;
+        }
+
+        return 0;
+    }
+
+    private function calculate_legacy_history_effect($type, $status, $signed_points)
+    {
+        $normalized_type = strtolower((string) $type);
+        $normalized_status = strtolower((string) $status);
+        $signed_points = (int) $signed_points;
+
+        if (($normalized_type === 'earn' || $normalized_type === 'refund') && $normalized_status === 'approved') {
+            return abs($signed_points);
+        }
+
+        if ($normalized_type === 'redeem' && in_array($normalized_status, array('approved', 'pending'), true)) {
+            return -1 * abs($signed_points);
+        }
+
+        if ($normalized_type === 'adjust' && $normalized_status === 'approved') {
+            return $signed_points;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Check whether row-level balance snapshot columns exist in points ledger.
+     */
+    private function has_point_transaction_balance_columns($table_name)
+    {
+        global $wpdb;
+        $required_columns = array('original_balance', 'amount_added', 'amount_deducted', 'current_balance');
+        $found = array();
+
+        foreach ($required_columns as $column_name) {
+            $column = $wpdb->get_var($wpdb->prepare(
+                'SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = %s AND table_name = %s AND column_name = %s LIMIT 1',
+                DB_NAME,
+                $table_name,
+                $column_name
+            ));
+            if (!empty($column)) {
+                $found[$column_name] = true;
+            }
+        }
+
+        return count($found) === count($required_columns);
+    }
+
+    /**
+     * Best-effort closing balance source for reverse row balance calculation.
+     */
+    private function get_user_detail_closing_balance_from_meta($user_id)
+    {
+        $meta_candidates = array(
+            get_user_meta($user_id, 'points_balance_cache', true),
+            get_user_meta($user_id, 'points_balance', true),
+            get_user_meta($user_id, 'my_points', true),
+        );
+
+        foreach ($meta_candidates as $candidate) {
+            if ($candidate !== '' && $candidate !== null && is_numeric($candidate)) {
+                return max(0, (int) $candidate);
+            }
+        }
+
+        return max(0, (int) $this->calculate_points_balance_from_transactions($user_id));
+    }
+
+    /**
+     * Resolve transaction effect for User Details reverse-balance fallback.
+     */
+    private function calculate_user_detail_transaction_effect($transaction)
+    {
+        $status = isset($transaction->status) ? strtolower((string) $transaction->status) : 'approved';
+        $type = isset($transaction->type) ? strtolower((string) $transaction->type) : '';
+        $points_abs = isset($transaction->points) ? abs((int) $transaction->points) : 0;
+
+        if ($points_abs <= 0) {
+            return 0;
+        }
+
+        if (!empty($transaction->expires_at)) {
+            $expires_ts = strtotime((string) $transaction->expires_at);
+            if ($expires_ts !== false && $expires_ts <= current_time('timestamp')) {
+                return 0;
+            }
+        }
+
+        if (($type === 'earn' || $type === 'refund') && $status === 'approved') {
+            return $points_abs;
+        }
+
+        if ($type === 'redeem' && in_array($status, array('approved', 'pending'), true)) {
+            return -1 * $points_abs;
+        }
+
+        if ($type === 'adjust' && $status === 'approved') {
+            $description = isset($transaction->description) ? (string) $transaction->description : '';
+            if ($description !== '' && preg_match('/\(\s*([-+])\s*(\d+)\s*points?\s*\)/i', $description, $m)) {
+                $signed_points = (int) $m[2];
+                return $m[1] === '-' ? (-1 * $signed_points) : $signed_points;
+            }
+            return $points_abs;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Build row-level balances for User Details page.
+     *
+     * Priority:
+     * 1) Use DB snapshot columns if present.
+     * 2) Reverse-calculate from latest user balance meta for exact visible ordering.
+     */
+    private function build_user_detail_row_balance_map($user_id, $table_name)
+    {
+        global $wpdb;
+
+        $row_balance_map = array();
+        if ((int) $user_id <= 0) {
+            return $row_balance_map;
+        }
+
+        if ($this->has_point_transaction_balance_columns($table_name)) {
+            $snapshot_rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT id, original_balance, amount_added, amount_deducted, current_balance
+                 FROM $table_name
+                 WHERE user_id = %d",
+                $user_id
+            ));
+
+            foreach ($snapshot_rows ?: array() as $snapshot_row) {
+                $row_balance_map[(int) $snapshot_row->id] = array(
+                    'original_balance' => max(0, (int) $snapshot_row->original_balance),
+                    'amount_added' => max(0, (int) $snapshot_row->amount_added),
+                    'amount_deducted' => max(0, (int) $snapshot_row->amount_deducted),
+                    'current_balance' => max(0, (int) $snapshot_row->current_balance),
+                );
+            }
+
+            if (!empty($row_balance_map)) {
+                return $row_balance_map;
+            }
+        }
+
+        $closing_balance = $this->get_user_detail_closing_balance_from_meta($user_id);
+        $desc_rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, type, status, points, description, order_id, expires_at, created_at
+             FROM $table_name
+             WHERE user_id = %d
+             ORDER BY created_at DESC, id DESC",
+            $user_id
+        ));
+
+        $running_current = max(0, (int) $closing_balance);
+        foreach ($desc_rows ?: array() as $desc_txn) {
+            $effect = $this->calculate_user_detail_transaction_effect($desc_txn);
+            $row_current = max(0, (int) $running_current);
+            $row_original = max(0, (int) ($row_current - $effect));
+
+            $row_balance_map[(int) $desc_txn->id] = array(
+                'original_balance' => $row_original,
+                'amount_added' => $effect > 0 ? (int) $effect : 0,
+                'amount_deducted' => $effect < 0 ? (int) abs($effect) : 0,
+                'current_balance' => $row_current,
+            );
+
+            $running_current = $row_original;
+        }
+
+        return $row_balance_map;
+    }
+
+    /**
+     * Build row balances for Point Transactions admin table.
+     *
+     * Priority:
+     * 1) Use DB row-level snapshot columns directly (exact source of truth).
+     * 2) Fallback: reverse-map exact balances per user from latest balance meta.
+     */
+    private function build_point_transactions_admin_row_balance_map($transactions, $table_name)
+    {
+        global $wpdb;
+
+        $row_balance_map = array();
+        if (empty($transactions) || !is_array($transactions)) {
+            return $row_balance_map;
+        }
+
+        $target_ids = array();
+        $user_ids = array();
+        foreach ($transactions as $txn_row) {
+            $txn_id = isset($txn_row->id) ? (int) $txn_row->id : 0;
+            $txn_user_id = isset($txn_row->user_id) ? (int) $txn_row->user_id : 0;
+            if ($txn_id > 0) {
+                $target_ids[$txn_id] = true;
+            }
+            if ($txn_user_id > 0) {
+                $user_ids[$txn_user_id] = true;
+            }
+        }
+        $target_ids = array_keys($target_ids);
+        $target_id_lookup = array_fill_keys($target_ids, true);
+        $user_ids = array_keys($user_ids);
+        if (empty($target_ids) || empty($user_ids)) {
+            return $row_balance_map;
+        }
+
+        if ($this->has_point_transaction_balance_columns($table_name)) {
+            $target_placeholders = implode(',', array_fill(0, count($target_ids), '%d'));
+            $snapshot_sql = "SELECT id, original_balance, amount_added, amount_deducted, current_balance
+                FROM $table_name
+                WHERE id IN ($target_placeholders)";
+            $snapshot_sql = $wpdb->prepare($snapshot_sql, $target_ids);
+            $snapshot_rows = $wpdb->get_results($snapshot_sql);
+
+            foreach ($snapshot_rows ?: array() as $snapshot_row) {
+                $row_balance_map[(int) $snapshot_row->id] = array(
+                    'original' => max(0, (int) $snapshot_row->original_balance),
+                    'added' => max(0, (int) $snapshot_row->amount_added),
+                    'deducted' => max(0, (int) $snapshot_row->amount_deducted),
+                    'current' => max(0, (int) $snapshot_row->current_balance),
+                );
+            }
+
+            if (count($row_balance_map) === count($target_ids)) {
+                return $row_balance_map;
+            }
+        }
+
+        // Fallback: reverse map by user from latest known balance.
+        $user_placeholders = implode(',', array_fill(0, count($user_ids), '%d'));
+        $ledger_sql = "SELECT id, user_id, type, status, points, description, order_id, expires_at, created_at
+            FROM $table_name
+            WHERE user_id IN ($user_placeholders)
+            ORDER BY user_id ASC, created_at DESC, id DESC";
+        $ledger_sql = $wpdb->prepare($ledger_sql, $user_ids);
+        $ledger_rows = $wpdb->get_results($ledger_sql);
+
+        $running_current_by_user = array();
+        foreach ($user_ids as $uid) {
+            $running_current_by_user[$uid] = $this->get_user_detail_closing_balance_from_meta((int) $uid);
+        }
+
+        foreach ($ledger_rows ?: array() as $ledger_txn) {
+            $uid = isset($ledger_txn->user_id) ? (int) $ledger_txn->user_id : 0;
+            $txn_id = isset($ledger_txn->id) ? (int) $ledger_txn->id : 0;
+            if ($uid <= 0 || $txn_id <= 0 || !isset($running_current_by_user[$uid])) {
+                continue;
+            }
+
+            $effect = $this->calculate_user_detail_transaction_effect($ledger_txn);
+            $row_current = max(0, (int) $running_current_by_user[$uid]);
+            $row_original = max(0, (int) ($row_current - $effect));
+
+            if (isset($target_id_lookup[$txn_id])) {
+                $row_balance_map[$txn_id] = array(
+                    'original' => $row_original,
+                    'added' => $effect > 0 ? (int) $effect : 0,
+                    'deducted' => $effect < 0 ? (int) abs($effect) : 0,
+                    'current' => $row_current,
+                );
+            }
+
+            $running_current_by_user[$uid] = $row_original;
+        }
+
+        return $row_balance_map;
     }
 
     /**
@@ -9600,10 +10369,13 @@ class TWork_Rewards_System
      * @param int    $user_id
      * @param string $order_id
      * @param string $txn_type
-     * @param int    $points
+     * @param int         $points
+     * @param string|null $transaction_meta_json Persisted JSON from point/reward transaction row.
+     * @param string|null $created_at            Transaction created_at (MySQL datetime). When set, the interaction
+     *                                           snapshot uses the latest interaction row with created_at <= this time.
      * @return array|null
      */
-    private function build_poll_transaction_details($user_id, $order_id, $txn_type, $points, $transaction_meta_json = null)
+    private function build_poll_transaction_details($user_id, $order_id, $txn_type, $points, $transaction_meta_json = null, $created_at = null)
     {
         if (!is_string($order_id) || $order_id === '') {
             return null;
@@ -9667,15 +10439,37 @@ class TWork_Rewards_System
             $quiz_data = array();
         }
 
-        // Latest interaction for this user/poll is used as the per-user betting snapshot.
-        $interaction = $wpdb->get_row($wpdb->prepare(
-            "SELECT interaction_value, bet_amount, bet_amount_per_option, interaction_meta, session_id
-             FROM $table_interactions
-             WHERE user_id = %d AND item_id = %d
-             ORDER BY id DESC LIMIT 1",
-            (int) $user_id,
-            (int) $poll_id
-        ), ARRAY_A);
+        // Interaction row that matches this transaction in time: latest vote snapshot at or before txn created_at.
+        $created_at_trim = is_string($created_at) ? trim($created_at) : '';
+        if ($created_at_trim !== '') {
+            $interaction = $wpdb->get_row($wpdb->prepare(
+                "SELECT interaction_value, bet_amount, bet_amount_per_option, interaction_meta, session_id
+                 FROM $table_interactions
+                 WHERE user_id = %d AND item_id = %d AND created_at <= %s
+                 ORDER BY id DESC LIMIT 1",
+                (int) $user_id,
+                (int) $poll_id,
+                $created_at_trim
+            ), ARRAY_A);
+        } else {
+            // OLD CODE: latest interaction only (no txn time — legacy behaviour).
+            // $interaction = $wpdb->get_row($wpdb->prepare(
+            //     "SELECT interaction_value, bet_amount, bet_amount_per_option, interaction_meta, session_id
+            //      FROM $table_interactions
+            //      WHERE user_id = %d AND item_id = %d
+            //      ORDER BY id DESC LIMIT 1",
+            //     (int) $user_id,
+            //     (int) $poll_id
+            // ), ARRAY_A);
+            $interaction = $wpdb->get_row($wpdb->prepare(
+                "SELECT interaction_value, bet_amount, bet_amount_per_option, interaction_meta, session_id
+                 FROM $table_interactions
+                 WHERE user_id = %d AND item_id = %d
+                 ORDER BY id DESC LIMIT 1",
+                (int) $user_id,
+                (int) $poll_id
+            ), ARRAY_A);
+        }
         if (!$interaction || !is_array($interaction)) {
             return null;
         }
@@ -10594,6 +11388,387 @@ class TWork_Rewards_System
     /**
      * Transactions list page
      */
+    public function render_point_transactions_admin_page()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'twork_point_transactions';
+
+        $user_id = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
+        $date_from = isset($_GET['date_from']) ? sanitize_text_field(wp_unslash($_GET['date_from'])) : '';
+        $date_to = isset($_GET['date_to']) ? sanitize_text_field(wp_unslash($_GET['date_to'])) : '';
+        $type = isset($_GET['type']) ? sanitize_text_field(wp_unslash($_GET['type'])) : '';
+        $status = isset($_GET['status']) ? sanitize_text_field(wp_unslash($_GET['status'])) : '';
+
+        $paged = isset($_GET['paged']) ? max(1, absint($_GET['paged'])) : 1;
+        $per_page = isset($_GET['per_page']) ? absint($_GET['per_page']) : 50;
+        $per_page = $per_page > 0 ? min(100, $per_page) : 50;
+        $offset = ($paged - 1) * $per_page;
+        $sort_order = (isset($_GET['order']) && strtoupper((string) $_GET['order']) === 'ASC') ? 'ASC' : 'DESC';
+
+        $where = array('1=1');
+        $params = array();
+
+        // OLD CODE (kept for rollback safety):
+        // if ($user_id > 0) {
+        //     $where[] = 'user_id = %d';
+        //     $params[] = $user_id;
+        // }
+        //
+        // NEW CODE: Keep URL-driven user_id filtering so Select2 dropdown integrates with existing SQL safely.
+        if ($user_id > 0) {
+            $where[] = 'user_id = %d';
+            $params[] = $user_id;
+        }
+
+        if (!empty($date_from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from)) {
+            $where[] = 'created_at >= %s';
+            $params[] = $date_from . ' 00:00:00';
+        }
+
+        if (!empty($date_to) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
+            $where[] = 'created_at <= %s';
+            $params[] = $date_to . ' 23:59:59';
+        }
+
+        if (in_array($type, array('earn', 'redeem', 'refund'), true)) {
+            $where[] = 'type = %s';
+            $params[] = $type;
+        }
+
+        if (in_array($status, array('approved', 'pending', 'rejected'), true)) {
+            $where[] = 'status = %s';
+            $params[] = $status;
+        }
+
+        $where_sql = implode(' AND ', $where);
+
+        $count_sql = "SELECT COUNT(*) FROM $table_name WHERE $where_sql";
+        if (!empty($params)) {
+            $count_sql = $wpdb->prepare($count_sql, $params);
+        }
+        $total_items = (int) $wpdb->get_var($count_sql);
+
+        // OLD CODE (kept for rollback safety):
+        // $query_sql = "SELECT * FROM $table_name WHERE $where_sql ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d";
+        // $query_params = array_merge($params, array($per_page, $offset));
+        // $query_sql = $wpdb->prepare($query_sql, $query_params);
+        // $transactions = $wpdb->get_results($query_sql);
+        //
+        // NEW CODE: Join wp_users to include username beside user_id.
+        $query_sql = "SELECT t.*, COALESCE(NULLIF(u.display_name, ''), u.user_login) AS user_name
+            FROM $table_name t
+            LEFT JOIN {$wpdb->users} u ON u.ID = t.user_id
+            WHERE $where_sql
+            ORDER BY t.created_at $sort_order, t.id $sort_order
+            LIMIT %d OFFSET %d";
+        $query_params = array_merge($params, array($per_page, $offset));
+        $query_sql = $wpdb->prepare($query_sql, $query_params);
+        $transactions = $wpdb->get_results($query_sql);
+
+        $summary_where = array('1=1');
+        $summary_params = array();
+        if ($user_id > 0) {
+            $summary_where[] = 'user_id = %d';
+            $summary_params[] = $user_id;
+        }
+        if (in_array($type, array('earn', 'redeem', 'refund'), true)) {
+            $summary_where[] = 'type = %s';
+            $summary_params[] = $type;
+        }
+        if (in_array($status, array('approved', 'pending', 'rejected'), true)) {
+            $summary_where[] = 'status = %s';
+            $summary_params[] = $status;
+        }
+        if (!empty($date_to) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
+            $summary_where[] = 'created_at <= %s';
+            $summary_params[] = $date_to . ' 23:59:59';
+        }
+        $summary_where_sql = implode(' AND ', $summary_where);
+
+        $opening_balance = 0;
+        if (!empty($date_from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from)) {
+            $opening_where = $summary_where;
+            $opening_params = $summary_params;
+            $opening_where[] = 'created_at < %s';
+            $opening_params[] = $date_from . ' 00:00:00';
+
+            $opening_sql = "SELECT COALESCE(SUM(
+                CASE
+                    WHEN type = 'earn' AND status = 'approved' THEN points
+                    WHEN type = 'refund' AND status = 'approved' THEN points
+                    WHEN type = 'redeem' AND (status = 'approved' OR status = 'pending') THEN -points
+                    ELSE 0
+                END
+            ), 0) FROM $table_name WHERE " . implode(' AND ', $opening_where);
+            $opening_sql = $wpdb->prepare($opening_sql, $opening_params);
+            $opening_balance = (int) $wpdb->get_var($opening_sql);
+        }
+
+        $range_where = $summary_where;
+        $range_params = $summary_params;
+        if (!empty($date_from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from)) {
+            $range_where[] = 'created_at >= %s';
+            $range_params[] = $date_from . ' 00:00:00';
+        }
+        $range_where_sql = implode(' AND ', $range_where);
+
+        $added_sql = "SELECT COALESCE(SUM(points), 0) FROM $table_name WHERE $range_where_sql AND ((type = 'earn' AND status = 'approved') OR (type = 'refund' AND status = 'approved'))";
+        $added_sql = $wpdb->prepare($added_sql, $range_params);
+        $total_added = (int) $wpdb->get_var($added_sql);
+
+        $deducted_sql = "SELECT COALESCE(SUM(points), 0) FROM $table_name WHERE $range_where_sql AND (type = 'redeem' AND (status = 'approved' OR status = 'pending'))";
+        $deducted_sql = $wpdb->prepare($deducted_sql, $range_params);
+        $total_deducted = (int) $wpdb->get_var($deducted_sql);
+
+        // OLD CODE (kept for rollback safety):
+        // $current_balance = $opening_balance + $total_added - $total_deducted;
+        $current_balance = $opening_balance + $total_added - $total_deducted;
+        if (
+            $user_id > 0 &&
+            $date_from === '' &&
+            $date_to === '' &&
+            $type === '' &&
+            $status === ''
+        ) {
+            // Match User Details page source-of-truth behavior for single-user unfiltered view.
+            $current_balance = $this->get_user_detail_closing_balance_from_meta($user_id);
+        }
+        $total_pages = $per_page > 0 ? (int) ceil(max(0, $total_items) / $per_page) : 1;
+        $selected_user_label = '';
+        if ($user_id > 0) {
+            $selected_user = get_userdata($user_id);
+            if ($selected_user instanceof WP_User) {
+                $selected_display_name = trim((string) $selected_user->display_name);
+                $selected_user_login = trim((string) $selected_user->user_login);
+                if ($selected_display_name === '') {
+                    $selected_display_name = $selected_user_login;
+                }
+                $selected_user_label = sprintf(
+                    '%1$s (%2$s) - #%3$d',
+                    $selected_display_name,
+                    $selected_user_login,
+                    (int) $selected_user->ID
+                );
+            }
+        }
+        ?>
+        <div class="wrap">
+            <h1 class="wp-heading-inline"><?php esc_html_e('Point Transactions', 'twork-rewards'); ?></h1>
+            <hr class="wp-header-end" />
+
+            <form method="get" class="twork-point-transactions-filters">
+                <input type="hidden" name="page" value="twork-rewards-point-transactions" />
+                <?php
+                /*
+                 * OLD CODE (kept for rollback safety):
+                 * <input type="number" name="user_id" min="1" placeholder="<?php esc_attr_e('User ID', 'twork-rewards'); ?>" value="<?php echo esc_attr($user_id ?: ''); ?>" />
+                 */
+                ?>
+                <span class="twork-user-filter-wrap">
+                    <select
+                        name="user_id"
+                        class="twork-user-search-select"
+                        data-placeholder="<?php esc_attr_e('Search user by username, display name, or email', 'twork-rewards'); ?>"
+                    >
+                        <option value=""><?php esc_html_e('All users', 'twork-rewards'); ?></option>
+                        <?php if ($user_id > 0 && $selected_user_label !== ''): ?>
+                            <option value="<?php echo esc_attr($user_id); ?>" selected="selected"><?php echo esc_html($selected_user_label); ?></option>
+                        <?php endif; ?>
+                    </select>
+                </span>
+                <input type="date" name="date_from" value="<?php echo esc_attr($date_from); ?>" />
+                <input type="date" name="date_to" value="<?php echo esc_attr($date_to); ?>" />
+                <select name="type">
+                    <option value=""><?php esc_html_e('All types', 'twork-rewards'); ?></option>
+                    <option value="earn" <?php selected($type, 'earn'); ?>><?php esc_html_e('Earn', 'twork-rewards'); ?></option>
+                    <option value="redeem" <?php selected($type, 'redeem'); ?>><?php esc_html_e('Redeem', 'twork-rewards'); ?></option>
+                    <option value="refund" <?php selected($type, 'refund'); ?>><?php esc_html_e('Refund', 'twork-rewards'); ?></option>
+                </select>
+                <select name="status">
+                    <option value=""><?php esc_html_e('All statuses', 'twork-rewards'); ?></option>
+                    <option value="approved" <?php selected($status, 'approved'); ?>><?php esc_html_e('Approved', 'twork-rewards'); ?></option>
+                    <option value="pending" <?php selected($status, 'pending'); ?>><?php esc_html_e('Pending', 'twork-rewards'); ?></option>
+                    <option value="rejected" <?php selected($status, 'rejected'); ?>><?php esc_html_e('Rejected', 'twork-rewards'); ?></option>
+                </select>
+                <?php
+                // Kept for rollback safety after switching filters to auto-submit.
+                // submit_button(__('Filter', 'twork-rewards'), 'secondary', '', false);
+                ?>
+                <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-point-transactions')); ?>"><?php esc_html_e('Reset', 'twork-rewards'); ?></a>
+            </form>
+
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px;">
+                <div class="postbox" style="padding: 12px;">
+                    <strong><?php esc_html_e('Original Balance', 'twork-rewards'); ?></strong>
+                    <div style="font-size: 22px; margin-top: 6px;"><?php echo esc_html(number_format_i18n($opening_balance)); ?></div>
+                </div>
+                <div class="postbox" style="padding: 12px;">
+                    <strong><?php esc_html_e('Added', 'twork-rewards'); ?></strong>
+                    <div style="font-size: 22px; color:#15803d; margin-top: 6px;">+<?php echo esc_html(number_format_i18n($total_added)); ?></div>
+                </div>
+                <div class="postbox" style="padding: 12px;">
+                    <strong><?php esc_html_e('Deducted', 'twork-rewards'); ?></strong>
+                    <div style="font-size: 22px; color:#b91c1c; margin-top: 6px;">-<?php echo esc_html(number_format_i18n($total_deducted)); ?></div>
+                </div>
+                <div class="postbox" style="padding: 12px;">
+                    <strong><?php esc_html_e('Current Balance', 'twork-rewards'); ?></strong>
+                    <div style="font-size: 22px; margin-top: 6px;"><?php echo esc_html(number_format_i18n($current_balance)); ?></div>
+                </div>
+            </div>
+
+            <table class="wp-list-table widefat fixed striped">
+                <thead>
+                    <tr>
+                        <?php
+                        /*
+                         * OLD COLUMNS (kept for rollback safety):
+                         * ID | User ID | Date | Type | Description | Order ID | Status | Amount
+                         */
+                        ?>
+
+                        <th style="width:150px;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
+                        <th style="width:90px;"><?php esc_html_e('User ID', 'twork-rewards'); ?></th>
+                        <th style="width:170px;"><?php esc_html_e('User Name', 'twork-rewards'); ?></th>
+                        <th style="width:130px;"><?php esc_html_e('Original Balance', 'twork-rewards'); ?></th>
+                        <th style="width:120px;"><?php esc_html_e('Amount Added (+)', 'twork-rewards'); ?></th>
+                        <th style="width:130px;"><?php esc_html_e('Amount Deducted (-)', 'twork-rewards'); ?></th>
+                        <th style="width:130px;"><?php esc_html_e('Current Balance', 'twork-rewards'); ?></th>
+                        <th><?php esc_html_e('Note / Description', 'twork-rewards'); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php if (!empty($transactions)): ?>
+                    <?php
+                    /*
+                     * OLD CODE (kept for rollback safety):
+                     * // Compute running balances for visible rows while preserving existing pagination.
+                     * $running_balance = (int) $opening_balance;
+                     * if ($offset > 0) {
+                     *     $history_where = $where;
+                     *     $history_params = $params;
+                     *     $history_rows_sql = "SELECT type, status, points FROM $table_name WHERE " . implode(' AND ', $history_where) . " ORDER BY created_at ASC, id ASC LIMIT %d";
+                     *     $history_rows_params = array_merge($history_params, array($offset));
+                     *     $history_rows_sql = $wpdb->prepare($history_rows_sql, $history_rows_params);
+                     *     $history_rows = $wpdb->get_results($history_rows_sql);
+                     *     if (!empty($history_rows)) {
+                     *         foreach ($history_rows as $history_txn) {
+                     *             $history_effect = $this->calculate_points_history_effect(...);
+                     *             $running_balance = max(0, (int) ($running_balance + $history_effect));
+                     *         }
+                     *     }
+                     * }
+                     */
+                    /*
+                     * OLD CODE (kept for rollback safety):
+                     * // Calculate per-row balances by rebuilding running totals from filtered ledger.
+                     * $row_balance_map = array();
+                     * $page_user_ids = array();
+                     * foreach ($transactions as $txn_for_user) { ... }
+                     * // opening_by_user SQL + filtered ledger SQL
+                     * // foreach ($ledger_rows as $ledger_txn) { ... }
+                     */
+                    $row_balance_map = $this->build_point_transactions_admin_row_balance_map($transactions, $table_name);
+                    ?>
+                    <?php foreach ($transactions as $txn): ?>
+                        <?php
+                        // OLD CODE (kept for rollback safety):
+                        // $is_positive = in_array($txn->type, array('earn', 'refund'), true);
+                        // $amount = (int) $txn->points;
+                        // $signed_amount = $is_positive ? '+' . $amount : '-' . $amount;
+                        // $amount_color = $is_positive ? '#15803d' : '#b91c1c';
+
+                        // OLD CODE (kept for rollback safety):
+                        // $effect = $this->calculate_points_history_effect(...);
+                        // $row_original_balance = max(0, (int) $running_balance);
+                        // $row_added = $effect > 0 ? (int) $effect : 0;
+                        // $row_deducted = $effect < 0 ? (int) abs($effect) : 0;
+                        // $row_current_balance = max(0, (int) ($row_original_balance + $effect));
+                        // $running_balance = $row_current_balance;
+                        $balance_parts = isset($row_balance_map[(int) $txn->id]) ? $row_balance_map[(int) $txn->id] : array(
+                            'original' => 0,
+                            'added' => 0,
+                            'deducted' => 0,
+                            'current' => 0,
+                        );
+                        $row_original_balance = (int) $balance_parts['original'];
+                        $row_added = (int) $balance_parts['added'];
+                        $row_deducted = (int) $balance_parts['deducted'];
+                        $row_current_balance = (int) $balance_parts['current'];
+
+                        $row_user_name = '';
+                        if (isset($txn->user_name) && is_string($txn->user_name)) {
+                            $row_user_name = trim($txn->user_name);
+                        }
+                        if ($row_user_name === '') {
+                            $row_user_name = __('Unknown User', 'twork-rewards');
+                        }
+                        $formatted_date = $this->format_myanmar_time($txn->created_at);
+                        ?>
+                        <tr>
+                            <?php
+                            /*
+                             * OLD CELLS (kept for rollback safety):
+                             * <td>ID</td>
+                             * <td>User ID</td>
+                             * <td>Date</td>
+                             * <td>Type</td>
+                             * <td>Description</td>
+                             * <td>Order ID</td>
+                             * <td>Status</td>
+                             * <td>Amount</td>
+                             */
+                            ?>
+
+                            <td><?php echo esc_html($formatted_date ?: $txn->created_at); ?></td>
+                            <td>
+                                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-user-detail', 'user_id' => absint($txn->user_id)), admin_url('admin.php'))); ?>">
+                                    <?php echo esc_html($txn->user_id); ?>
+                                </a>
+                            </td>
+                            <td><?php echo esc_html($row_user_name); ?></td>
+                            <td><?php echo esc_html(number_format_i18n($row_original_balance)); ?></td>
+                            <td style="font-weight:600; color:#15803d;">+<?php echo esc_html(number_format_i18n($row_added)); ?></td>
+                            <td style="font-weight:600; color:#b91c1c;">-<?php echo esc_html(number_format_i18n($row_deducted)); ?></td>
+                            <td><?php echo esc_html(number_format_i18n($row_current_balance)); ?></td>
+                            <td><?php echo esc_html(!empty($txn->description) ? $txn->description : '—'); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr>
+                        <td colspan="8"><?php esc_html_e('No point transactions found for selected filters.', 'twork-rewards'); ?></td>
+                    </tr>
+                <?php endif; ?>
+                </tbody>
+            </table>
+
+            <?php if ($total_pages > 1): ?>
+                <div class="tablenav" style="margin-top: 12px;">
+                    <div class="tablenav-pages">
+                        <?php
+                        $pagination_links = paginate_links(array(
+                            'base' => add_query_arg('paged', '%#%'),
+                            'format' => '',
+                            'prev_text' => __('&laquo;', 'twork-rewards'),
+                            'next_text' => __('&raquo;', 'twork-rewards'),
+                            'total' => $total_pages,
+                            'current' => $paged,
+                        ));
+                        echo wp_kses_post($pagination_links);
+                        ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * Transactions list page
+     */
     public function render_transactions_page()
     {
         if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
@@ -10732,6 +11907,53 @@ class TWork_Rewards_System
                     color: inherit;
                     opacity: 0.75;
                     font-weight: 400;
+                }
+                .twork-txn-poll-details {
+                    margin-top: 8px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 6px;
+                }
+                .twork-txn-poll-row {
+                    display: flex;
+                    flex-wrap: wrap;
+                    align-items: center;
+                    gap: 6px;
+                }
+                .twork-txn-poll-row-label {
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #1f2937;
+                    letter-spacing: 0.03em;
+                    text-transform: uppercase;
+                }
+                .twork-txn-poll-chip {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    border-radius: 999px;
+                    padding: 3px 10px;
+                    font-size: 11px;
+                    line-height: 1.35;
+                    border: 1px solid #d1d5db;
+                    background: #f3f4f6;
+                    color: #1f2937;
+                }
+                .twork-txn-poll-chip-bet {
+                    border-color: #bfdbfe;
+                    background: #eff6ff;
+                    color: #1e3a8a;
+                }
+                .twork-txn-poll-chip-win {
+                    border-color: #6ee7b7;
+                    background: #ecfdf5;
+                    color: #065f46;
+                    font-weight: 600;
+                }
+                .twork-txn-poll-chip-empty {
+                    border-color: #e5e7eb;
+                    background: #f9fafb;
+                    color: #6b7280;
                 }
             </style>
 
@@ -10919,6 +12141,7 @@ class TWork_Rewards_System
                     foreach ($transactions as $txn):
                         $user = isset($users_cache[$txn['user_id']]) ? $users_cache[$txn['user_id']] : null;
                         $order_link = '';
+                        $poll_details_html = '';
                         $is_exchange_request = false;
                         $exchange_request_id = null;
 
@@ -10947,10 +12170,181 @@ class TWork_Rewards_System
                                 $title_link = '<a href="' . esc_url($poll_results_url) . '">' . esc_html($poll_title) . '</a>';
                                 if ($poll_parsed['kind'] === 'pay') {
                                     $label = esc_html__('[Poll Pay]', 'twork-rewards');
+                                    // OLD CODE (kept for rollback):
+                                    // $order_link = '<span class="twork-txn-poll-pay"><strong>' . $label . '</strong> <span class="twork-txn-poll-sep">-</span> ' . $title_link . '</span>';
                                     $order_link = '<span class="twork-txn-poll-pay"><strong>' . $label . '</strong> <span class="twork-txn-poll-sep">-</span> ' . $title_link . '</span>';
                                 } else {
                                     $label = esc_html__('[Poll Win]', 'twork-rewards');
+                                    // OLD CODE (kept for rollback):
+                                    // $order_link = '<span class="twork-txn-poll-win"><strong>' . $label . '</strong> <span class="twork-txn-poll-sep">-</span> ' . $title_link . '</span>';
                                     $order_link = '<span class="twork-txn-poll-win"><strong>' . $label . '</strong> <span class="twork-txn-poll-sep">-</span> ' . $title_link . '</span>';
+                                }
+
+                                $points_value_for_poll = 0;
+                                if (isset($txn['points_value']) && $txn['points_value'] !== '' && is_numeric($txn['points_value'])) {
+                                    $points_value_for_poll = (int) floatval($txn['points_value']);
+                                }
+                                $txn_type_for_poll = isset($txn['type']) ? (string) $txn['type'] : '';
+                                $txn_meta_json_for_poll = isset($txn['meta_json']) ? (string) $txn['meta_json'] : null;
+                                $txn_created_at_for_poll = isset($txn['created_at']) && $txn['created_at'] !== ''
+                                    ? (string) $txn['created_at']
+                                    : null;
+                                $txn['poll_details'] = $this->build_poll_transaction_details(
+                                    (int) $txn['user_id'],
+                                    $order_id_str,
+                                    $txn_type_for_poll,
+                                    $points_value_for_poll,
+                                    $txn_meta_json_for_poll,
+                                    $txn_created_at_for_poll
+                                );
+
+                                if (!empty($txn['poll_details'])) {
+                                    // OLD CODE:
+                                    // $selected_options = isset($txn['poll_details']['selected_options']) && is_array($txn['poll_details']['selected_options'])
+                                    //     ? $txn['poll_details']['selected_options']
+                                    //     : array();
+                                    // $winning_option = isset($txn['poll_details']['winning_option']) && is_array($txn['poll_details']['winning_option'])
+                                    //     ? $txn['poll_details']['winning_option']
+                                    //     : null;
+                                    // $selected_badges = array();
+                                    // foreach ($selected_options as $selected_option) {
+                                    //     if (!is_array($selected_option)) {
+                                    //         continue;
+                                    //     }
+                                    //     $selected_label = isset($selected_option['label']) ? trim((string) $selected_option['label']) : '';
+                                    //     if ($selected_label === '') {
+                                    //         $selected_label = esc_html__('Unknown Option', 'twork-rewards');
+                                    //     }
+                                    //     $bet_pnp = isset($selected_option['bet_pnp']) ? max(0, (int) $selected_option['bet_pnp']) : 0;
+                                    //     $selected_badges[] = '<span class="twork-txn-poll-chip twork-txn-poll-chip-bet" style="display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 10px; font-size: 11px; line-height: 1.35; border: 1px solid #bfdbfe; background: #eff6ff; color: #1e3a8a;">' . esc_html($selected_label . ' (' . number_format_i18n($bet_pnp) . ' PNP)') . '</span>';
+                                    // }
+                                    // $winner_label = '';
+                                    // if (is_array($winning_option) && !empty($winning_option['label'])) {
+                                    //     $winner_label = trim((string) $winning_option['label']);
+                                    // }
+                                    // $poll_details_html .= '<div class="twork-txn-poll-details" style="margin-top: 8px; display: flex; flex-direction: column; gap: 6px;">';
+                                    // $poll_details_html .= '<div class="twork-txn-poll-row" style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">';
+                                    // $poll_details_html .= '<span class="twork-txn-poll-row-label" style="font-size: 11px; font-weight: 700; color: #1f2937; text-transform: uppercase;">' . esc_html__('Selected', 'twork-rewards') . '</span>';
+                                    // if (!empty($selected_badges)) {
+                                    //     $poll_details_html .= implode('', $selected_badges);
+                                    // } else {
+                                    //     $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-empty" style="display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 10px; font-size: 11px; line-height: 1.35; border: 1px solid #e5e7eb; background: #f9fafb; color: #6b7280;">' . esc_html__('No selection data', 'twork-rewards') . '</span>';
+                                    // }
+                                    // $poll_details_html .= '</div>';
+                                    // $poll_details_html .= '<div class="twork-txn-poll-row" style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">';
+                                    // $poll_details_html .= '<span class="twork-txn-poll-row-label" style="font-size: 11px; font-weight: 700; color: #1f2937; text-transform: uppercase;">' . esc_html__('Winner', 'twork-rewards') . '</span>';
+                                    // if ($winner_label !== '') {
+                                    //     $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-win" style="display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 10px; font-size: 11px; line-height: 1.35; border: 1px solid #6ee7b7; background: #ecfdf5; color: #065f46; font-weight: 600;">' . esc_html($winner_label) . '</span>';
+                                    // } else {
+                                    //     $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-empty" style="display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 10px; font-size: 11px; line-height: 1.35; border: 1px solid #e5e7eb; background: #f9fafb; color: #6b7280;">' . esc_html__('Pending', 'twork-rewards') . '</span>';
+                                    // }
+                                    // $poll_details_html .= '</div>';
+                                    // $poll_details_html .= '</div>';
+
+                                    // OLD CODE:
+                                    // $selected_options = isset($txn['poll_details']['selected_options']) && is_array($txn['poll_details']['selected_options'])
+                                    //     ? $txn['poll_details']['selected_options']
+                                    //     : array();
+                                    // $winning_option = isset($txn['poll_details']['winning_option']) && is_array($txn['poll_details']['winning_option'])
+                                    //     ? $txn['poll_details']['winning_option']
+                                    //     : null;
+                                    // $selected_badges = array();
+                                    // foreach ($selected_options as $opt) {
+                                    //     if (!is_array($opt)) {
+                                    //         continue;
+                                    //     }
+                                    //     $selected_label = isset($opt['label']) ? trim((string) $opt['label']) : '';
+                                    //     if ($selected_label === '') {
+                                    //         $selected_label = esc_html__('Unknown Option', 'twork-rewards');
+                                    //     }
+                                    //     $bet_units = isset($opt['bet_units']) ? max(1, (int) $opt['bet_units']) : 1;
+                                    //     $bet_pnp = isset($opt['bet_pnp']) ? max(0, (int) $opt['bet_pnp']) : 0;
+                                    //     $amount_text = $bet_units > 1
+                                    //         ? sprintf('%sx - %s PNP', number_format_i18n($bet_units), number_format_i18n($bet_pnp))
+                                    //         : sprintf('%s PNP', number_format_i18n($bet_pnp));
+                                    //     $selected_badges[] = '<span class="twork-txn-poll-chip twork-txn-poll-chip-bet" style="display: inline-flex; align-items: center; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.3; border: 1px solid #bfdbfe; background: #eff6ff; color: #1e3a8a; white-space: nowrap;">' . esc_html($selected_label . ' (' . $amount_text . ')') . '</span>';
+                                    // }
+                                    // $winner_label = '';
+                                    // if (is_array($winning_option) && !empty($winning_option['label'])) {
+                                    //     $winner_label = trim((string) $winning_option['label']);
+                                    // }
+                                    // $poll_details_html .= '<div class="twork-txn-poll-details" style="margin-top: 8px; display: flex; flex-direction: column; gap: 6px;">';
+                                    // $poll_details_html .= '<div class="twork-txn-poll-row" style="display: flex; flex-wrap: wrap; gap: 5px; align-items: center;">';
+                                    // $poll_details_html .= '<span class="twork-txn-poll-row-label" style="font-size: 11px; font-weight: 700; color: #1f2937; text-transform: uppercase;">' . esc_html__('Selected', 'twork-rewards') . '</span>';
+                                    // $poll_details_html .= '<div class="twork-txn-poll-selected-badges" style="display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center;">';
+                                    // if (!empty($selected_badges)) {
+                                    //     $poll_details_html .= implode('', $selected_badges);
+                                    // } else {
+                                    //     $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-empty" style="display: inline-flex; align-items: center; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.3; border: 1px solid #e5e7eb; background: #f9fafb; color: #6b7280; white-space: nowrap;">' . esc_html__('No selection data', 'twork-rewards') . '</span>';
+                                    // }
+                                    // $poll_details_html .= '</div>';
+                                    // $poll_details_html .= '</div>';
+                                    // $poll_details_html .= '<div class="twork-txn-poll-row" style="display: flex; flex-wrap: wrap; gap: 5px; align-items: center;">';
+                                    // $poll_details_html .= '<span class="twork-txn-poll-row-label" style="font-size: 11px; font-weight: 700; color: #1f2937; text-transform: uppercase;">' . esc_html__('Winner', 'twork-rewards') . '</span>';
+                                    // if ($winner_label !== '') {
+                                    //     $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-win" style="display: inline-flex; align-items: center; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.3; border: 1px solid #6ee7b7; background: #ecfdf5; color: #065f46; font-weight: 600; white-space: nowrap;">' . esc_html($winner_label) . '</span>';
+                                    // } else {
+                                    //     $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-empty" style="display: inline-flex; align-items: center; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.3; border: 1px solid #e5e7eb; background: #f9fafb; color: #6b7280; white-space: nowrap;">' . esc_html__('Pending', 'twork-rewards') . '</span>';
+                                    // }
+                                    // $poll_details_html .= '</div>';
+                                    // $poll_details_html .= '</div>';
+
+                                    $selected_options = isset($txn['poll_details']['selected_options']) && is_array($txn['poll_details']['selected_options'])
+                                        ? $txn['poll_details']['selected_options']
+                                        : array();
+                                    $winning_option = isset($txn['poll_details']['winning_option']) && is_array($txn['poll_details']['winning_option'])
+                                        ? $txn['poll_details']['winning_option']
+                                        : null;
+
+                                    $selected_badges = array();
+                                    foreach ($selected_options as $opt) {
+                                        if (!is_array($opt)) {
+                                            continue;
+                                        }
+                                        $selected_label = isset($opt['label']) ? trim((string) $opt['label']) : '';
+                                        if ($selected_label === '') {
+                                            $selected_label = esc_html__('Unknown Option', 'twork-rewards');
+                                        }
+                                        $bet_pnp = isset($opt['bet_pnp']) ? max(0, (int) $opt['bet_pnp']) : 0;
+                                        $bet_units = isset($opt['bet_units']) ? (int) $opt['bet_units'] : 0;
+                                        if ($bet_units > 1) {
+                                            $amount_text = sprintf(
+                                                '%sx - %s PNP',
+                                                number_format_i18n($bet_units),
+                                                number_format_i18n($bet_pnp)
+                                            );
+                                        } else {
+                                            $amount_text = sprintf('%s PNP', number_format_i18n($bet_pnp));
+                                        }
+                                        $selected_badges[] = '<span class="twork-txn-poll-chip twork-txn-poll-chip-bet" style="display: inline-flex; align-items: center; box-sizing: border-box; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.35; border: 1px solid #bfdbfe; background: #eff6ff; color: #1e3a8a; white-space: nowrap;">' . esc_html($selected_label . ' (' . $amount_text . ')') . '</span>';
+                                    }
+
+                                    $winner_label = '';
+                                    if (is_array($winning_option) && !empty($winning_option['label'])) {
+                                        $winner_label = trim((string) $winning_option['label']);
+                                    }
+
+                                    $poll_details_html .= '<div class="twork-txn-poll-details" style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px; max-width: 100%;">';
+                                    $poll_details_html .= '<div class="twork-txn-poll-selected-block" style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start; max-width: 100%;">';
+                                    $poll_details_html .= '<span class="twork-txn-poll-row-label" style="font-size: 11px; font-weight: 700; color: #1f2937; text-transform: uppercase;">' . esc_html__('Selected', 'twork-rewards') . '</span>';
+                                    $poll_details_html .= '<div class="twork-txn-poll-selected-badges" style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">';
+                                    if (!empty($selected_badges)) {
+                                        $poll_details_html .= implode('', $selected_badges);
+                                    } else {
+                                        $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-empty" style="display: inline-flex; align-items: center; box-sizing: border-box; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.35; border: 1px solid #e5e7eb; background: #f9fafb; color: #6b7280; white-space: nowrap;">' . esc_html__('No selection data', 'twork-rewards') . '</span>';
+                                    }
+                                    $poll_details_html .= '</div>';
+                                    $poll_details_html .= '</div>';
+
+                                    $poll_details_html .= '<div class="twork-txn-poll-row" style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">';
+                                    $poll_details_html .= '<span class="twork-txn-poll-row-label" style="font-size: 11px; font-weight: 700; color: #1f2937; text-transform: uppercase;">' . esc_html__('Winner', 'twork-rewards') . '</span>';
+                                    if ($winner_label !== '') {
+                                        $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-win" style="display: inline-flex; align-items: center; box-sizing: border-box; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.35; border: 1px solid #6ee7b7; background: #ecfdf5; color: #065f46; font-weight: 600; white-space: nowrap;">' . esc_html($winner_label) . '</span>';
+                                    } else {
+                                        $poll_details_html .= '<span class="twork-txn-poll-chip twork-txn-poll-chip-empty" style="display: inline-flex; align-items: center; box-sizing: border-box; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.35; border: 1px solid #e5e7eb; background: #f9fafb; color: #6b7280; white-space: nowrap;">' . esc_html__('Pending', 'twork-rewards') . '</span>';
+                                    }
+                                    $poll_details_html .= '</div>';
+                                    $poll_details_html .= '</div>';
                                 }
                             }
                             // Check for exchange request
@@ -11022,7 +12416,23 @@ class TWork_Rewards_System
                                     <?php esc_html_e('Unknown user', 'twork-rewards'); ?>
                                 <?php endif; ?>
                             </td>
-                            <td><?php echo $order_link ? wp_kses_post($order_link) : '&mdash;'; ?></td>
+                            <td>
+                                <?php
+                                // OLD CODE:
+                                // echo $order_link ? wp_kses_post($order_link) : '&mdash;';
+                                // if (!empty($txn['poll_details']) && !empty($poll_details_html)) {
+                                //     echo wp_kses_post($poll_details_html);
+                                // }
+                                ?>
+                                <?php echo $order_link ? wp_kses_post($order_link) : '&mdash;'; ?>
+                                <?php
+                                if (!empty($txn['poll_details'])) {
+                                    if (!empty($poll_details_html)) {
+                                        echo wp_kses_post($poll_details_html);
+                                    }
+                                }
+                                ?>
+                            </td>
                             <td><?php echo esc_html(ucfirst($txn['status'])); ?></td>
                             <td><?php echo !empty($txn['points_value']) ? esc_html($txn['points_value']) : '&mdash;'; ?></td>
                             <td>
@@ -14277,28 +15687,86 @@ class TWork_Rewards_System
             ? (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)
             : (int) $luckybox_enabled;
 
-        // Get user transactions for summary
-        global $wpdb;
-        $table = $this->table_name();
-        $user_transactions = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM $table WHERE user_id = %d ORDER BY created_at DESC LIMIT 10",
-            $user_id
-        ), ARRAY_A);
+        // OLD CODE (kept for rollback safety):
+        // global $wpdb;
+        // $table = $this->table_name();
+        // $user_transactions = $wpdb->get_results($wpdb->prepare(
+        //     "SELECT * FROM $table WHERE user_id = %d ORDER BY created_at DESC LIMIT 10",
+        //     $user_id
+        // ), ARRAY_A);
+        //
+        // $total_transactions = $wpdb->get_var($wpdb->prepare(
+        //     "SELECT COUNT(*) FROM $table WHERE user_id = %d",
+        //     $user_id
+        // ));
+        //
+        // $pending_count = $wpdb->get_var($wpdb->prepare(
+        //     "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'pending'",
+        //     $user_id
+        // ));
+        //
+        // $approved_count = $wpdb->get_var($wpdb->prepare(
+        //     "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'approved'",
+        //     $user_id
+        // ));
 
-        $total_transactions = $wpdb->get_var($wpdb->prepare(
+        // NEW CODE: Use point transactions ledger so User Details matches Point Transactions page math.
+        global $wpdb;
+        $table = $wpdb->prefix . 'twork_point_transactions';
+        $user_transactions = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM $table WHERE user_id = %d ORDER BY created_at DESC, id DESC LIMIT 10",
+            $user_id
+        ));
+
+        $total_transactions = (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM $table WHERE user_id = %d",
             $user_id
         ));
 
-        $pending_count = $wpdb->get_var($wpdb->prepare(
+        $pending_count = (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'pending'",
             $user_id
         ));
 
-        $approved_count = $wpdb->get_var($wpdb->prepare(
+        $approved_count = (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'approved'",
             $user_id
         ));
+
+        /*
+         * OLD CODE (kept for rollback safety):
+         * $ledger_rows = $wpdb->get_results($wpdb->prepare(
+         *     "SELECT id, type, status, points, order_id, created_at
+         *      FROM $table
+         *      WHERE user_id = %d
+         *      ORDER BY created_at ASC, id ASC",
+         *     $user_id
+         * ));
+         *
+         * $row_balance_map = array();
+         * $running_balance = 0;
+         * foreach ($ledger_rows ?: array() as $ledger_txn) {
+         *     $effect = $this->calculate_points_history_effect(
+         *         isset($ledger_txn->type) ? (string) $ledger_txn->type : '',
+         *         isset($ledger_txn->status) ? (string) $ledger_txn->status : 'approved',
+         *         isset($ledger_txn->points) ? (int) $ledger_txn->points : 0
+         *     );
+         *     $amount_added = $effect > 0 ? (int) $effect : 0;
+         *     $amount_deducted = $effect < 0 ? (int) abs($effect) : 0;
+         *     $original_balance = max(0, (int) $running_balance);
+         *     $current_balance = max(0, (int) ($running_balance + $effect));
+         *
+         *     $row_balance_map[(int) $ledger_txn->id] = array(
+         *         'original_balance' => $original_balance,
+         *         'amount_added' => $amount_added,
+         *         'amount_deducted' => $amount_deducted,
+         *         'current_balance' => $current_balance,
+         *     );
+         *
+         *     $running_balance = $current_balance;
+         * }
+         */
+        $row_balance_map = $this->build_user_detail_row_balance_map($user_id, $table);
 
         // Get user activity status
         $activity = $this->get_formatted_user_activity($user_id);
@@ -14891,24 +16359,48 @@ class TWork_Rewards_System
                     <table class="wp-list-table widefat fixed striped" style="margin: 0;">
                         <thead>
                         <tr>
+                            <?php
+                            /*
+                             * OLD COLUMNS (kept for rollback safety):
+                             * <th style="width: 80px;">ID</th>
+                             * <th style="width: 150px;">Date</th>
+                             * <th>Order/Type</th>
+                             * <th style="width: 100px;">Status</th>
+                             * <th style="width: 100px;">Points</th>
+                             * <th style="width: 80px;">Action</th>
+                             */
+                            ?>
                             <th style="width: 80px;"><?php esc_html_e('ID', 'twork-rewards'); ?></th>
                             <th style="width: 150px;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
                             <th><?php esc_html_e('Order/Type', 'twork-rewards'); ?></th>
+                            <th style="width: 120px;"><?php esc_html_e('Original Balance', 'twork-rewards'); ?></th>
+                            <th style="width: 110px;"><?php esc_html_e('Added (+)', 'twork-rewards'); ?></th>
+                            <th style="width: 120px;"><?php esc_html_e('Deducted (-)', 'twork-rewards'); ?></th>
+                            <th style="width: 120px;"><?php esc_html_e('Current Balance', 'twork-rewards'); ?></th>
                             <th style="width: 100px;"><?php esc_html_e('Status', 'twork-rewards'); ?></th>
+                            <?php /* Hidden temporarily: Points column removed from User Details > Recent Transactions
                             <th style="width: 100px;"><?php esc_html_e('Points', 'twork-rewards'); ?></th>
-                            <th style="width: 80px;"><?php esc_html_e('Action', 'twork-rewards'); ?></th>
+                            */ ?>
+                            <th style="width: 100px;"><?php esc_html_e('Action', 'twork-rewards'); ?></th>
                         </tr>
                         </thead>
                         <tbody>
                         <?php
                         foreach ($user_transactions as $txn):
-                            $edit_url = add_query_arg(array(
-                                'page' => 'twork-rewards-transaction-edit',
-                                'transaction_id' => absint($txn['id']),
+                            /*
+                             * OLD CODE (kept for rollback safety):
+                             * $edit_url = add_query_arg(array(
+                             *     'page' => 'twork-rewards-transaction-edit',
+                             *     'transaction_id' => absint($txn['id']),
+                             * ), admin_url('admin.php'));
+                             */
+                            $view_url = add_query_arg(array(
+                                'page' => 'twork-rewards-point-transactions',
+                                'user_id' => $user_id,
                             ), admin_url('admin.php'));
                             $order_link = '&mdash;';
-                            if (!empty($txn['order_id'])) {
-                                $order_id_str = (string) $txn['order_id'];
+                            if (!empty($txn->order_id)) {
+                                $order_id_str = (string) $txn->order_id;
 
                                 // Check for manual reward adjustment
                                 if (strpos($order_id_str, 'manual_reward:') === 0) {
@@ -14936,33 +16428,56 @@ class TWork_Rewards_System
                                     }
                                 }
                             }
+                            $balance_parts = isset($row_balance_map[(int) $txn->id]) ? $row_balance_map[(int) $txn->id] : array(
+                                'original_balance' => 0,
+                                'amount_added' => 0,
+                                'amount_deducted' => 0,
+                                'current_balance' => 0,
+                            );
                             $status_color = '';
-                            if ($txn['status'] === 'approved') {
+                            if ($txn->status === 'approved') {
                                 $status_color = 'color: #10b981; font-weight: 600;';
-                            } elseif ($txn['status'] === 'pending') {
+                            } elseif ($txn->status === 'pending') {
                                 $status_color = 'color: #f59e0b; font-weight: 600;';
-                            } elseif ($txn['status'] === 'rejected') {
+                            } elseif ($txn->status === 'rejected') {
                                 $status_color = 'color: #ef4444; font-weight: 600;';
                             }
                             ?>
                             <tr>
-                                <td><?php echo esc_html($txn['id']); ?></td>
+                                <?php
+                                /*
+                                 * OLD CELLS (kept for rollback safety):
+                                 * <td><?php echo esc_html($txn['id']); ?></td>
+                                 * <td><?php $formatted_date = $this->format_myanmar_time($txn['created_at']); echo esc_html($formatted_date ?: $txn['created_at']); ?></td>
+                                 * <td><?php echo wp_kses_post($order_link); ?></td>
+                                 * <td style="<?php echo esc_attr($status_color); ?>"><?php echo esc_html(ucfirst($txn['status'])); ?></td>
+                                 * <td style="font-weight: 600; color: #f59e0b;"><?php echo !empty($txn['points_value']) ? esc_html($txn['points_value']) : '&mdash;'; ?></td>
+                                 * <td><a href="<?php echo esc_url($edit_url); ?>" class="button button-small"><?php esc_html_e('Edit', 'twork-rewards'); ?></a></td>
+                                 */
+                                ?>
+                                <td><?php echo esc_html($txn->id); ?></td>
                                 <td><?php
                             // Professional: Display transaction date in Myanmar timezone
-                            $formatted_date = $this->format_myanmar_time($txn['created_at']);
-                            echo esc_html($formatted_date ?: $txn['created_at']);
+                            $formatted_date = $this->format_myanmar_time($txn->created_at);
+                            echo esc_html($formatted_date ?: $txn->created_at);
                             ?></td>
                                 <td><?php echo wp_kses_post($order_link); ?></td>
-                                <td style="<?php echo esc_attr($status_color); ?>"><?php echo esc_html(ucfirst($txn['status'])); ?></td>
-                                <td style="font-weight: 600; color: #f59e0b;"><?php echo !empty($txn['points_value']) ? esc_html($txn['points_value']) : '&mdash;'; ?></td>
-                                <td><a href="<?php echo esc_url($edit_url); ?>" class="button button-small"><?php esc_html_e('Edit', 'twork-rewards'); ?></a></td>
+                                <td><?php echo esc_html(number_format_i18n((int) $balance_parts['original_balance'])); ?></td>
+                                <td style="font-weight: 600; color: #15803d;">+<?php echo esc_html(number_format_i18n((int) $balance_parts['amount_added'])); ?></td>
+                                <td style="font-weight: 600; color: #b91c1c;">-<?php echo esc_html(number_format_i18n((int) $balance_parts['amount_deducted'])); ?></td>
+                                <td><?php echo esc_html(number_format_i18n((int) $balance_parts['current_balance'])); ?></td>
+                                <td style="<?php echo esc_attr($status_color); ?>"><?php echo esc_html(ucfirst((string) $txn->status)); ?></td>
+                                <?php /* Hidden temporarily: Points cell removed from User Details > Recent Transactions
+                                <td style="font-weight: 600; color: #f59e0b;"><?php echo esc_html(number_format_i18n((int) $txn->points)); ?></td>
+                                */ ?>
+                                <td><a href="<?php echo esc_url($view_url); ?>" class="button button-small"><?php esc_html_e('View All', 'twork-rewards'); ?></a></td>
                             </tr>
                         <?php endforeach; ?>
                         </tbody>
                     </table>
                     <?php if ($total_transactions > 10): ?>
                         <div style="padding: 15px 25px; border-top: 1px solid #e0e0e0; background: #f9fafb;">
-                            <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards', 'user_id' => $user_id), admin_url('admin.php'))); ?>" class="button">
+                            <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-point-transactions', 'user_id' => $user_id), admin_url('admin.php'))); ?>" class="button">
                                 <?php esc_html_e('View All Transactions', 'twork-rewards'); ?>
                             </a>
                         </div>
