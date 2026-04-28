@@ -24,21 +24,47 @@ class InAppNotification {
 
   /// Create from JSON
   factory InAppNotification.fromJson(Map<String, dynamic> json) {
+    // OLD CODE:
+    // id: json['id'] as String,
+    // title: json['title'] as String,
+    // body: json['body'] as String,
+    // ...
+    //
+    // New Code: safe parsing with fallbacks to avoid release/runtime cast crashes.
     return InAppNotification(
-      id: json['id'] as String,
-      title: json['title'] as String,
-      body: json['body'] as String,
+      id: _asString(json['id']) ?? '',
+      title: _asString(json['title']) ?? '',
+      body: _asString(json['body']) ?? '',
       type: NotificationType.values.firstWhere(
-        (e) => e.toString() == json['type'],
+        (e) => e.toString() == _asString(json['type']),
         orElse: () => NotificationType.info,
       ),
       // Old Code: createdAt: DateTime.parse(json['createdAt'] as String),
       createdAt: parseCreatedAtFromJson(json),
-      isRead: json['isRead'] as bool? ?? false,
-      data: json['data'] as Map<String, dynamic>?,
-      imageUrl: json['imageUrl'] as String?,
-      actionUrl: json['actionUrl'] as String?,
+      isRead: _asBool(json['isRead']),
+      data: _asMap(json['data']),
+      imageUrl: _asString(json['imageUrl']),
+      actionUrl: _asString(json['actionUrl']),
     );
+  }
+
+  static String? _asString(dynamic v) {
+    if (v == null) return null;
+    if (v is String) return v;
+    return v.toString();
+  }
+
+  static bool _asBool(dynamic v) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    final s = v?.toString().trim().toLowerCase();
+    return s == 'true' || s == '1' || s == 'yes';
+  }
+
+  static Map<String, dynamic>? _asMap(dynamic v) {
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return null;
   }
 
   /// Parses [createdAt] from storage/API keys; normalizes to a consistent [DateTime] instant.

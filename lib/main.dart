@@ -1,4 +1,5 @@
 import 'package:ecommerce_int2/screens/splash_page.dart';
+import 'dart:async';
 import 'package:ecommerce_int2/screens/orders/order_details_page.dart';
 import 'package:ecommerce_int2/screens/points/point_history_page.dart';
 import 'package:ecommerce_int2/screens/main/main_page.dart';
@@ -187,6 +188,8 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  Timer? _releaseFallbackSyncTimer;
+
   @override
   void initState() {
     super.initState();
@@ -194,9 +197,16 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
     // Start polling after frame is built (when providers are ready)
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // OLD CODE:
+      // _startActiveSyncWithRetry();
+      // _setupPushNotificationCallbacks();
+      // _initializeUsageTracking();
+      //
+      // New Code:
       _startActiveSyncWithRetry();
       _setupPushNotificationCallbacks();
       _initializeUsageTracking();
+      _startReleaseFallbackSyncLoop();
     });
   }
 
@@ -500,6 +510,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _releaseFallbackSyncTimer?.cancel();
+    _releaseFallbackSyncTimer = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -509,6 +521,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       // App came to foreground - start active polling for near-instant notifications
       _startActiveSync();
+      _startReleaseFallbackSyncLoop();
 
       // Refresh notification count when app comes to foreground
       try {
@@ -563,6 +576,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         state == AppLifecycleState.inactive) {
       // App going to background - stop active polling to save battery
       _stopActiveSync();
+      _stopReleaseFallbackSyncLoop();
 
       // Old Code: no immediate background task nudge for auto-run poll lifecycle.
       // New Code: schedule one-off background tick so backend keeps progressing
@@ -573,12 +587,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ).catchError((e) {
           Logger.warning('Failed scheduling background auto-run poll tick: $e',
               tag: 'Main', error: e);
+          return false;
         });
       }
 
       // End usage tracking session when app goes to background
       _handleUsageTrackingPause();
     } else if (state == AppLifecycleState.detached) {
+      _stopReleaseFallbackSyncLoop();
       // Old Code: detached only ended usage tracking.
       // New Code: request one last best-effort server tick before termination.
       if (!kIsWeb) {
@@ -589,6 +605,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
               'Failed scheduling detached auto-run poll background tick: $e',
               tag: 'Main',
               error: e);
+          return false;
         });
       }
       // App is being terminated - end session
@@ -703,6 +720,51 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Stop active sync polling when app goes to background
   void _stopActiveSync() {
     ActiveSyncService().stopPolling();
+  }
+
+  void _startReleaseFallbackSyncLoop() {
+    if (kIsWeb) {
+      return;
+    }
+
+    // Keep release fallback sync lean and idempotent.
+    _releaseFallbackSyncTimer?.cancel();
+    _releaseFallbackSyncTimer = Timer.periodic(
+      const Duration(seconds: 75),
+      (_) => _runReleaseFallbackSync(),
+    );
+    _runReleaseFallbackSync();
+  }
+
+  void _stopReleaseFallbackSyncLoop() {
+    _releaseFallbackSyncTimer?.cancel();
+    _releaseFallbackSyncTimer = null;
+  }
+
+  Future<void> _runReleaseFallbackSync() async {
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      if (!authProvider.isAuthenticated || authProvider.user == null) {
+        return;
+      }
+
+      final userIdString = authProvider.user!.id.toString();
+      await Future.wait([
+        PointProvider.instance.loadBalance(userIdString, forceRefresh: true),
+        PointProvider.instance.loadTransactions(userIdString, forceRefresh: true),
+      ]);
+      Logger.info(
+        'Release fallback sync completed for user=$userIdString',
+        tag: 'Main',
+      );
+    } catch (e, stackTrace) {
+      Logger.warning(
+        'Release fallback sync failed: $e',
+        tag: 'Main',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   @override

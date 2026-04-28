@@ -188,7 +188,9 @@ class PointTransaction {
           : json['expiresAt'] != null
               ? _parseServerDateTime(json['expiresAt'])
               : null,
-      isExpired: json['is_expired'] ?? json['isExpired'] ?? false,
+      // OLD CODE: isExpired: json['is_expired'] ?? json['isExpired'] ?? false,
+      // New Code: safe bool parsing from bool/int/string payloads.
+      isExpired: _parseBool(json['is_expired'] ?? json['isExpired']),
       status: PointTransactionStatusExtension.fromString(
           json['status']?.toString() ?? 'approved'),
     );
@@ -234,6 +236,14 @@ class PointTransaction {
     final asDouble = double.tryParse(str);
     if (asDouble != null) return asDouble.toInt();
     return 0;
+  }
+
+  static bool _parseBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value == null) return false;
+    final s = value.toString().trim().toLowerCase();
+    return s == 'true' || s == '1' || s == 'yes';
   }
 
   /// Convert Myanmar time back to UTC for storage

@@ -238,6 +238,7 @@ class PushNotificationService {
   // We still apply the FCM `currentBalance` snapshot instantly to update UI.
   final Map<String, DateTime> _lastPointsHardSyncAtByUser = {};
   static const Duration _pointsHardSyncCooldown = Duration(seconds: 3);
+  Timer? _tokenRecoveryTimer;
 
   /// Callback for refreshing orders when notification arrives
   /// Set this from main.dart or app initialization
@@ -306,7 +307,12 @@ class PushNotificationService {
       if (_fcmToken == null || _fcmToken!.isEmpty) {
         await _getFCMToken();
       } else {
-        await _sendTokenToBackend(_fcmToken!);
+        final uploaded = await _sendTokenToBackend(_fcmToken!);
+        if (!uploaded) {
+          _scheduleTokenRecovery(
+            reason: 'post-auth reconcile upload failed',
+          );
+        }
       }
     } catch (e, stackTrace) {
       Logger.error(
@@ -326,6 +332,8 @@ class PushNotificationService {
     _fcmMessageSubscriptions.clear();
     _fcmTokenRefreshSubscription?.cancel();
     _fcmTokenRefreshSubscription = null;
+    _tokenRecoveryTimer?.cancel();
+    _tokenRecoveryTimer = null;
     Logger.info('FCM messaging subscriptions disposed', tag: 'PushNotification');
   }
 
@@ -434,6 +442,9 @@ class PushNotificationService {
         await _configureLocalNotifications();
 
         _isInitialized = true;
+        // New Code: ensure backend token registration is eventually consistent
+        // even when release startup races with secure-storage/session hydration.
+        _scheduleTokenRecovery(reason: 'initial release reliability check');
         Logger.info('PushNotificationService initialized successfully',
             tag: 'PushNotification');
       } else if (settings.authorizationStatus ==
@@ -444,6 +455,7 @@ class PushNotificationService {
         await _configureMessageHandlers();
         await _configureLocalNotifications();
         _isInitialized = true;
+        _scheduleTokenRecovery(reason: 'provisional permission reliability check');
       } else {
         Logger.warning('User declined notification permission',
             tag: 'PushNotification');
@@ -467,7 +479,10 @@ class PushNotificationService {
             tag: 'PushNotification');
 
         // Send token to backend
-        await _sendTokenToBackend(_fcmToken!);
+        final uploaded = await _sendTokenToBackend(_fcmToken!);
+        if (!uploaded) {
+          _scheduleTokenRecovery(reason: 'initial token upload failed');
+        }
       } else {
         Logger.warning('FCM token is null', tag: 'PushNotification');
       }
@@ -478,7 +493,86 @@ class PushNotificationService {
   }
 
   /// Send FCM token to backend server
-  Future<void> _sendTokenToBackend(String token) async {
+  // OLD CODE:
+  // Future<void> _sendTokenToBackend(String token) async {
+  //   try {
+  //     // Get user ID from secure storage
+  //     final userJson = await _secureStorage.read(key: 'user_data');
+  //
+  //     if (userJson == null) {
+  //       Logger.info('No user data found, skipping token upload',
+  //           tag: 'PushNotification');
+  //       return;
+  //     }
+  //
+  //     final userData = json.decode(userJson) as Map<String, dynamic>;
+  //     final userId = userData['id']?.toString();
+  //
+  //     if (userId == null || userId.isEmpty || userId == '0') {
+  //       Logger.info('No valid user ID found, skipping token upload',
+  //           tag: 'PushNotification');
+  //       return;
+  //     }
+  //
+  //     Logger.info('Uploading FCM token to backend for user: $userId',
+  //         tag: 'PushNotification');
+  //
+  //     // Upload FCM token to backend server
+  //     try {
+  //       final backendUrl = _getBackendUrl();
+  //       if (backendUrl == null || backendUrl.isEmpty) {
+  //         Logger.info('Backend URL not configured, skipping token upload',
+  //             tag: 'PushNotification');
+  //         Logger.info('Configure backend URL in lib/utils/app_config.dart',
+  //             tag: 'PushNotification');
+  //         return;
+  //       }
+  //
+  //       final response = await ApiService.executeWithRetry(
+  //         () => ApiService.post(
+  //           AppConfig.backendRegisterTokenEndpoint,
+  //           skipAuth: false,
+  //           headers: const <String, dynamic>{
+  //             'Content-Type': 'application/json',
+  //           },
+  //           data: <String, dynamic>{
+  //             'userId': userId,
+  //             'fcmToken': token,
+  //             'platform': Platform.isAndroid ? 'android' : 'ios',
+  //           },
+  //         ),
+  //         context: 'registerFcmToken',
+  //         timeout: const Duration(seconds: 10),
+  //       );
+  //
+  //       if (response != null && ApiService.isSuccessResponse(response)) {
+  //         Logger.info('✅ FCM token uploaded successfully to backend',
+  //             tag: 'PushNotification');
+  //       } else {
+  //         Logger.warning(
+  //             'Failed to upload FCM token: ${response?.statusCode}',
+  //             tag: 'PushNotification');
+  //       }
+  //     } on TimeoutException {
+  //       Logger.warning(
+  //           'Backend token upload timeout - continuing without backend sync',
+  //           tag: 'PushNotification');
+  //     } catch (e) {
+  //       Logger.warning(
+  //           'Backend not available - continuing without backend sync: $e',
+  //           tag: 'PushNotification');
+  //       // Don't fail the entire FCM initialization if backend is not available
+  //     }
+  //   } catch (e) {
+  //     Logger.error('Failed to send FCM token to backend: $e',
+  //         tag: 'PushNotification', error: e);
+  //   }
+  // }
+  //
+  // New Code:
+  // Return explicit success/failure so release-mode recovery can retry when
+  // startup/login timing causes token sync to be skipped.
+  Future<bool> _sendTokenToBackend(String token) async {
     try {
       // Get user ID from secure storage
       final userJson = await _secureStorage.read(key: 'user_data');
@@ -486,7 +580,7 @@ class PushNotificationService {
       if (userJson == null) {
         Logger.info('No user data found, skipping token upload',
             tag: 'PushNotification');
-        return;
+        return false;
       }
 
       final userData = json.decode(userJson) as Map<String, dynamic>;
@@ -495,7 +589,7 @@ class PushNotificationService {
       if (userId == null || userId.isEmpty || userId == '0') {
         Logger.info('No valid user ID found, skipping token upload',
             tag: 'PushNotification');
-        return;
+        return false;
       }
 
       Logger.info('Uploading FCM token to backend for user: $userId',
@@ -509,7 +603,7 @@ class PushNotificationService {
               tag: 'PushNotification');
           Logger.info('Configure backend URL in lib/utils/app_config.dart',
               tag: 'PushNotification');
-          return;
+          return false;
         }
 
         final response = await ApiService.executeWithRetry(
@@ -532,25 +626,50 @@ class PushNotificationService {
         if (response != null && ApiService.isSuccessResponse(response)) {
           Logger.info('✅ FCM token uploaded successfully to backend',
               tag: 'PushNotification');
+          return true;
         } else {
           Logger.warning(
               'Failed to upload FCM token: ${response?.statusCode}',
               tag: 'PushNotification');
+          return false;
         }
       } on TimeoutException {
         Logger.warning(
             'Backend token upload timeout - continuing without backend sync',
             tag: 'PushNotification');
+        return false;
       } catch (e) {
         Logger.warning(
             'Backend not available - continuing without backend sync: $e',
             tag: 'PushNotification');
         // Don't fail the entire FCM initialization if backend is not available
+        return false;
       }
     } catch (e) {
       Logger.error('Failed to send FCM token to backend: $e',
           tag: 'PushNotification', error: e);
+      return false;
     }
+  }
+
+  void _scheduleTokenRecovery({required String reason}) {
+    _tokenRecoveryTimer?.cancel();
+    Logger.info(
+      'Scheduling token recovery sync: $reason',
+      tag: 'PushNotification',
+    );
+    _tokenRecoveryTimer = Timer(const Duration(seconds: 8), () async {
+      try {
+        await syncFcmTokenToBackendForCurrentUser();
+      } catch (e, stackTrace) {
+        Logger.error(
+          'Token recovery sync failed: $e',
+          tag: 'PushNotification',
+          error: e,
+          stackTrace: stackTrace,
+        );
+      }
+    });
   }
 
   /// Configure message handlers
@@ -608,11 +727,25 @@ class PushNotificationService {
     }
 
     // Handle FCM token refresh
+    // OLD CODE:
+    // _fcmTokenRefreshSubscription =
+    //     _firebaseMessaging.onTokenRefresh.listen((newToken) {
+    //   Logger.info('FCM token refreshed', tag: 'PushNotification');
+    //   _fcmToken = newToken;
+    //   _sendTokenToBackend(newToken);
+    // });
+    //
+    // New Code:
     _fcmTokenRefreshSubscription =
         _firebaseMessaging.onTokenRefresh.listen((newToken) {
       Logger.info('FCM token refreshed', tag: 'PushNotification');
       _fcmToken = newToken;
-      _sendTokenToBackend(newToken);
+      unawaited(() async {
+        final uploaded = await _sendTokenToBackend(newToken);
+        if (!uploaded) {
+          _scheduleTokenRecovery(reason: 'token refresh upload failed');
+        }
+      }());
     });
 
     Logger.info('Message handlers configured', tag: 'PushNotification');
