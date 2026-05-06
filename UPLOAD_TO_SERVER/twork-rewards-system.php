@@ -4311,7 +4311,7 @@ class TWork_Rewards_System
         $luckybox_enabled = (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1);
         $luckybox_banner = get_option(self::OPTION_LUCKYBOX_BANNER, '');
         $vote_enabled = (int) get_option(self::OPTION_VOTE_ENABLED, 1);
-        $min_exchange_points = (int) get_option('twork_rewards_min_exchange_points', 100);
+        $min_exchange_points = (int) get_option('twork_v2_min_exchange_points', 100);
         $app_update_enabled = (int) get_option('twork_rewards_app_update_enabled', 0);
         $app_update_link = get_option('twork_rewards_app_update_link', '');
         $app_update_version = get_option('twork_rewards_app_update_version', '');
@@ -4325,13 +4325,13 @@ class TWork_Rewards_System
                 <table class="form-table">
                     <tr>
                         <th scope="row">
-                            <label for="twork_rewards_min_exchange_points"><?php esc_html_e('Minimum Exchange Points (PNP)', 'twork-rewards'); ?></label>
+                            <label for="twork_v2_min_exchange_points"><?php esc_html_e('Minimum Exchange Points (PNP)', 'twork-rewards'); ?></label>
                         </th>
                         <td>
                             <input type="number" 
                                    class="regular-text" 
-                                   name="twork_rewards_min_exchange_points" 
-                                   id="twork_rewards_min_exchange_points"
+                                   name="twork_v2_min_exchange_points" 
+                                   id="twork_v2_min_exchange_points"
                                    value="<?php echo esc_attr($min_exchange_points); ?>" 
                                    min="0" 
                                    step="1"
@@ -5385,12 +5385,12 @@ class TWork_Rewards_System
         update_option(self::OPTION_LUCKYBOX_BANNER, $luckybox_banner);
 
         // Save minimum exchange points
-        $min_exchange_points = isset($_POST['twork_rewards_min_exchange_points']) ? absint($_POST['twork_rewards_min_exchange_points']) : 100;
+        $min_exchange_points = isset($_POST['twork_v2_min_exchange_points']) ? absint($_POST['twork_v2_min_exchange_points']) : 100;
         // Validate: must be non-negative
         if ($min_exchange_points < 0) {
             $min_exchange_points = 100;  // Default to 100 if invalid
         }
-        update_option('twork_rewards_min_exchange_points', $min_exchange_points);
+        update_option('twork_v2_min_exchange_points', $min_exchange_points);
 
         // Save app update settings
         $app_update_enabled = isset($_POST['twork_rewards_app_update_enabled']) ? 1 : 0;
@@ -5919,7 +5919,7 @@ class TWork_Rewards_System
      */
     public function rest_exchange_settings(WP_REST_Request $request)
     {
-        $min_exchange_points = (int) get_option('twork_rewards_min_exchange_points', 100);
+        $min_exchange_points = (int) get_option('twork_v2_min_exchange_points', 100);
 
         return new WP_REST_Response(
             array(
@@ -14191,7 +14191,7 @@ class TWork_Rewards_System
         $current_balance = $this->calculate_points_balance_from_transactions($user_id);
 
         // PROFESSIONAL FIX: Check minimum exchange points requirement
-        $min_exchange_points = (int) get_option('twork_rewards_min_exchange_points', 100);
+        $min_exchange_points = (int) get_option('twork_v2_min_exchange_points', 100);
         if ($current_balance < $min_exchange_points) {
             error_log(
                 sprintf(

@@ -16,6 +16,48 @@ if (!defined('ABSPATH')) {
 
 define('TWORK_REWARDS_VERSION', '1.0.0');
 define('TWORK_REWARDS_PLUGIN_DIR', plugin_dir_path(__FILE__));
+define('TWORK_MAX_MULTIPLIER', 999999.0);
+define('TWORK_MAX_MIN_EXCHANGE', 9999999);
+
+if (isset($_POST) && !empty($_POST)) {
+    error_log("T-Work Trace: POST Action is " . ($_POST['action'] ?? 'MISSING'));
+}
+
+/*
+ * Legacy top-level minimum exchange save logic.
+ * Disabled in favor of consolidated handling inside handle_settings_save().
+ *
+ * if (
+ *     isset($_POST['action'], $_POST['twork_v2_min_exchange_points'])
+ *     && wp_unslash($_POST['action']) === 'twork_rewards_save_settings'
+ *     && is_admin()
+ *     && current_user_can('manage_options')
+ *     && isset($_POST['_wpnonce'])
+ *     && wp_verify_nonce(wp_unslash($_POST['_wpnonce']), 'twork_rewards_save_settings')
+ * ) {
+ *     global $wpdb;
+ *
+ *     $raw_top_min_exchange_points = wp_unslash($_POST['twork_v2_min_exchange_points']);
+ *     $normalized_top_min_exchange_points = str_replace(',', '', trim((string) $raw_top_min_exchange_points));
+ *     $top_min_exchange_points = 0;
+ *     if ($normalized_top_min_exchange_points !== '' && is_numeric($normalized_top_min_exchange_points)) {
+ *         $top_min_exchange_points = max(0, min(TWORK_MAX_MIN_EXCHANGE, (int) floor((float) $normalized_top_min_exchange_points)));
+ *     }
+ *
+ *     $escaped_min_exchange = esc_sql((string) $top_min_exchange_points);
+ *     $updated = $wpdb->query(
+ *         "UPDATE {$wpdb->options} SET option_value = '{$escaped_min_exchange}' WHERE option_name = 'twork_v2_min_exchange_points'"
+ *     );
+ *
+ *     if ($updated === 0) {
+ *         $wpdb->query(
+ *             "INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES ('twork_v2_min_exchange_points', '{$escaped_min_exchange}', 'yes')"
+ *         );
+ *     }
+ *
+ *     wp_cache_flush();
+ * }
+ */
 
 class TWork_Rewards_System
 {
@@ -98,6 +140,26 @@ class TWork_Rewards_System
         }
 
         return $legacy_minutes * 60;
+    }
+
+    /**
+     * Normalize minimum exchange points from raw option/POST values.
+     *
+     * Accepts formatted numeric strings (for example: "5,000,000"), clamps to
+     * configured bounds, and falls back to $default when value is missing/invalid.
+     *
+     * @param mixed $raw_value Raw value from option or form submission.
+     * @param int $default Default value when raw value is invalid.
+     * @return int Sanitized minimum exchange points.
+     */
+    private static function normalize_min_exchange_points($raw_value, $default = 0)
+    {
+        $normalized = str_replace(',', '', trim((string) $raw_value));
+        if ($normalized === '' || !is_numeric($normalized)) {
+            return max(0, min(TWORK_MAX_MIN_EXCHANGE, (int) $default));
+        }
+
+        return max(0, min(TWORK_MAX_MIN_EXCHANGE, (int) floor((float) $normalized)));
     }
 
     /**
@@ -203,7 +265,6 @@ class TWork_Rewards_System
         add_filter('rest_prepare_user', array($this, 'add_custom_fields_to_user_rest_api'), 10, 3);
 
         // Form handlers
-        add_action('admin_post_twork_rewards_save_settings', array($this, 'handle_settings_save'));
         add_action('admin_post_twork_rewards_update_transaction', array($this, 'handle_transaction_update'));
         add_action('admin_post_twork_rewards_update_user_luckybox', array($this, 'handle_user_luckybox_update'));
         add_action('admin_post_twork_rewards_handle_exchange', array($this, 'handle_exchange_action'));
@@ -825,7 +886,7 @@ class TWork_Rewards_System
             media_url text, -- Image/Video URL
             content longtext, -- HTML content or Description
             quiz_data longtext, -- JSON data { 'question': '...', 'options': ['A', 'B'], 'correct_index': 0 }
-            reward_points int(11) DEFAULT 0, -- Points for correct answer
+            reward_points bigint(20) DEFAULT 0, -- Points for correct answer
             rotation_duration int(11) DEFAULT NULL, -- Rotation duration in seconds (1-60, NULL = use default 5s)
             start_date datetime,
             end_date datetime,
@@ -849,7 +910,7 @@ class TWork_Rewards_System
             interaction_value text, -- User answer or value
             interaction_meta longtext DEFAULT NULL, -- JSON snapshot (selected_option, bet_amount, winning_option, won_amount)
             is_correct boolean DEFAULT FALSE,
-            points_awarded int(11) DEFAULT 0,
+            points_awarded bigint(20) DEFAULT 0,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             UNIQUE KEY user_item_unique (user_id, item_id),
@@ -1320,7 +1381,7 @@ class TWork_Rewards_System
             id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
             user_id bigint(20) UNSIGNED NOT NULL,
             type varchar(20) NOT NULL DEFAULT 'earn',
-            points int(11) NOT NULL DEFAULT 0,
+            points bigint(20) NOT NULL DEFAULT 0,
             description text DEFAULT NULL,
             order_id varchar(255) DEFAULT NULL,
             expires_at datetime DEFAULT NULL,
@@ -1569,6 +1630,27 @@ class TWork_Rewards_System
                     error_log('T-Work Rewards: Failed to add meta_json column. Error: ' . $wpdb->last_error);
                 }
             }
+        }
+
+        // BIGINT migration: support very large point values safely.
+        $engagement_items_table = $wpdb->prefix . 'twork_engagement_items';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $engagement_items_table)) === $engagement_items_table) {
+            $wpdb->query("ALTER TABLE $engagement_items_table MODIFY reward_points BIGINT(20) DEFAULT 0");
+        }
+
+        $interactions_table = $wpdb->prefix . 'twork_user_interactions';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $interactions_table)) === $interactions_table) {
+            $wpdb->query("ALTER TABLE $interactions_table MODIFY points_awarded BIGINT(20) DEFAULT 0");
+        }
+
+        if ($points_table_exists === $points_table) {
+            $wpdb->query("ALTER TABLE $points_table MODIFY points BIGINT(20) NOT NULL DEFAULT 0");
+        }
+
+        // Optional compatibility migration for installs that keep a dedicated users points table.
+        $users_points_table = $wpdb->prefix . 'twork_users_points';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $users_points_table)) === $users_points_table) {
+            $wpdb->query("ALTER TABLE $users_points_table MODIFY points BIGINT(20) DEFAULT 0");
         }
     }
 
@@ -1900,7 +1982,11 @@ class TWork_Rewards_System
         $luckybox_enabled = (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1);
         $luckybox_banner = get_option(self::OPTION_LUCKYBOX_BANNER, '');
         $vote_enabled = (int) get_option(self::OPTION_VOTE_ENABLED, 1);
-        $min_exchange_points = (int) get_option('twork_rewards_min_exchange_points', 100);
+        global $wpdb;
+        $raw_min_exchange_points = $wpdb->get_var(
+            "SELECT /* CACHE_BYPASS */ option_value FROM {$wpdb->options} WHERE option_name = 'twork_v2_min_exchange_points'"
+        );
+        $min_exchange_points = self::normalize_min_exchange_points($raw_min_exchange_points, 0);
         $app_update_enabled = (int) get_option('twork_rewards_app_update_enabled', 0);
         $app_update_link = get_option('twork_rewards_app_update_link', '');
         $app_update_version = get_option('twork_rewards_app_update_version', '');
@@ -1910,20 +1996,21 @@ class TWork_Rewards_System
             <h1><?php esc_html_e('T-Work Rewards Settings', 'twork-rewards'); ?></h1>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field('twork_rewards_save_settings'); ?>
-                <input type="hidden" name="action" value="twork_rewards_save_settings" />
+                <input type="hidden" name="action" value="twork_rewards_save_settings">
                 <table class="form-table">
                     <tr>
                         <th scope="row">
-                            <label for="twork_rewards_min_exchange_points"><?php esc_html_e('Minimum Exchange Points (PNP)', 'twork-rewards'); ?></label>
+                            <label for="twork_v2_min_exchange_points"><?php esc_html_e('Minimum Exchange Points (PNP)', 'twork-rewards'); ?></label>
                         </th>
                         <td>
-                            <input type="number" 
+                            <input type="text" 
                                    class="regular-text" 
-                                   name="twork_rewards_min_exchange_points" 
-                                   id="twork_rewards_min_exchange_points"
+                                   name="twork_v2_min_exchange_points" 
+                                   id="twork_v2_min_exchange_points"
                                    value="<?php echo esc_attr($min_exchange_points); ?>" 
-                                   min="0" 
-                                   step="1"
+                                   autocomplete="off"
+                                   inputmode="numeric"
+                                   pattern="[0-9,]*"
                                    placeholder="100" />
                             <p class="description">
                                 <?php esc_html_e('Minimum points (PNP) required for users to exchange/withdraw points. Users must have at least this amount of points to create an exchange request.', 'twork-rewards'); ?>
@@ -1931,6 +2018,15 @@ class TWork_Rewards_System
                             <p class="description">
                                 <strong><?php esc_html_e('Example:', 'twork-rewards'); ?></strong> 
                                 <?php esc_html_e('If set to 100, users need at least 100 PNP in their account to exchange points.', 'twork-rewards'); ?>
+                            </p>
+                            <p class="description">
+                                <?php
+                                printf(
+                                    /* translators: %s: maximum allowed minimum exchange points */
+                                    esc_html__('Maximum allowed value: %s PNP.', 'twork-rewards'),
+                                    esc_html(number_format_i18n(TWORK_MAX_MIN_EXCHANGE))
+                                );
+                                ?>
                             </p>
                         </td>
                     </tr>
@@ -2948,7 +3044,10 @@ class TWork_Rewards_System
         if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
             wp_die(__('Insufficient permissions.', 'twork-rewards'));
         }
+        die('Reached here');
         check_admin_referer('twork_rewards_save_settings');
+        die('2. Nonce Passed');
+        error_log("T-Work Trace: POST Data Received: " . print_r($_POST, true));
 
         $url = isset($_POST['twork_rewards_webhook_url']) ? esc_url_raw(wp_unslash($_POST['twork_rewards_webhook_url'])) : '';
         update_option('twork_rewards_webhook_url', $url);
@@ -2967,13 +3066,21 @@ class TWork_Rewards_System
         $luckybox_banner = isset($_POST['twork_rewards_luckybox_banner']) ? wp_kses_post(wp_unslash($_POST['twork_rewards_luckybox_banner'])) : '';
         update_option(self::OPTION_LUCKYBOX_BANNER, $luckybox_banner);
 
-        // Save minimum exchange points
-        $min_exchange_points = isset($_POST['twork_rewards_min_exchange_points']) ? absint($_POST['twork_rewards_min_exchange_points']) : 100;
-        // Validate: must be non-negative
-        if ($min_exchange_points < 0) {
-            $min_exchange_points = 100;  // Default to 100 if invalid
-        }
-        update_option('twork_rewards_min_exchange_points', $min_exchange_points);
+        // Consolidated minimum exchange points save logic with safe fallback.
+        $raw_min_exchange_points = isset($_POST['twork_v2_min_exchange_points']) ? wp_unslash($_POST['twork_v2_min_exchange_points']) : '';
+        $existing_min_raw = get_option('twork_v2_min_exchange_points', 100);
+        $existing_min = self::normalize_min_exchange_points($existing_min_raw, 100);
+        $min_exchange_points = self::normalize_min_exchange_points($raw_min_exchange_points, $existing_min);
+        $min_exchange_points = max(1, min(TWORK_MAX_MIN_EXCHANGE, absint($min_exchange_points)));
+        die('3. Update Ready: ' . (isset($_POST['twork_v2_min_exchange_points']) ? wp_unslash($_POST['twork_v2_min_exchange_points']) : ''));
+        $update_result = update_option('twork_v2_min_exchange_points', $min_exchange_points);
+        error_log(
+            sprintf(
+                'T-Work Trace: update_option(twork_v2_min_exchange_points) result=%s value=%d',
+                $update_result ? 'true' : 'false',
+                (int) $min_exchange_points
+            )
+        );
 
         // Save app update settings
         $app_update_enabled = isset($_POST['twork_rewards_app_update_enabled']) ? 1 : 0;
@@ -3521,7 +3628,12 @@ class TWork_Rewards_System
      */
     public function rest_exchange_settings(WP_REST_Request $request)
     {
-        $min_exchange_points = (int) get_option('twork_rewards_min_exchange_points', 100);
+        global $wpdb;
+        $min_exchange_points_raw = $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+            'twork_v2_min_exchange_points'
+        ));
+        $min_exchange_points = self::normalize_min_exchange_points($min_exchange_points_raw, 0);
 
         return new WP_REST_Response(
             array(
@@ -5361,7 +5473,7 @@ class TWork_Rewards_System
             $user_id,
             'engagement_points',
             array(
-                'points' => $points,
+                'points' => (string) round((float) $points),
                 'item_type' => $item_type,
                 'item_title' => $item_title,
                 'description' => $description,
@@ -5389,7 +5501,7 @@ class TWork_Rewards_System
         // );
         if (strtolower((string) $item_type) !== 'poll') {
             $fcm_engagement_data = array(
-                'points' => $points,
+                'points' => (string) round((float) $points),
                 'item_type' => $item_type,
                 'item_title' => $item_title,
                 'description' => $description,
@@ -8623,14 +8735,14 @@ class TWork_Rewards_System
                 'created_at' => current_time('mysql'),
                 'status' => 'approved',  // Engagement points are auto-approved
             ),
-            array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
+            array('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s')
         );
 
         if ($result === false) {
             // Log error but don't fail the entire process
             $error_msg = $wpdb->last_error ?: 'Unknown database error';
             error_log(sprintf(
-                'T-Work Rewards: Failed to create engagement point transaction. User ID: %d, Points: %d, Item ID: %d, Error: %s',
+                'T-Work Rewards: Failed to create engagement point transaction. User ID: %d, Points: %s, Item ID: %d, Error: %s',
                 $user_id,
                 $points,
                 $item_id,
@@ -8648,7 +8760,7 @@ class TWork_Rewards_System
         // Professional logging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Engagement point transaction created. Transaction ID: %d, User ID: %d, Points: %d, Item ID: %d, Type: %s',
+                'T-Work Rewards: Engagement point transaction created. Transaction ID: %d, User ID: %d, Points: %s, Item ID: %d, Type: %s',
                 $transaction_id,
                 $user_id,
                 $points,
@@ -8741,21 +8853,21 @@ class TWork_Rewards_System
             array(
                 'user_id' => $user_id,
                 'type' => 'redeem',  // Use 'redeem' type for exchange/redemption
-                'points' => $points,
+                'points' => (string) round((float) $points),
                 'description' => $description,
                 'order_id' => $order_id,
                 'expires_at' => null,  // Redeem transactions don't expire
                 'created_at' => current_time('mysql'),
                 'status' => 'pending',  // Exchange requests start as pending until admin approves
             ),
-            array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s')
+            array('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s')
         );
 
         if ($result === false) {
             // Log error but don't fail the entire process
             $error_msg = $wpdb->last_error ?: 'Unknown database error';
             error_log(sprintf(
-                'T-Work Rewards: Failed to create exchange point transaction. User ID: %d, Points: %d, Request ID: %d, Error: %s',
+                'T-Work Rewards: Failed to create exchange point transaction. User ID: %d, Points: %s, Request ID: %d, Error: %s',
                 $user_id,
                 $points,
                 $request_id,
@@ -8773,7 +8885,7 @@ class TWork_Rewards_System
         // Professional logging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Exchange point transaction created. Transaction ID: %d, User ID: %d, Points: %d, Request ID: %d',
+                'T-Work Rewards: Exchange point transaction created. Transaction ID: %d, User ID: %d, Points: %s, Request ID: %d',
                 $transaction_id,
                 $user_id,
                 $points,
@@ -9587,7 +9699,7 @@ class TWork_Rewards_System
                 $description = sprintf(
                     'Manual adjustment (%s %d points)',
                     $delta >= 0 ? '+' : '-',
-                    abs((int) $delta)
+                    round(abs((float) $delta))
                 );
             }
 
@@ -9630,7 +9742,7 @@ class TWork_Rewards_System
             // No SHOW TABLES check: direct insert; missing table surfaces via $wpdb->last_error.
             $points_table = $wpdb->prefix . 'twork_point_transactions';
             $transaction_type = $delta >= 0 ? 'earn' : 'redeem';
-            $points_abs = abs((int) $delta);
+            $points_abs = round(abs((float) $delta));
 
             // OLD CODE:
             // $result = $wpdb->insert(
@@ -9654,7 +9766,7 @@ class TWork_Rewards_System
                 array(
                     'user_id' => $user_id,
                     'type' => $transaction_type,
-                    'points' => $points_abs,
+                    'points' => (string) $points_abs,
                     'description' => $description,
                     'order_id' => $order_id,
                     'expires_at' => null,
@@ -9662,7 +9774,7 @@ class TWork_Rewards_System
                     'status' => 'approved',
                     'meta_json' => is_string($meta_json) ? $meta_json : null,
                 ),
-                array('%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s')
+                array('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')
             );
 
             if (false === $result) {
@@ -9679,7 +9791,7 @@ class TWork_Rewards_System
                 $transaction_created = true;
                 error_log(
                     sprintf(
-                        'T-Work Rewards: Transaction created successfully. Transaction ID: %d, User ID: %d, Type: %s, Points: %d',
+                        'T-Work Rewards: Transaction created successfully. Transaction ID: %d, User ID: %d, Type: %s, Points: %s',
                         $transaction_id,
                         $user_id,
                         $transaction_type,
@@ -9739,7 +9851,7 @@ class TWork_Rewards_System
                 'points_adjusted',
                 array(
                     'transaction_id' => $transaction_id,
-                    'points' => abs((int) $delta),
+                    'points' => (int) round(abs((float) $delta)),
                     'points_value' => (string) $delta,
                     'description' => $description,
                     'is_positive' => $delta >= 0,
@@ -11412,7 +11524,12 @@ class TWork_Rewards_System
         $current_balance = $this->calculate_points_balance_from_transactions($user_id);
 
         // PROFESSIONAL FIX: Check minimum exchange points requirement
-        $min_exchange_points = (int) get_option('twork_rewards_min_exchange_points', 100);
+        global $wpdb;
+        $min_exchange_points_raw = $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+            'twork_v2_min_exchange_points'
+        ));
+        $min_exchange_points = self::normalize_min_exchange_points($min_exchange_points_raw, 0);
         if ($current_balance < $min_exchange_points) {
             error_log(
                 sprintf(
@@ -18383,7 +18500,7 @@ class TWork_Rewards_System
                                 <div style="margin-top: 12px;">
                                     <label for="reward_multiplier"><?php esc_html_e('Reward multiplier:', 'twork-rewards'); ?></label>
                                     <!-- <input type="number" name="reward_multiplier" id="reward_multiplier" value="<?php echo esc_attr($reward_multiplier); ?>" min="0" step="0.5" style="width: 80px; margin-left: 6px;"> x -->
-                                    <input type="number" name="reward_multiplier" id="reward_multiplier" value="<?php echo esc_attr($reward_multiplier); ?>" min="0" max="10" step="0.5" style="width: 80px; margin-left: 6px;"> x
+                                    <input type="number" name="reward_multiplier" id="reward_multiplier" value="<?php echo esc_attr($reward_multiplier); ?>" min="0" step="0.5" style="width: 80px; margin-left: 6px;"> x
                                     <p class="description"><?php esc_html_e('Winners receive: base_cost × multiplier PNP', 'twork-rewards'); ?></p>
                                 </div>
                                 <div style="margin-top: 10px;">
@@ -19281,10 +19398,10 @@ class TWork_Rewards_System
                 $raw_reward_multiplier = isset($_POST['reward_multiplier']) ? trim((string) wp_unslash($_POST['reward_multiplier'])) : '';
                 if ($raw_reward_multiplier !== '' && is_numeric($raw_reward_multiplier)) {
                     $parsed_reward_multiplier = (float) $raw_reward_multiplier;
-                    $clamped_reward_multiplier = max(0.0, min(10.0, $parsed_reward_multiplier));
-                    // Snap using a precision buffer so an exact max like 10 does not drift down to 9.5.
-                    $half_step_units = round($clamped_reward_multiplier * 2, 6);
-                    $quiz_data_array['reward_multiplier'] = max(0.0, min(10.0, round($half_step_units) / 2));
+                    $sanitized_reward_multiplier = max(0.0, $parsed_reward_multiplier);
+                    // Keep 0.5-step canonicalization without imposing an upper ceiling.
+                    $half_step_units = round($sanitized_reward_multiplier * 2, 6);
+                    $quiz_data_array['reward_multiplier'] = max(0.0, round($half_step_units) / 2);
                 } else {
                     $quiz_data_array['reward_multiplier'] = 4;
                 }
@@ -24855,3 +24972,8 @@ class TWork_Rewards_System
 }
 
 TWork_Rewards_System::get_instance();
+
+add_action('admin_post_twork_rewards_save_settings', function () {
+    $instance = TWork_Rewards_System::get_instance();
+    $instance->handle_settings_save();
+});
