@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter_app_badger/flutter_app_badger.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/in_app_notification.dart';
 import '../utils/logger.dart';
@@ -16,6 +18,36 @@ class InAppNotificationService {
 
   /// When true, all `create*` writers no-op (FCM tray + data sync stay elsewhere).
   static const bool _suppressInternalNotificationWrites = true;
+  static const bool _forceDisablePersistentNotifications = true;
+
+  Future<void> _clearAppBadgeBestEffort() async {
+    if (kIsWeb) return;
+    try {
+      final isSupported = await FlutterAppBadger.isAppBadgeSupported();
+      if (isSupported) {
+        FlutterAppBadger.removeBadge();
+      }
+    } catch (e) {
+      Logger.warning('Unable to clear app badge: $e',
+          tag: 'InAppNotification', error: e);
+    }
+  }
+
+  /// Hard reset internal notification persistence and launcher badge.
+  Future<void> clearAllPersistentNotifications() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_notificationsKey);
+      // Keep a canonical empty payload to avoid stale JSON recovery patterns.
+      await prefs.setString(_notificationsKey, json.encode(<dynamic>[]));
+      await _clearAppBadgeBestEffort();
+      Logger.info('Persistent in-app notifications cleared',
+          tag: 'InAppNotification');
+    } catch (e, stackTrace) {
+      Logger.error('Error clearing persistent notifications: $e',
+          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
+    }
+  }
 
   /// Normalize notification timestamp for stable sorting.
   /// If date is missing/invalid, return epoch so it goes to the bottom in DESC order.
@@ -100,6 +132,10 @@ class InAppNotificationService {
 
   /// Save notification to storage
   Future<void> saveNotification(InAppNotification notification) async {
+    if (_forceDisablePersistentNotifications) {
+      await clearAllPersistentNotifications();
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final notifications = await getNotifications();
@@ -134,6 +170,10 @@ class InAppNotificationService {
 
   /// Get all notifications
   Future<List<InAppNotification>> getNotifications() async {
+    if (_forceDisablePersistentNotifications) {
+      await clearAllPersistentNotifications();
+      return [];
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final notificationsJson = prefs.getString(_notificationsKey);
@@ -224,14 +264,7 @@ class InAppNotificationService {
 
   /// Delete all notifications
   Future<void> deleteAllNotifications() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_notificationsKey);
-      Logger.info('All notifications deleted', tag: 'InAppNotification');
-    } catch (e, stackTrace) {
-      Logger.error('Error deleting all notifications: $e',
-          tag: 'InAppNotification', error: e, stackTrace: stackTrace);
-    }
+    await clearAllPersistentNotifications();
   }
 
   /// Create notification from order update
@@ -469,6 +502,10 @@ class InAppNotificationService {
 
   /// Save notifications to storage
   Future<void> _saveNotifications(List<InAppNotification> notifications) async {
+    if (_forceDisablePersistentNotifications) {
+      await clearAllPersistentNotifications();
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       // Ensure storage also remains in canonical latest-first order.

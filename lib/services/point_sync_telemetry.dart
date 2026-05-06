@@ -14,6 +14,15 @@ class PointSyncEvent {
   final String? userMessage;
   final bool userFacing;
 
+  const PointSyncEvent.message({
+    required this.transaction,
+    this.context = '',
+    required this.userMessage,
+  })  : success = true,
+        attempt = 0,
+        backoff = null,
+        userFacing = true;
+
   const PointSyncEvent.success({
     required this.transaction,
     required this.attempt,
@@ -41,6 +50,20 @@ class PointSyncTelemetry {
       StreamController<PointSyncEvent>.broadcast();
 
   static Stream<PointSyncEvent> get events => _controller.stream;
+
+  static void emitUserMessage({
+    required PointTransaction transaction,
+    required String context,
+    required String message,
+  }) {
+    _controller.add(
+      PointSyncEvent.message(
+        transaction: transaction,
+        context: context,
+        userMessage: message,
+      ),
+    );
+  }
 
   static void recordSuccess({
     required PointTransaction transaction,

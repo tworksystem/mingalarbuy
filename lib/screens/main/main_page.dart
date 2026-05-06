@@ -2231,14 +2231,25 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
     );
     */
 
-    // Consumer2 subscribes to [PointProvider] so balance/notifyListeners updates rebuild immediately
-    // (equivalent to Provider.of<PointProvider>(context, listen: true) for the subtree).
-    return Consumer2<AuthProvider, PointProvider>(
-      builder: (context, authProvider, pointProvider, _) {
+    // Keep auth subscription at top level; point value uses Selector below.
+    return Consumer<AuthProvider>(
+      builder: (context, authProvider, _) {
+        final pointProvider = context.read<PointProvider>();
+        final int balanceFromProvider =
+            context.select<PointProvider, int>((p) => p.currentBalance);
+        final bool pointIsLoading =
+            context.select<PointProvider, bool>((p) => p.isLoading);
+        final String? pointErrorMessage =
+            context.select<PointProvider, String?>((p) => p.errorMessage);
+        final bool pointInitialHydrateDone = context.select<PointProvider, bool>(
+          (p) => p.hasCompletedSessionInitialBalanceLoad,
+        );
+        final bool hasPointBalanceObject =
+            context.select<PointProvider, bool>((p) => p.balance != null);
         Logger.info(
-          'DEBUG_SYNC: My PNP Widget Rebuilt with balance: ${pointProvider.currentBalance} '
-          '(auth=${authProvider.isAuthenticated}, isLoading=${pointProvider.isLoading}, '
-          'error=${pointProvider.errorMessage})',
+          'DEBUG_SYNC: My PNP Widget Rebuilt with balance: $balanceFromProvider '
+          '(auth=${authProvider.isAuthenticated}, isLoading=$pointIsLoading, '
+          'error=$pointErrorMessage)',
           tag: 'MyPointWidget',
         );
         final theme = Theme.of(context);
@@ -2246,6 +2257,22 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
 
         if (!authProvider.isAuthenticated || authProvider.user == null) {
           return const SizedBox.shrink();
+        }
+
+        final syncNotice = context.select<PointProvider, String?>(
+          (p) => p.syncNoticeMessage,
+        );
+        if (syncNotice != null && syncNotice.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            final msg = pointProvider.consumeSyncNoticeMessage();
+            if (msg == null || msg.isEmpty || !context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(msg),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          });
         }
 
         /*
@@ -2306,7 +2333,6 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
 
         // Home My PNP must listen directly to PointProvider so stale user-meta values
         // (for example an old 16200 snapshot) never override the live balance.
-        final balanceFromProvider = pointProvider.currentBalance;
         Logger.info(
           'MyPointWidget - Using PointProvider balance directly: $balanceFromProvider',
           tag: 'MyPointWidget',
@@ -2337,16 +2363,15 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
 
         // NEW FIX: Do not show misleading "0" before first trustworthy hydrate; use ··· / strip.
         final bool trustworthyBalanceForUi =
-            pointProvider.hasCompletedSessionInitialBalanceLoad ||
-                pointProvider.balance != null;
+            pointInitialHydrateDone || hasPointBalanceObject;
         final bool showBalancePlaceholder = !trustworthyBalanceForUi;
-        final String displayBalance =
-            trustworthyBalanceForUi ? balanceFromProvider.toString() : '';
+        final int displayBalanceValue =
+            trustworthyBalanceForUi ? balanceFromProvider : 0;
         final bool showLoadingStrip = _isRefreshing ||
-            (pointProvider.isLoading && showBalancePlaceholder);
+            (pointIsLoading && showBalancePlaceholder);
         final bool showSyncWarning = !showLoadingStrip &&
-            pointProvider.errorMessage != null &&
-            pointProvider.errorMessage!.isNotEmpty;
+            pointErrorMessage != null &&
+            pointErrorMessage.isNotEmpty;
 
         return RepaintBoundary(
           child: Container(
@@ -2481,20 +2506,30 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                     ),
                                   ),
                                   const SizedBox(width: 6),
-                                  Text(
-                                    displayBalance,
-                                    style: theme.textTheme.headlineMedium
-                                        ?.copyWith(
-                                      color: colorScheme.primary,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 28,
-                                      height: 1.2,
-                                    ),
+                                  Selector<PointProvider, int>(
+                                    selector: (_, provider) =>
+                                        provider.currentBalance,
+                                    builder: (context, animatedBalance, __) {
+                                      final target = trustworthyBalanceForUi
+                                          ? animatedBalance
+                                          : displayBalanceValue;
+                                      return _AnimatedPointCounter(
+                                        value: target,
+                                        duration: const Duration(milliseconds: 650),
+                                        style: theme.textTheme.headlineMedium
+                                            ?.copyWith(
+                                          color: colorScheme.primary,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 28,
+                                          height: 1.2,
+                                        ),
+                                      );
+                                    },
                                   ),
                                   if (showSyncWarning) ...[
                                     const SizedBox(width: 8),
                                     Tooltip(
-                                      message: pointProvider.errorMessage!,
+                                      message: pointErrorMessage,
                                       child: IconButton(
                                         visualDensity: VisualDensity.compact,
                                         constraints: const BoxConstraints(
@@ -2555,6 +2590,44 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
           ),
         );
       },
+    );
+  }
+}
+
+class _AnimatedPointCounter extends ImplicitlyAnimatedWidget {
+  final int value;
+  final TextStyle? style;
+
+  const _AnimatedPointCounter({
+    required this.value,
+    required Duration duration,
+    this.style,
+  }) : super(duration: duration, curve: Curves.easeOutCubic);
+
+  @override
+  ImplicitlyAnimatedWidgetState<_AnimatedPointCounter> createState() =>
+      _AnimatedPointCounterState();
+}
+
+class _AnimatedPointCounterState
+    extends AnimatedWidgetBaseState<_AnimatedPointCounter> {
+  IntTween? _valueTween;
+
+  @override
+  void forEachTween(TweenVisitor<dynamic> visitor) {
+    _valueTween = visitor(
+      _valueTween,
+      widget.value,
+      (dynamic value) => IntTween(begin: value as int),
+    ) as IntTween?;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = _valueTween?.evaluate(animation) ?? widget.value;
+    return Text(
+      '$current',
+      style: widget.style,
     );
   }
 }

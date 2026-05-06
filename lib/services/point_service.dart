@@ -109,6 +109,28 @@ class PointService {
   static const int expirationWarningDays =
       30; // Warn when expiring within 30 days
 
+  // ---- Point sync retry policy (Phase 1) ----
+  //
+  // IMPORTANT:
+  // - We intentionally avoid nested retries (ApiService.executeWithRetry + our own retry)
+  //   because it multiplies latency in user-facing flows.
+  // - Point sync retry is now owned by PointService only.
+  static const _PointSyncRetryProfile _blockingSyncProfile =
+      _PointSyncRetryProfile(
+    maxAttempts: 2,
+    perAttemptTimeout: Duration(seconds: 10),
+    initialBackoff: Duration(seconds: 1),
+    backoffMultiplier: 1.0,
+  );
+
+  static const _PointSyncRetryProfile _backgroundSyncProfile =
+      _PointSyncRetryProfile(
+    maxAttempts: 4,
+    perAttemptTimeout: Duration(seconds: 30),
+    initialBackoff: Duration(seconds: 2),
+    backoffMultiplier: 2.0,
+  );
+
   static Map<String, dynamic> _requestHeaders() {
     return const <String, dynamic>{
       'Content-Type': 'application/json',
@@ -773,6 +795,11 @@ class PointService {
       // Sync with backend
       bool syncSuccess = false;
       if (waitForSync) {
+        PointSyncTelemetry.emitUserMessage(
+          transaction: transaction,
+          context: 'earnPoints',
+          message: 'Syncing points...',
+        );
         try {
           syncSuccess = await _syncPointsToBackendSync(userId, transaction);
           if (!syncSuccess) {
@@ -780,11 +807,21 @@ class PointService {
                 'Backend sync failed for point earning, queuing for retry',
                 tag: 'PointService');
             await _enqueuePointAdjustment(userId, transaction);
+            PointSyncTelemetry.emitUserMessage(
+              transaction: transaction,
+              context: 'earnPoints',
+              message: 'Sync taking longer; queued for retry',
+            );
           }
         } catch (e) {
           Logger.error('Error syncing points to backend (blocking): $e',
               tag: 'PointService', error: e);
           await _enqueuePointAdjustment(userId, transaction);
+          PointSyncTelemetry.emitUserMessage(
+            transaction: transaction,
+            context: 'earnPoints',
+            message: 'Sync taking longer; queued for retry',
+          );
         }
       } else {
         _syncPointsToBackend(userId, transaction).catchError((e) {
@@ -860,6 +897,11 @@ class PointService {
       // If orderId is provided and waitForSync is true, sync to backend first
       // This ensures points are deducted on server before order completion
       if (orderId != null && waitForSync) {
+        PointSyncTelemetry.emitUserMessage(
+          transaction: transaction,
+          context: 'redeemPoints',
+          message: 'Syncing points...',
+        );
         try {
           final syncSuccess =
               await _syncPointsToBackendSync(userId, transaction);
@@ -868,12 +910,22 @@ class PointService {
                 'Backend sync failed for point redemption, but continuing with local update',
                 tag: 'PointService');
             await _enqueuePointAdjustment(userId, transaction);
+            PointSyncTelemetry.emitUserMessage(
+              transaction: transaction,
+              context: 'redeemPoints',
+              message: 'Sync taking longer; queued for retry',
+            );
             // Continue with local update even if sync fails
           }
         } catch (e) {
           Logger.error('Error syncing points to backend (blocking): $e',
               tag: 'PointService', error: e);
           await _enqueuePointAdjustment(userId, transaction);
+          PointSyncTelemetry.emitUserMessage(
+            transaction: transaction,
+            context: 'redeemPoints',
+            message: 'Sync taking longer; queued for retry',
+          );
           // Continue with local update
         }
       }
@@ -1117,6 +1169,7 @@ class PointService {
       userId: userId,
       transaction: transaction,
       context: 'syncPointsToBackendSync',
+      profile: _blockingSyncProfile,
     );
   }
 
@@ -1129,6 +1182,7 @@ class PointService {
       userId: userId,
       transaction: transaction,
       context: 'syncTransactionToBackendSync',
+      profile: _blockingSyncProfile,
     );
   }
 
@@ -1509,6 +1563,7 @@ class PointService {
       userId: userId,
       transaction: transaction,
       context: 'syncPointsToBackend',
+      profile: _backgroundSyncProfile,
     );
     if (!success) {
       await _enqueuePointAdjustment(userId, transaction);
@@ -1589,6 +1644,7 @@ class PointService {
           userId: userId,
           transaction: transaction,
           context: 'syncAllTransactions',
+          profile: _backgroundSyncProfile,
         );
         if (ok) {
           syncedCount++;
@@ -1611,16 +1667,16 @@ class PointService {
     required String userId,
     required PointTransaction transaction,
     required String context,
+    required _PointSyncRetryProfile profile,
   }) async {
-    const int maxAttempts = 3;
-    Duration backoff = const Duration(seconds: 2);
-
-    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+    Duration backoff = profile.initialBackoff;
+    for (int attempt = 1; attempt <= profile.maxAttempts; attempt++) {
       try {
         await _sendPointsToBackendHttp(
           userId: userId,
           transaction: transaction,
           context: context,
+          timeout: profile.perAttemptTimeout,
         );
         PointSyncTelemetry.recordSuccess(
           transaction: transaction,
@@ -1633,7 +1689,7 @@ class PointService {
         );
         return true;
       } catch (e, stackTrace) {
-        final isFinalAttempt = attempt == maxAttempts;
+        final isFinalAttempt = attempt == profile.maxAttempts;
         await PointSyncTelemetry.recordFailure(
           transaction: transaction,
           attempt: attempt,
@@ -1643,7 +1699,7 @@ class PointService {
           finalAttempt: isFinalAttempt,
         );
         Logger.error(
-          'Error syncing points to backend (attempt $attempt/$maxAttempts): $e',
+          'Error syncing points to backend (attempt $attempt/${profile.maxAttempts}): $e',
           tag: 'PointService',
           error: e,
           stackTrace: stackTrace,
@@ -1651,7 +1707,7 @@ class PointService {
 
         if (!isFinalAttempt) {
           await Future.delayed(backoff);
-          backoff *= 2;
+          backoff = profile.nextBackoff(backoff);
         }
       }
     }
@@ -1663,6 +1719,7 @@ class PointService {
     required String userId,
     required PointTransaction transaction,
     required String context,
+    required Duration timeout,
   }) async {
     final endpointPath = transaction.type == PointTransactionType.redeem
         ? AppConfig.tworkPointsRedeemEndpoint
@@ -1670,31 +1727,38 @@ class PointService {
     final endpoint = AppConfig.tworkEndpoint(endpointPath);
     final uri = Uri.parse(endpoint)
         .replace(queryParameters: _getWooCommerceAuthQueryParams());
-    final Response<dynamic>? response = await ApiService.executeWithRetry(
-      () => ApiService.post(
-        uri.path,
-        queryParameters: uri.queryParameters,
-        skipAuth: false,
-        headers: const <String, dynamic>{
-          'Content-Type': 'application/json',
-        },
-        data: <String, dynamic>{
-          'user_id': userId,
-          'points': transaction.points,
-          'type': transaction.type.toValue(),
-          'description': transaction.description ?? '',
-          'order_id': transaction.orderId ?? '',
-          if (transaction.expiresAt != null)
-            'expires_at': transaction.expiresAt!.toIso8601String(),
-          'status': transaction.status.toValue(),
-        },
-      ),
-      context: context,
+
+    // Phase 1: Avoid nested retry stacks by issuing a single HTTP attempt here.
+    // Retry policy is owned by `_syncPointsWithRetry` above.
+    final Future<Response<dynamic>> request = ApiService.post(
+      uri.path,
+      queryParameters: uri.queryParameters,
+      skipAuth: false,
+      headers: const <String, dynamic>{
+        'Content-Type': 'application/json',
+      },
+      data: <String, dynamic>{
+        'user_id': userId,
+        'points': transaction.points,
+        'type': transaction.type.toValue(),
+        'description': transaction.description ?? '',
+        'order_id': transaction.orderId ?? '',
+        if (transaction.expiresAt != null)
+          'expires_at': transaction.expiresAt!.toIso8601String(),
+        'status': transaction.status.toValue(),
+      },
     );
+
+    Response<dynamic> response;
+    try {
+      response = await request.timeout(timeout);
+    } on TimeoutException catch (e) {
+      throw Exception('Point sync timed out after ${timeout.inSeconds}s: $e');
+    }
 
     if (!NetworkUtils.isValidDioResponse(response)) {
       String msg =
-          'Invalid response while syncing points (status: ${response?.statusCode ?? 'null'})';
+          'Invalid response while syncing points (status: ${response.statusCode})';
       final String b = ApiService.responseBodyString(response);
       if (b.isNotEmpty) {
         try {
@@ -1761,6 +1825,7 @@ class PointService {
       userId: userId,
       transaction: transaction,
       context: 'offlineQueue',
+      profile: _backgroundSyncProfile,
     );
   }
 
@@ -1792,5 +1857,27 @@ class PointService {
           tag: 'PointService', error: e, stackTrace: stackTrace);
       return false;
     }
+  }
+}
+
+class _PointSyncRetryProfile {
+  final int maxAttempts;
+  final Duration perAttemptTimeout;
+  final Duration initialBackoff;
+  final double backoffMultiplier;
+
+  const _PointSyncRetryProfile({
+    required this.maxAttempts,
+    required this.perAttemptTimeout,
+    required this.initialBackoff,
+    required this.backoffMultiplier,
+  });
+
+  Duration nextBackoff(Duration current) {
+    if (backoffMultiplier <= 1.0) {
+      return current;
+    }
+    final int ms = (current.inMilliseconds * backoffMultiplier).round();
+    return Duration(milliseconds: ms);
   }
 }

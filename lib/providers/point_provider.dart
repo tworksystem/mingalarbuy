@@ -70,6 +70,8 @@ class PointProvider with ChangeNotifier {
   String? _currentUserId;
   bool _hasLoadedForCurrentUser = false;
   final Set<String> _optimisticRefs = {};
+  final Map<String, _OptimisticBalanceSnapshot> _optimisticSnapshots = {};
+  String? _syncNoticeMessage;
 
   // OPTIMIZED: Cache ConnectivityService instance to avoid repeated creation
   late final ConnectivityService _connectivityService = ConnectivityService();
@@ -110,6 +112,7 @@ class PointProvider with ChangeNotifier {
   bool get hasPoints => currentBalance > 0;
   String get formattedBalance => _balance?.formattedBalance ?? '0 points';
   DateTime? get lastPushBalanceSnapshotAt => _lastPushBalanceSnapshotAt;
+  String? get syncNoticeMessage => _syncNoticeMessage;
 
   /// Whether the first balance sync for this login session has finished (server or cache).
   bool get hasCompletedSessionInitialBalanceLoad =>
@@ -205,12 +208,22 @@ class PointProvider with ChangeNotifier {
     if (event.userFacing && event.userMessage != null) {
       _setError(event.userMessage!);
     }
+    if (!event.success) {
+      _rollbackLatestOptimisticBalance(
+        userId: event.transaction.userId,
+        reason: event.userMessage ?? 'Sync failed, balance reverted',
+      );
+    }
   }
 
   /// Load point balance for user
   /// If forceRefresh is true, will reload even if already loaded for this user
   /// PROFESSIONAL FIX: Validates user ID and clears old data on user change
-  Future<void> loadBalance(String userId, {bool forceRefresh = false}) async {
+  Future<void> loadBalance(
+    String userId, {
+    bool forceRefresh = false,
+    bool notifyLoading = true,
+  }) async {
     // First successful hydrate for this session (startup / login sync), not an in-session earn.
     final bool isInitialLoad = !_sessionInitialBalanceLoadComplete;
     Logger.info(
@@ -260,7 +273,7 @@ class PointProvider with ChangeNotifier {
       _hasLoadedForCurrentUser = false;
     }
 
-    _setLoading(true);
+    _setLoading(true, notify: notifyLoading);
     _clearError();
     _currentUserId = userId;
 
@@ -377,7 +390,7 @@ class PointProvider with ChangeNotifier {
         );
       }
     } finally {
-      _setLoading(false);
+      _setLoading(false, notify: notifyLoading);
       if (_balance != null && isInitialLoad) {
         _sessionInitialBalanceLoadComplete = true;
       }
@@ -503,6 +516,12 @@ class PointProvider with ChangeNotifier {
     _optimisticRefs.add(refId);
     if (_balance != null) {
       final previous = _balance!;
+      _optimisticSnapshots[refId] = _OptimisticBalanceSnapshot(
+        refId: refId,
+        userId: previous.userId,
+        previousBalance: previous.currentBalance,
+        appliedAt: DateTime.now(),
+      );
       _balance = PointBalance(
         userId: previous.userId,
         currentBalance: previous.currentBalance + pointsToAdd,
@@ -514,6 +533,46 @@ class PointProvider with ChangeNotifier {
       );
       notifyListeners();
     }
+  }
+
+  void _rollbackLatestOptimisticBalance({
+    required String userId,
+    required String reason,
+  }) {
+    if (_optimisticSnapshots.isEmpty) return;
+    final snapshots = _optimisticSnapshots.values
+        .where((s) => s.userId == userId)
+        .toList()
+      ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
+    if (snapshots.isEmpty) return;
+
+    // Only rollback very recent optimistic mutations tied to sync timeout/failure.
+    final latest = snapshots.first;
+    final age = DateTime.now().difference(latest.appliedAt);
+    if (age.inSeconds > 45) return;
+    if (_balance == null) return;
+    if (_balance!.currentBalance == latest.previousBalance) return;
+
+    final previous = _balance!;
+    _balance = PointBalance(
+      userId: previous.userId,
+      currentBalance: latest.previousBalance,
+      lifetimeEarned: previous.lifetimeEarned,
+      lifetimeRedeemed: previous.lifetimeRedeemed,
+      lifetimeExpired: previous.lifetimeExpired,
+      lastUpdated: DateTime.now(),
+      pointsExpireAt: previous.pointsExpireAt,
+    );
+    _optimisticSnapshots.remove(latest.refId);
+    _optimisticRefs.remove(latest.refId);
+    _syncNoticeMessage = reason;
+    notifyListeners();
+  }
+
+  String? consumeSyncNoticeMessage() {
+    final current = _syncNoticeMessage;
+    _syncNoticeMessage = null;
+    return current;
   }
 
   /// Apply optimistic balance update from in-app events (e.g. poll win).
@@ -592,6 +651,8 @@ class PointProvider with ChangeNotifier {
     _lastPushBalanceSnapshotAt = snapshotClock;
     _balanceNonDowngradeUntil = snapshotClock.add(const Duration(seconds: 35));
     _hasLoadedForCurrentUser = true;
+    // Server-confirmed snapshot supersedes pending optimistic deltas.
+    _optimisticSnapshots.removeWhere((_, s) => s.userId == userId);
     // PROFESSIONAL FIX: Notify immediately so My PNP card and popup show same balance.
     // Poll/push snapshots are user-critical; 300ms debounce caused balance to lag behind popup.
     notifyListeners();
@@ -651,7 +712,8 @@ class PointProvider with ChangeNotifier {
       bool forceRefresh = false,
       int rangeDays = 90,
       DateTime? dateFrom,
-      DateTime? dateTo}) async {
+      DateTime? dateTo,
+      bool notifyLoading = true}) async {
     DateTime? effectiveFrom = dateFrom;
     DateTime? effectiveTo = dateTo;
     // Normalize reversed inputs defensively for API reliability.
@@ -708,9 +770,11 @@ class PointProvider with ChangeNotifier {
     if (isLoadMoreRequest) {
       // Use a dedicated incremental loading flag for pagination UX.
       _isLoadingMore = true;
-      notifyListeners();
+      if (notifyLoading) {
+        notifyListeners();
+      }
     } else {
-      _setLoading(true);
+      _setLoading(true, notify: notifyLoading);
     }
     _clearError();
 
@@ -900,9 +964,11 @@ class PointProvider with ChangeNotifier {
     } finally {
       if (isLoadMoreRequest) {
         _isLoadingMore = false;
-        notifyListeners();
+        if (notifyLoading) {
+          notifyListeners();
+        }
       } else {
-        _setLoading(false);
+        _setLoading(false, notify: notifyLoading);
       }
     }
   }
@@ -983,8 +1049,20 @@ class PointProvider with ChangeNotifier {
           );
         }
 
-        await loadBalance(userId, forceRefresh: true);
-        await loadTransactions(userId);
+        // Phase 1: Non-blocking reconcile. Optimistic balance update already notified UI.
+        unawaited(
+          loadBalance(
+            userId,
+            forceRefresh: true,
+            notifyLoading: false,
+          ),
+        );
+        unawaited(
+          loadTransactions(
+            userId,
+            notifyLoading: false,
+          ),
+        );
         Logger.info('Points earned successfully: $points points',
             tag: 'PointProvider');
 
@@ -1170,9 +1248,11 @@ class PointProvider with ChangeNotifier {
 
   /// Set loading state
   /// OPTIMIZED: Immediate notification for loading state (user feedback)
-  void _setLoading(bool loading) {
+  void _setLoading(bool loading, {bool notify = true}) {
     _isLoading = loading;
-    notifyListeners(); // Immediate for loading state
+    if (notify) {
+      notifyListeners(); // Immediate for loading state
+    }
   }
 
   /// Set error message
@@ -1220,4 +1300,18 @@ class PointProvider with ChangeNotifier {
     _pointBroadcastSubscription?.cancel();
     super.dispose();
   }
+}
+
+class _OptimisticBalanceSnapshot {
+  final String refId;
+  final String userId;
+  final int previousBalance;
+  final DateTime appliedAt;
+
+  const _OptimisticBalanceSnapshot({
+    required this.refId,
+    required this.userId,
+    required this.previousBalance,
+    required this.appliedAt,
+  });
 }

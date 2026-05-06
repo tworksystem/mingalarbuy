@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -861,6 +863,16 @@ class _OrderConfirmationPageState extends State<OrderConfirmationPage> {
         try {
           Logger.info('Redeeming ${widget.redeemedPoints} points for order ${order.id}',
               tag: 'OrderConfirmation');
+
+          // Phase 1 UX: Give immediate feedback; do not block the user on long sync retries.
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Syncing points...'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
           
           // Extract WooCommerce order ID from order metadata if available
           final wooOrderId = order.metadata?['woocommerce_id']?.toString();
@@ -877,8 +889,9 @@ class _OrderConfirmationPageState extends State<OrderConfirmationPage> {
           
           // Update point provider state after redemption
           if (redemptionSuccess) {
-            await pointProvider.loadBalance(userId);
-            await pointProvider.loadTransactions(userId);
+            // Phase 1: non-blocking post-sync refresh (reconcile in background)
+            unawaited(pointProvider.loadBalance(userId, notifyLoading: false));
+            unawaited(pointProvider.loadTransactions(userId, notifyLoading: false));
           }
 
           if (!redemptionSuccess) {
@@ -907,8 +920,15 @@ class _OrderConfirmationPageState extends State<OrderConfirmationPage> {
       // Step 4: Refresh point balance & history so UI shows latest points
       if (order != null) {
         try {
-          await pointProvider.loadBalance(userId, forceRefresh: true);
-          await pointProvider.loadTransactions(userId);
+          // Phase 1: background reconcile only (avoid blocking UX)
+          unawaited(
+            pointProvider.loadBalance(
+              userId,
+              forceRefresh: true,
+              notifyLoading: false,
+            ),
+          );
+          unawaited(pointProvider.loadTransactions(userId, notifyLoading: false));
         } catch (e, stackTrace) {
           Logger.error(
             'Error refreshing point balance after order creation: $e',

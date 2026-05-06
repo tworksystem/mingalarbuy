@@ -32,6 +32,7 @@ import 'package:ecommerce_int2/services/usage_tracking_service.dart';
 import 'package:ecommerce_int2/services/app_logger.dart';
 import 'package:ecommerce_int2/services/log_buffer_service.dart';
 import 'package:ecommerce_int2/services/global_keys.dart';
+import 'package:ecommerce_int2/services/in_app_notification_service.dart';
 import 'package:ecommerce_int2/services/web_point_visibility_stub.dart'
     if (dart.library.html) 'package:ecommerce_int2/services/web_point_visibility_web.dart'
     as web_point_visibility;
@@ -96,6 +97,7 @@ void main() async {
 
       // Initialize in-app notification provider (singleton instance)
       try {
+        await InAppNotificationService().clearAllPersistentNotifications();
         final notificationProvider = InAppNotificationProvider.instance;
         await notificationProvider.initialize();
         Logger.info('In-app notification provider initialized', tag: 'Main');
