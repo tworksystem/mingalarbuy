@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -12,6 +13,20 @@ import 'point_sync_telemetry.dart';
 import 'offline_queue_service.dart';
 import 'secure_prefs.dart';
 
+/// Emitted when [PointService] mutates local point balance without UI context,
+/// so global listeners (e.g. [PointProvider]) can refresh Home "My PNP" in real time.
+class PointSyncBroadcast {
+  final String userId;
+  final int newBalance;
+  final String source;
+
+  const PointSyncBroadcast({
+    required this.userId,
+    required this.newBalance,
+    required this.source,
+  });
+}
+
 /// Point service for managing user points
 /// Handles API calls and local storage for offline support
 class PointService {
@@ -19,6 +34,54 @@ class PointService {
   static const String _transactionsKey = 'user_point_transactions';
   static bool _queueRegistered = false;
   static final SecurePrefs _securePrefs = SecurePrefs.instance;
+  static int? _lastPointBalanceStatusCode;
+  static String? _lastPointBalanceFailureMessage;
+  static String? _lastPointBalanceUrl;
+
+  static int? get lastPointBalanceStatusCode => _lastPointBalanceStatusCode;
+  static String? get lastPointBalanceFailureMessage =>
+      _lastPointBalanceFailureMessage;
+  static String? get lastPointBalanceUrl => _lastPointBalanceUrl;
+
+  static void _clearPointBalanceFailure() {
+    _lastPointBalanceStatusCode = null;
+    _lastPointBalanceFailureMessage = null;
+    _lastPointBalanceUrl = null;
+  }
+
+  static void _recordPointBalanceFailure({
+    int? statusCode,
+    required String url,
+    required String reason,
+  }) {
+    _lastPointBalanceStatusCode = statusCode;
+    _lastPointBalanceFailureMessage = reason;
+    _lastPointBalanceUrl = url;
+  }
+
+  // Broadcast stream for context-free sync (FCM helpers, isolates, future callers).
+  static final StreamController<PointSyncBroadcast> _pointSyncBroadcastController =
+      StreamController<PointSyncBroadcast>.broadcast();
+
+  /// Listen from [PointProvider] (or tests) to apply cache/server-aligned balance globally.
+  static Stream<PointSyncBroadcast> get pointSyncBroadcast =>
+      _pointSyncBroadcastController.stream;
+
+  /// Publishes a balance snapshot after local persistence (e.g. earn path).
+  static void notifyPointBalanceBroadcast({
+    required String userId,
+    required int newBalance,
+    String source = 'point_service',
+  }) {
+    if (_pointSyncBroadcastController.isClosed) return;
+    _pointSyncBroadcastController.add(
+      PointSyncBroadcast(
+        userId: userId,
+        newBalance: newBalance,
+        source: source,
+      ),
+    );
+  }
 
   /// Request throttling to prevent duplicate/subsequent exchange requests
   /// Key: userId, Value: last request timestamp
@@ -77,33 +140,63 @@ class PointService {
   }
 
   /// Get user's point balance from API
-  static Future<PointBalance?> getPointBalance(String userId) async {
+  static Future<PointBalance?> getPointBalance(
+    String userId, {
+    int? cacheBypassTimestampMs,
+  }) async {
     try {
       // Use custom WordPress REST endpoint
       final uri = Uri.parse(
-        '${AppConfig.backendUrl}/wp-json/twork/v1/points/balance/$userId',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+        AppConfig.tworkEndpoint('${AppConfig.tworkPointsBalancePath}/$userId'),
+      ).replace(queryParameters: {
+        ..._getWooCommerceAuthQueryParams(),
+        // Use explicit `t` nonce to bypass intermediary cache layers.
+        't': (cacheBypassTimestampMs ?? DateTime.now().millisecondsSinceEpoch)
+            .toString(),
+      });
+      final requestUrl = uri.toString();
+      final hasTimestampBypass = uri.queryParameters.containsKey('t');
+      Logger.info(
+        'Point balance request prepared: url=$requestUrl, has_t=$hasTimestampBypass',
+        tag: 'PointService',
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          // Old Code:
-          // headers: const <String, dynamic>{
-          //   'Content-Type': 'application/json',
-          // },
-          // New Code:
           headers: _requestHeaders(),
         ),
         context: 'getPointBalance',
       );
 
+      final responseStatus = response?.statusCode;
+      Logger.info(
+        'Point balance response received: status=$responseStatus, url=$requestUrl',
+        tag: 'PointService',
+      );
+
       if (NetworkUtils.isValidDioResponse(response)) {
         final Map<String, dynamic>? raw = ApiService.responseAsJsonMap(response);
         if (raw == null) {
+          final body = ApiService.responseBodyString(response);
+          Logger.error(
+            'Point balance response parse failed: status=$responseStatus, '
+            'url=$requestUrl, body=$body',
+            tag: 'PointService',
+          );
+          _recordPointBalanceFailure(
+            statusCode: responseStatus,
+            url: requestUrl,
+            reason: 'Response parse failed: body=$body',
+          );
           return null;
         }
+        Logger.info(
+          'Point balance response keys: ${raw.keys.toList()}',
+          tag: 'PointService',
+        );
         // Handle wrapped response: { "data": { "current_balance": 18200 } } or direct
         final Map<String, dynamic> data;
         if (raw.containsKey('data') && raw['data'] is Map) {
@@ -129,25 +222,34 @@ class PointService {
         Logger.info(
             'Point balance loaded from API: ${balance.currentBalance} points',
             tag: 'PointService');
+        _clearPointBalanceFailure();
         return balance;
       }
 
-      // Old Code: return null;
-      //
-      // New Code: log actionable diagnostics for easier debugging.
+      // Log actionable diagnostics for easier debugging.
       final status = response?.statusCode;
       final body = ApiService.responseBodyString(response);
       Logger.error(
-        'Point balance invalid response: status=$status, body=$body',
+        'Point balance invalid response: status=$status, url=$requestUrl, body=$body',
         tag: 'PointService',
+      );
+      _recordPointBalanceFailure(
+        statusCode: status,
+        url: requestUrl,
+        reason: 'Invalid API response: status=$status, body=$body',
       );
 
       return null;
     } catch (e, stackTrace) {
       Logger.error('Error getting point balance: $e',
           tag: 'PointService', error: e, stackTrace: stackTrace);
-      // Return cached balance on error
-      return await getCachedBalance(userId);
+      _recordPointBalanceFailure(
+        statusCode: null,
+        url: AppConfig.tworkEndpoint('${AppConfig.tworkPointsBalancePath}/$userId'),
+        reason: 'Exception during point balance fetch: $e',
+      );
+      // Server is source of truth for explicit refresh; do not mask failures with cache.
+      return null;
     }
   }
 
@@ -176,7 +278,7 @@ class PointService {
       };
 
       final uri = Uri.parse(
-              '${AppConfig.backendUrl}/wp-json/twork/v1/points/transactions/$userId')
+              AppConfig.tworkEndpoint('${AppConfig.tworkPointsTransactionsPath}/$userId'))
           .replace(queryParameters: queryParams);
 
       final Response<dynamic>? firstResponse = await ApiService.executeWithRetry(
@@ -184,11 +286,6 @@ class PointService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          // Old Code:
-          // headers: const <String, dynamic>{
-          //   'Content-Type': 'application/json',
-          // },
-          // New Code:
           headers: _requestHeaders(),
         ),
         context: 'getAllPointTransactions',
@@ -335,7 +432,7 @@ class PointService {
       };
 
       final uri = Uri.parse(
-              '${AppConfig.backendUrl}/wp-json/twork/v1/points/transactions/$userId')
+              AppConfig.tworkEndpoint('${AppConfig.tworkPointsTransactionsPath}/$userId'))
           .replace(queryParameters: queryParams);
 
       Logger.info(
@@ -352,11 +449,6 @@ class PointService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          // Old Code:
-          // headers: const <String, dynamic>{
-          //   'Content-Type': 'application/json',
-          // },
-          // New Code:
           headers: _requestHeaders(),
         ),
         context: 'getPointTransactions',
@@ -394,7 +486,6 @@ class PointService {
           // CRITICAL FIX: Handle different response formats
           // Some APIs might return transactions directly as a list, others wrap in 'data' or 'transactions'
           List<dynamic> transactionsData;
-          PointHistorySummary? summary;
           if (data is List) {
             // Response is directly a list of transactions
             transactionsData = data;
@@ -405,12 +496,6 @@ class PointService {
             // Response is an object - check for 'transactions' key first
             if (data.containsKey('transactions')) {
               transactionsData = data['transactions'] as List<dynamic>? ?? [];
-              final summaryRaw = data['summary'];
-              if (summaryRaw is Map) {
-                summary = PointHistorySummary.fromJson(
-                  Map<String, dynamic>.from(summaryRaw),
-                );
-              }
             } else if (data.containsKey('data')) {
               // Some APIs wrap in 'data'
               final dataWrapper = data['data'];
@@ -420,12 +505,6 @@ class PointService {
                   dataWrapper.containsKey('transactions')) {
                 transactionsData =
                     dataWrapper['transactions'] as List<dynamic>? ?? [];
-                final summaryRaw = dataWrapper['summary'];
-                if (summaryRaw is Map) {
-                  summary = PointHistorySummary.fromJson(
-                    Map<String, dynamic>.from(summaryRaw),
-                  );
-                }
               } else {
                 transactionsData = [];
               }
@@ -460,12 +539,6 @@ class PointService {
               await _cacheTransactions(userId, []);
               return PointTransactionHistoryResult(
                 transactions: const [],
-                summary: summary ??
-                    PointHistorySummary(
-                      rangeDays: rangeDays,
-                      startDate: dateFrom,
-                      endDate: dateTo,
-                    ),
                 total: 0,
                 page: page,
                 perPage: perPage,
@@ -476,7 +549,6 @@ class PointService {
             // Otherwise, fall back to cache (best UX) instead of showing blank history.
             return PointTransactionHistoryResult(
               transactions: await getCachedTransactions(userId),
-              summary: summary,
               total: total,
               page: page,
               perPage: perPage,
@@ -514,7 +586,6 @@ class PointService {
             );
             return PointTransactionHistoryResult(
               transactions: await getCachedTransactions(userId),
-              summary: summary,
               total: total,
               page: page,
               perPage: perPage,
@@ -522,11 +593,6 @@ class PointService {
             );
           }
 
-          // OLD CODE:
-          // // Cache transactions locally (sorted inside)
-          // await _cacheTransactions(userId, transactions);
-          //
-          // New Code:
           // Merge API payload with cached details before caching to prevent
           // null poll_details from overwriting previously-enriched rows.
           final cachedBeforeWrite = await getCachedTransactions(userId);
@@ -541,7 +607,6 @@ class PointService {
               tag: 'PointService');
           return PointTransactionHistoryResult(
             transactions: mergedForCache,
-            summary: summary,
             total: total,
             page: page,
             perPage: perPage,
@@ -570,11 +635,6 @@ class PointService {
         );
         return PointTransactionHistoryResult(
           transactions: cached,
-          summary: PointHistorySummary(
-            rangeDays: rangeDays,
-            startDate: dateFrom,
-            endDate: dateTo,
-          ),
           total: cached.length,
           page: page,
           perPage: perPage,
@@ -612,11 +672,6 @@ class PointService {
       final cached = await getCachedTransactions(userId);
       return PointTransactionHistoryResult(
         transactions: cached,
-        summary: PointHistorySummary(
-          rangeDays: rangeDays,
-          startDate: dateFrom,
-          endDate: dateTo,
-        ),
         total: cached.length,
         page: page,
         perPage: perPage,
@@ -742,6 +797,28 @@ class PointService {
       Logger.info(
           'Points earned: $points points (backend: ${syncSuccess ? "ok" : "queued"})',
           tag: 'PointService');
+
+      // Notify global listeners (PointProvider) so My PNP updates without context.
+      if (type == PointTransactionType.earn) {
+        try {
+          final broadcastBalance = await getCachedBalance(userId);
+          if (broadcastBalance != null) {
+            notifyPointBalanceBroadcast(
+              userId: userId,
+              newBalance: broadcastBalance.currentBalance,
+              source: 'earn_points',
+            );
+          }
+        } catch (e, stackTrace) {
+          Logger.warning(
+            'Point balance broadcast after earn skipped: $e',
+            tag: 'PointService',
+            error: e,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+
       return waitForSync ? syncSuccess : true;
     } catch (e, stackTrace) {
       Logger.error('Error earning points: $e',
@@ -1357,6 +1434,37 @@ class PointService {
     }).toList();
   }
 
+  /// Overwrite SharedPreferences balance so cold start matches canonical truth.
+  static Future<void> saveCanonicalBalance({
+    required String userId,
+    required int currentBalance,
+  }) async {
+    try {
+      final existing = await getCachedBalance(userId);
+      final balance = PointBalance(
+        userId: userId,
+        currentBalance: currentBalance,
+        lifetimeEarned: existing?.lifetimeEarned ?? 0,
+        lifetimeRedeemed: existing?.lifetimeRedeemed ?? 0,
+        lifetimeExpired: existing?.lifetimeExpired ?? 0,
+        lastUpdated: DateTime.now(),
+        pointsExpireAt: existing?.pointsExpireAt,
+      );
+      await _saveBalanceToStorage(balance);
+      Logger.info(
+        'Canonical balance persisted to disk: $currentBalance (userId=$userId)',
+        tag: 'PointService',
+      );
+    } catch (e, stackTrace) {
+      Logger.error(
+        'Error saving canonical balance: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
   /// Save balance to local storage
   static Future<void> _saveBalanceToStorage(PointBalance balance) async {
     try {
@@ -1472,39 +1580,26 @@ class PointService {
         return true;
       }
 
-      final uri = Uri.parse(
-        '${AppConfig.backendUrl}/wp-json/twork/v1/points/sync',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
-
-      final Response<dynamic>? response = await ApiService.executeWithRetry(
-        () => ApiService.post(
-          uri.path,
-          queryParameters: uri.queryParameters,
-          skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
-          data: <String, dynamic>{
-            'user_id': userId,
-            'transactions':
-                transactionsToSync.map((t) => t.toJson()).toList(),
-          },
-        ),
-        context: 'syncAllTransactions',
-      );
-
-      if (NetworkUtils.isValidDioResponse(response)) {
-        final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
-        if (data == null) {
-          return false;
+      // Route harmonization:
+      // Some backends no longer expose `/points/sync`; replay each transaction
+      // through the active earn/redeem route instead.
+      var syncedCount = 0;
+      for (final transaction in transactionsToSync) {
+        final ok = await _syncPointsWithRetry(
+          userId: userId,
+          transaction: transaction,
+          context: 'syncAllTransactions',
+        );
+        if (ok) {
+          syncedCount++;
         }
-        Logger.info(
-            'Synced ${data['synced']} transactions to backend (${transactionsToSync.length} attempted)',
-            tag: 'PointService');
-        return true;
       }
 
-      return false;
+      Logger.info(
+        'Synced $syncedCount/${transactionsToSync.length} transactions via earn/redeem routes',
+        tag: 'PointService',
+      );
+      return syncedCount == transactionsToSync.length;
     } catch (e) {
       Logger.error('Error syncing all transactions: $e',
           tag: 'PointService', error: e);
@@ -1569,8 +1664,10 @@ class PointService {
     required PointTransaction transaction,
     required String context,
   }) async {
-    final endpoint =
-        '${AppConfig.backendUrl}/wp-json/twork/v1/points/${transaction.type == PointTransactionType.redeem ? "redeem" : "earn"}';
+    final endpointPath = transaction.type == PointTransactionType.redeem
+        ? AppConfig.tworkPointsRedeemEndpoint
+        : AppConfig.tworkPointsEarnEndpoint;
+    final endpoint = AppConfig.tworkEndpoint(endpointPath);
     final uri = Uri.parse(endpoint)
         .replace(queryParameters: _getWooCommerceAuthQueryParams());
     final Response<dynamic>? response = await ApiService.executeWithRetry(
@@ -1649,8 +1746,11 @@ class PointService {
       return;
     }
     _queueRegistered = true;
-    OfflineQueueService()
-        .setPointAdjustmentCallback(_processQueuedPointAdjustment);
+    final queue = OfflineQueueService();
+    queue.setPointAdjustmentCallback(_processQueuedPointAdjustment);
+    // Endpoint harmonization: revive previously failed point sync items so they
+    // retry against the updated earn/redeem route flow.
+    unawaited(queue.resetPointAdjustmentRetriesAndSync());
   }
 
   static Future<bool> syncQueuedPointTransaction(

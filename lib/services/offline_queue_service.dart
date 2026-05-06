@@ -430,6 +430,31 @@ class OfflineQueueService extends ChangeNotifier {
     Logger.info('Point adjustment callback registered', tag: 'OfflineQueue');
   }
 
+  /// Reset retry state for queued point adjustments after endpoint/auth fixes.
+  /// This allows previously failed items to be retried with updated route logic.
+  Future<int> resetPointAdjustmentRetriesAndSync() async {
+    var updated = 0;
+    for (var i = 0; i < _queue.length; i++) {
+      final item = _queue[i];
+      if (item.type != OfflineQueueItemType.pointAdjustment) continue;
+      if (item.retryCount == 0 && item.errorMessage == null) continue;
+      _queue[i] = item.copyWith(retryCount: 0, errorMessage: null);
+      updated++;
+    }
+    if (updated > 0) {
+      await _saveQueueToStorage();
+      notifyListeners();
+      Logger.info(
+        'Reset retry state for $updated point-adjustment queue items',
+        tag: 'OfflineQueue',
+      );
+    }
+    if (ConnectivityService().isConnected && _queue.isNotEmpty) {
+      unawaited(_syncQueue());
+    }
+    return updated;
+  }
+
   /// Handle connectivity changes
   void _onConnectivityChanged() {
     if (ConnectivityService().isConnected && _queue.isNotEmpty) {

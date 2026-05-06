@@ -23,13 +23,23 @@ class EngagementProvider with ChangeNotifier {
   String? _error;
   Timer? _debounceTimer;
   Timer? _pollingTimer; // Timer for automatic data refresh
+  Duration? _activePollingInterval; // Track current timer interval for smart polling
+  String? _lastSmartPollingReason;
+  bool _hasLoggedKeptInterval = false;
   int? _currentUserId; // Track which user the data belongs to
   bool _hasLoadedForCurrentUser =
       false; // Track if we've loaded for current user
   bool _isAutoPollPaused =
       false; // Temporarily pause auto-poll for poll/result transitions
+  /*
+  Old Code:
   /// 2 seconds for near-instant sync on backend create/delete
   static const Duration _pollingInterval = Duration(seconds: 2);
+  */
+  // New Code: reduce polling pressure to prevent near-continuous feed calls.
+  static const Duration _pollingInterval = Duration(seconds: 60);
+  static const Duration _fastPollingInterval = Duration(seconds: 2);
+  static const int _fastPollingCloseThresholdSeconds = 20;
 
   List<EngagementItem> get items => _items;
   bool get isLoading => _isLoading;
@@ -447,8 +457,49 @@ class EngagementProvider with ChangeNotifier {
 
   /// Start automatic polling for data updates
   void _startPolling({required int userId, String? token}) {
+    final decision = _resolvePollingIntervalFromItems(_items);
+    final computedInterval = decision.interval;
+    final reason = decision.reason;
+
+    // Keep single timer invariant: if same interval and timer active, keep it.
+    if (_pollingTimer != null &&
+        _activePollingInterval == computedInterval &&
+        _pollingTimer!.isActive) {
+      if (!_hasLoggedKeptInterval) {
+        final mode =
+            computedInterval == _fastPollingInterval ? 'FAST' : 'SLOW';
+        app_logger.Logger.info(
+          'Smart Polling: Kept current interval ($mode mode, reason: $reason)',
+          tag: 'EngagementProvider',
+        );
+        _hasLoggedKeptInterval = true;
+      }
+      return;
+    }
+    _hasLoggedKeptInterval = false;
+
+    if (_activePollingInterval != computedInterval ||
+        _lastSmartPollingReason != reason) {
+      final mode = computedInterval == _fastPollingInterval ? 'FAST' : 'SLOW';
+      app_logger.Logger.info(
+        'Smart Polling: Switching to $mode mode (reason: $reason)',
+        tag: 'EngagementProvider',
+      );
+    }
+
+    /*
+    Old Code:
     // Stop any existing polling first
     _stopPolling();
+    */
+    // New Code: explicitly cancel active timer before starting new periodic one.
+    if (_pollingTimer != null) {
+      _pollingTimer?.cancel();
+      _pollingTimer = null;
+    }
+    _stopPolling();
+    _activePollingInterval = computedInterval;
+    _lastSmartPollingReason = reason;
 
     // Only start polling if user is authenticated
     if (_currentUserId == null || _currentUserId != userId) {
@@ -459,10 +510,11 @@ class EngagementProvider with ChangeNotifier {
     }
 
     app_logger.Logger.info(
-        'Starting automatic polling for engagement feed (interval: ${_pollingInterval.inSeconds}s)',
+        'Starting automatic polling for engagement feed '
+        '(interval: ${computedInterval.inSeconds}s)',
         tag: 'EngagementProvider');
 
-    _pollingTimer = Timer.periodic(_pollingInterval, (timer) async {
+    _pollingTimer = Timer.periodic(computedInterval, (timer) async {
       if (_isAutoPollPaused) {
         app_logger.Logger.info(
           'Auto-poll is currently PAUSED for poll transitions.',
@@ -504,6 +556,7 @@ class EngagementProvider with ChangeNotifier {
         if (structureChanged) {
           _items = items;
           notifyListeners();
+          _startPolling(userId: userId, token: token);
         } else {
           bool contentChanged = false;
           final byId = {for (var i in items) i.id: i};
@@ -522,6 +575,7 @@ class EngagementProvider with ChangeNotifier {
           if (contentChanged) {
             _items = items;
             notifyListeners();
+            _startPolling(userId: userId, token: token);
           }
         }
       } catch (e) {
@@ -531,11 +585,78 @@ class EngagementProvider with ChangeNotifier {
     });
   }
 
+  /// Smart polling resolver:
+  /// - 2s during AUTO_RUN close/result windows
+  /// - 15s for AUTO_RUN normal windows (not near close/result)
+  /// - 60s only when no AUTO_RUN polls exist
+  _SmartPollingDecision _resolvePollingIntervalFromItems(List<dynamic> items) {
+    bool hasAutoRunPoll = false;
+    for (final raw in items) {
+      if (raw is! EngagementItem) continue;
+      if (raw.type != EngagementType.poll) continue;
+
+      final schedule = raw.pollVotingSchedule;
+      final status = (schedule?['voting_status']?.toString() ?? '').toLowerCase();
+      final mode = (schedule?['poll_mode']?.toString() ?? '').toLowerCase();
+      if (mode == 'auto_run') {
+        hasAutoRunPoll = true;
+      }
+      final resultLikeStatuses = <String>{
+        'showing_result',
+        'showing_results',
+        'ended',
+        'results',
+        'result',
+      };
+
+      final dynamic secondsRaw = schedule?['seconds_until_close'];
+      final int secondsUntilClose = secondsRaw is int
+          ? secondsRaw
+          : (secondsRaw is num ? secondsRaw.toInt() : 999999);
+
+      final bool isAutoRunNearClose = mode == 'auto_run' &&
+          secondsUntilClose <= _fastPollingCloseThresholdSeconds;
+      final bool isResultWindow = resultLikeStatuses.contains(status);
+
+      // "has_interacted == true and waiting result" heuristic:
+      // user already voted, result not yet materialized, and poll is near close/result transition.
+      final bool waitingResultAfterInteraction = raw.hasInteracted &&
+          raw.pollResult == null &&
+          (isResultWindow || isAutoRunNearClose || secondsUntilClose <= 20);
+
+      if (isAutoRunNearClose || isResultWindow || waitingResultAfterInteraction) {
+        final reason = isResultWindow
+            ? 'showing_result'
+            : (isAutoRunNearClose
+                ? 'auto_run_near_close'
+                : 'has_interacted_waiting_result');
+        return _SmartPollingDecision(interval: _fastPollingInterval, reason: reason);
+      }
+    }
+    /*
+    Old Code:
+    return _SmartPollingDecision(interval: _pollingInterval, reason: 'normal_window');
+    */
+    if (hasAutoRunPoll) {
+      return const _SmartPollingDecision(
+        interval: Duration(seconds: 15),
+        reason: 'auto_run_normal_window (15s)',
+      );
+    }
+    return _SmartPollingDecision(
+      interval: _pollingInterval,
+      reason: 'normal_window',
+    );
+  }
+
   /// Stop automatic polling
   void _stopPolling() {
     if (_pollingTimer != null) {
       _pollingTimer?.cancel();
       _pollingTimer = null;
+      _activePollingInterval = null;
+      _lastSmartPollingReason = null;
+      _hasLoggedKeptInterval = false;
       app_logger.Logger.info('Stopped automatic polling for engagement feed',
           tag: 'EngagementProvider');
     }
@@ -596,4 +717,14 @@ class EngagementProvider with ChangeNotifier {
     _stopPolling();
     super.dispose();
   }
+}
+
+class _SmartPollingDecision {
+  final Duration interval;
+  final String reason;
+
+  const _SmartPollingDecision({
+    required this.interval,
+    required this.reason,
+  });
 }

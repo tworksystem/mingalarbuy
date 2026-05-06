@@ -222,43 +222,26 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     }
 
     try {
-      // PROFESSIONAL FIX: Refresh user data FIRST to ensure custom fields are available immediately
-      // This ensures my_point, my_points, and points_balance are available for initial render
-      // Run in parallel with transaction loading for better performance
-      final refreshUserFuture = authProvider.refreshUser().catchError((e) {
-        Logger.warning('PointHistoryPage - Failed to refresh user data: $e',
-            tag: 'PointHistoryPage', error: e);
-        // Continue even if refresh fails - we still have PointProvider balance
-        return null;
-      });
-
-      // OPTIMIZED: Single coordinated load instead of multiple redundant calls
-      // Load transactions (will load cached first, then API)
-      // IMPORTANT: Load a large batch (200) to ensure we capture all transaction types
-      // for dynamic filter chip generation, not just the first page
-      final loadTransactionsFuture = pointProvider.loadTransactions(
-        userId,
-        page: 1,
-        perPage: _historyPageSize,
+      await pointProvider.refreshPointState(
+        userId: userId,
         forceRefresh: true,
-        // OLD CODE: history endpoint did not support timeframe parameters.
-        // New Code: request the selected range (or the default 90-day window).
-        rangeDays: _selectedDateRange == null ? _defaultHistoryRangeDays : 90,
-        dateFrom: _selectedDateRange?.start,
-        dateTo: _selectedDateRange?.end,
+        refreshBalance: true,
+        refreshTransactions: true,
+        transactionsPage: 1,
+        transactionsPerPage: _historyPageSize,
+        transactionsRangeDays:
+            _selectedDateRange == null ? _defaultHistoryRangeDays : 90,
+        transactionsDateFrom: _selectedDateRange?.start,
+        transactionsDateTo: _selectedDateRange?.end,
+        refreshUserCallback: () async {
+          try {
+            await authProvider.refreshUser();
+          } catch (e) {
+            Logger.warning('PointHistoryPage - Failed to refresh user data: $e',
+                tag: 'PointHistoryPage', error: e);
+          }
+        },
       );
-
-      // Load balance from PointProvider (primary source) in parallel
-      // This will load from API if online (which loads cache first internally), or cache if offline
-      final loadBalanceFuture =
-          pointProvider.loadBalance(userId, forceRefresh: true);
-
-      // Wait for all critical data loads to complete
-      await Future.wait([
-        refreshUserFuture,
-        loadTransactionsFuture,
-        loadBalanceFuture,
-      ]);
 
       Logger.info(
           'PointHistoryPage - All data loaded: user refreshed, transactions loaded, balance loaded',
@@ -305,8 +288,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
           'Loading ALL transactions from API to get all unique types for filter chips',
           tag: 'PointHistoryPage',
         );
-        // OLD CODE: all transactions were loaded from backend for chip discovery.
-        // New Code: keep this for compatibility now; paginated history UI is separate.
+        // Keep this for compatibility now; paginated history UI is separate.
         allApiTransactions = await PointService.getAllPointTransactions(userId);
         Logger.info(
           'Successfully loaded ${allApiTransactions.length} transactions from API',
@@ -475,25 +457,18 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
           final balance = pointProvider.balance;
           final transactions = pointProvider.transactions;
-          final historySummary = pointProvider.historySummary;
           final hasMoreTransactions = pointProvider.hasMoreTransactions;
           final isLoadingMore = pointProvider.isLoadingMore;
           final hasInlineError = pointProvider.errorMessage != null &&
               pointProvider.errorMessage!.trim().isNotEmpty &&
               transactions.isNotEmpty;
 
-          // Check if we have any balance data to display (from any source)
-          // This allows us to show data immediately even if PointProvider is still loading
-          final hasBalanceData = balance != null ||
-              authProvider.user!.customFields.containsKey('points_balance') ||
-              authProvider.user!.customFields.containsKey('my_point') ||
-              authProvider.user!.customFields.containsKey('my_points');
+          // Trustworthy balance only from PointProvider — no Auth my_point flash.
+          final bool trustworthyBalanceForUi =
+              pointProvider.hasCompletedSessionInitialBalanceLoad ||
+                  balance != null;
 
-          // Only show loading indicator if we don't have any balance data yet
-          // This ensures users see their balance immediately from cached/user data
-          if (pointProvider.isLoading &&
-              !hasBalanceData &&
-              transactions.isEmpty) {
+          if (!trustworthyBalanceForUi && transactions.isEmpty) {
             return Center(
               child: ModernLoadingIndicator(
                 size: 50,
@@ -502,94 +477,16 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
             );
           }
 
-          // PROFESSIONAL FIX: Use proper fallback hierarchy for point balance
-          // Priority 1: PointProvider balance (most reliable, comes from API)
-          // Priority 2: points_balance from user custom fields (backend value)
-          // Priority 3: my_point/my_points from user custom fields (legacy field)
-          // This ensures we always show the most accurate balance available
-
-          // Get balance from PointProvider (primary source)
-          final balanceFromProvider = balance?.currentBalance ?? 0;
-
-          // Get points_balance from user custom fields (secondary source)
-          final pointsBalanceValue =
-              authProvider.user!.customFields['points_balance'];
-
-          // Get my_point value from user custom fields (tertiary source)
-          final myPointValue = authProvider.user!.customFields['my_point'] ??
-              authProvider.user!.customFields['my_points'] ??
-              authProvider.user!.customFields['My Point Value'];
-
-          // Parse values from different sources
-          final balanceFromPointsBalance =
-              _parseBalanceValue(pointsBalanceValue);
-          final balanceFromMyPoint = _parseBalanceValue(myPointValue);
-
-          // PROFESSIONAL FIX: Use proper priority hierarchy matching main_page.dart logic
-          // Priority 1: my_point/my_points from user custom fields (preferred for display)
-          // Priority 2: points_balance from user custom fields (backend value)
-          // Priority 3: PointProvider balance (fallback, most reliable API source)
-          // This ensures we show user's balance immediately from custom fields before API loads
-          int myPointBalance = 0;
-          String balanceSource = 'default';
-
-          // Priority 1: Check my_point/my_points first (matching main_page.dart behavior)
-          // Use if field exists and is not empty (allow 0 as valid value - user might have 0 points)
-          if (myPointValue != null && myPointValue.isNotEmpty) {
-            myPointBalance = balanceFromMyPoint;
-            balanceSource = 'my_point';
-            Logger.info(
-                'PointHistoryPage - Using my_point: $myPointBalance (raw: "$myPointValue", parsed: $balanceFromMyPoint)',
-                tag: 'PointHistoryPage');
-          }
-          // Priority 2: Check points_balance from user custom fields
-          // Use if field exists and is not empty (allow 0 as valid value)
-          else if (pointsBalanceValue != null &&
-              pointsBalanceValue.isNotEmpty) {
-            myPointBalance = balanceFromPointsBalance;
-            balanceSource = 'points_balance';
-            Logger.info(
-                'PointHistoryPage - Using points_balance: $myPointBalance (raw: "$pointsBalanceValue", parsed: $balanceFromPointsBalance)',
-                tag: 'PointHistoryPage');
-          }
-          // Priority 3: Use PointProvider balance (API source - most reliable)
-          // Use it if balance object exists, even if value is 0 (0 is valid)
-          else if (balance != null) {
-            myPointBalance = balanceFromProvider;
-            balanceSource = 'PointProvider';
-            Logger.info(
-                'PointHistoryPage - Using PointProvider balance: $myPointBalance',
-                tag: 'PointHistoryPage');
-          }
-          // Last resort: use maximum of all parsed values
-          // This handles edge cases where values might be inconsistent
-          else {
-            myPointBalance = [
-              balanceFromProvider,
-              balanceFromPointsBalance,
-              balanceFromMyPoint,
-            ].reduce((a, b) => a > b ? a : b);
-            balanceSource = 'maximum';
-            Logger.warning(
-                'PointHistoryPage - Using maximum available balance: $myPointBalance (PointProvider: $balanceFromProvider, points_balance: $balanceFromPointsBalance, my_point: $balanceFromMyPoint)',
-                tag: 'PointHistoryPage');
-          }
-
-          // Additional comprehensive logging for debugging
-          Logger.info('PointHistoryPage - Balance determination summary:',
-              tag: 'PointHistoryPage');
+          // Display + logic use PointProvider only — placeholders until trustworthy.
+          final int balanceFromProvider = balance?.currentBalance ?? 0;
+          final int myPointBalance = trustworthyBalanceForUi
+              ? balanceFromProvider
+              : 0;
           Logger.info(
-              '  - PointProvider: $balanceFromProvider (object: ${balance != null ? "exists" : "null"})',
-              tag: 'PointHistoryPage');
-          Logger.info(
-              '  - points_balance: $balanceFromPointsBalance (raw: "${pointsBalanceValue ?? "null"}")',
-              tag: 'PointHistoryPage');
-          Logger.info(
-              '  - my_point: $balanceFromMyPoint (raw: "${myPointValue ?? "null"}")',
-              tag: 'PointHistoryPage');
-          Logger.info(
-              '  - Final balance: $myPointBalance (source: $balanceSource)',
-              tag: 'PointHistoryPage');
+            'PointHistoryPage - Balance: trustworthy=$trustworthyBalanceForUi '
+            'myPointBalance=$myPointBalance (PointProvider only)',
+            tag: 'PointHistoryPage',
+          );
 
           // PROFESSIONAL FIX: Use RefreshIndicator to wrap entire page for pull-to-refresh
           // This allows users to refresh balance and transactions by pulling from anywhere
@@ -687,23 +584,26 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                         ),
                         SizedBox(height: 8),
                         Text(
-                          '$myPointBalance PNP',
+                          trustworthyBalanceForUi
+                              ? '$myPointBalance PNP'
+                              : '···',
                           style: TextStyle(
                             color: Colors.white,
-                            fontSize: 36,
+                            fontSize: trustworthyBalanceForUi ? 36 : 40,
                             fontWeight: FontWeight.bold,
+                            letterSpacing: trustworthyBalanceForUi ? 0 : 10,
                           ),
                         ),
                         SizedBox(height: 16),
                         // Exchange button
-                        if (myPointBalance > 0)
+                        if (trustworthyBalanceForUi && myPointBalance > 0)
                           SizedBox(
                             width: double.infinity,
                             child: ElevatedButton.icon(
                               onPressed: () => _showPointExchangeDialog(
                                 context,
                                 authProvider,
-                                myPointBalance,
+                                myPointBalance, // only when trustworthyBalanceForUi (button gated)
                               ),
                               icon: Icon(Icons.swap_horiz, color: mediumYellow),
                               label: Text(
@@ -746,14 +646,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                     ),
                   ),
                 ),
-
-                if (historySummary != null)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: _buildHistorySummaryCard(historySummary),
-                    ),
-                  ),
 
                 if (hasInlineError)
                   SliverToBoxAdapter(
@@ -1253,138 +1145,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     );
   }
 
-  Widget _buildHistorySummaryCard(PointHistorySummary summary) {
-    final currentRangeLabel = summary.startDate != null && summary.endDate != null
-        ? '${DateFormat.MMMd().format(summary.startDate!)} - ${DateFormat.MMMd().format(summary.endDate!)}'
-        : 'Last ${summary.rangeDays} days';
-    final showActualCurrentBalance =
-        summary.actualCurrentBalance != summary.closingBalance;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.account_balance_wallet_outlined,
-                  color: darkGrey, size: 18),
-              const SizedBox(width: 8),
-              Text(
-                'History Summary',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                  color: darkGrey,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                currentRangeLabel,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              _buildSummaryMetric(
-                'Opening',
-                summary.openingBalance,
-                Colors.blueGrey,
-              ),
-              _buildSummaryMetric('Added', summary.totalAdded, Colors.green),
-              _buildSummaryMetric(
-                  'Deducted', summary.totalDeducted, Colors.red),
-              _buildSummaryMetric(
-                'Closing',
-                summary.closingBalance,
-                mediumYellow,
-              ),
-            ],
-          ),
-          if (showActualCurrentBalance) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.info_outline,
-                      size: 16, color: Colors.grey.shade700),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Current balance now: ${summary.actualCurrentBalance} PNP',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade800,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSummaryMetric(String label, int value, Color color) {
-    return Container(
-      width: 140,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 12,
-              color: color,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '$value PNP',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// Build dynamic filter chips based on backend transaction types
   /// Shows Lucky Box, Exchange Request, Quiz Reward, etc. from backend data
   Widget _buildDynamicFilterChips(List<PointTransaction> transactions) {
@@ -1817,15 +1577,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                     color: Colors.grey[600],
                   ),
                 ),
-                // OLD CODE:
-                // if (transaction.orderId != null ||
-                //     isManualPoint ||
-                //     isManualReward ||
-                //     isQuizReward) ...[
-                //   ...
-                // ],
-                //
-                // New Code: keep legacy label row, plus rich poll details block.
+                // Keep legacy label row, plus rich poll details block.
                 if (transaction.orderId != null ||
                     isManualPoint ||
                     isManualReward ||
@@ -1928,12 +1680,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                // OLD CODE:
-                // isExchangeRequest
-                //     ? '-${transaction.points} PNP'
-                //     : '${transaction.formattedPoints} PNP',
-                //
-                // New Code: prefer explicit added/deducted values from backend.
+                // Prefer explicit added/deducted values from backend.
                 (transaction.amountAdded > 0 || transaction.amountDeducted > 0)
                     ? amountText
                     : (isExchangeRequest
@@ -2039,7 +1786,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final IconData statusIcon;
     final String statusLabel;
 
-    // OLD CODE: poll transaction details UI did not exist.
     if (status == 'won') {
       statusColor = Colors.green;
       statusIcon = Icons.emoji_events;

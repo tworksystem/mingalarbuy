@@ -8,6 +8,7 @@
 /// 5. RESET - Fetch new session → ACTIVE
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -18,8 +19,12 @@ import '../providers/auth_provider.dart';
 import '../providers/engagement_provider.dart';
 import '../providers/point_provider.dart';
 import '../services/engagement_service.dart';
-import '../services/point_notification_manager.dart';
+import '../services/canonical_point_balance_sync.dart';
+import '../utils/logger.dart';
 import 'package:flutter/foundation.dart';
+
+/// One deferred `PointProvider.refreshPointState` reconcile per poll+session (retry-safe).
+final Set<String> _autoRunPollBalanceServerFetchOnceKeys = <String>{};
 
 enum PollDisplayState {
   active,
@@ -583,7 +588,8 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     }
   }
 
-  /// When user wins: show point popup immediately (same time as result) + sync balance in background.
+  /// When user wins: **silent** point sync only (no winner popup / modal / notification UI).
+  /// [CanonicalPointBalanceSync.apply] + [PointProvider.refreshPointState] keep balance correct in background.
   Future<void> _handlePollWinPopupAndSync(PollResultData result) async {
     if (!mounted) return;
     try {
@@ -600,32 +606,112 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       }
       final finalPointProvider = pointProvider ?? PointProvider.instance;
 
-      // ============================================================================
-      // 2. Calculate what the balance should be mathematically using the EXACT UI provider
-      // ============================================================================
-      final expectedBalance =
-          finalPointProvider.currentBalance + result.pointsEarned;
+      // Baseline before optimistic bump (avoids double-counting earn twice).
+      final int authBal = authProvider?.userPointsBalance ??
+          AuthProvider().userPointsBalance;
+      final int baseline = math.max(
+        finalPointProvider.currentBalance,
+        authBal,
+      );
+      final int localWithEarned = baseline + result.pointsEarned;
+      final int effectiveBalance =
+          result.currentBalance > 0 ? result.currentBalance : localWithEarned;
 
-      // PROFESSIONAL FIX: Prevent stale API balance from suppressing the UI update.
-      final effectiveBalance = result.currentBalance >= expectedBalance
-          ? result.currentBalance
-          : expectedBalance;
+      final optimisticRefId =
+          'poll_win_${widget.pollId}_${result.sessionId.isNotEmpty ? result.sessionId : DateTime.now().millisecondsSinceEpoch}';
+
+      Logger.info(
+        'DEBUG_SYNC: optimisticAddPoints called userId=${widget.userId} '
+        'pointsToAdd=${result.pointsEarned} source=poll_win_auto_run',
+        tag: 'AutoRunPoll',
+      );
+      Logger.info(
+        'DEBUG_SYNC: optimisticAddPoints refId=$optimisticRefId',
+        tag: 'AutoRunPoll',
+      );
+      finalPointProvider.optimisticAddPoints(
+        result.pointsEarned,
+        refId: optimisticRefId,
+      );
 
       debugPrint(
         '[AutoRunPoll] ✓ WINNER REWARD SYNC — Poll: ${widget.pollId}, Session: ${result.sessionId}, '
-        'Earned: +${result.pointsEarned}, Effective Balance: $effectiveBalance (API: ${result.currentBalance})',
+        'Earned: +${result.pointsEarned}, baseline=$baseline → effective=$effectiveBalance '
+        '(API: ${result.currentBalance}, local+earn: $localWithEarned)',
       );
 
-      // 3. Apply the correct effective balance directly to the captured UI instances
-      authProvider?.applyPointsBalanceSnapshot(effectiveBalance);
-      finalPointProvider.applyRemoteBalanceSnapshot(
+      Logger.info(
+        'DEBUG_SYNC: Canonical balance sync userId=${widget.userId} '
+        'balance=$effectiveBalance source=poll_win_auto_run',
+        tag: 'AutoRunPoll',
+      );
+      await CanonicalPointBalanceSync.apply(
         userId: widget.userId.toString(),
         currentBalance: effectiveBalance,
+        source: 'poll_win_auto_run',
+        emitBroadcast: true,
+        authProvider: authProvider,
+        pointProvider: finalPointProvider,
+      );
+      Logger.info(
+        'DEBUG_SYNC: Canonical sync completed',
+        tag: 'AutoRunPoll',
       );
 
-      // In-app notification only (no blocking winner modal)
-      final eventId =
-          'poll_${widget.pollId}_${result.sessionId}_${DateTime.now().millisecondsSinceEpoch}';
+      if (kDebugMode) {
+        debugPrint(
+          '🚀 [PNP DEBUG] [${DateTime.now()}] Poll Win Detected! | PollID: ${widget.pollId} | Triggering Immediate Refresh...',
+        );
+      }
+      unawaited(
+        PointProvider.instance
+            .refreshPointState(
+          userId: widget.userId.toString(),
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: true,
+          refreshUserCallback: authProvider == null
+              ? null
+              : () => authProvider!.refreshUser(),
+        )
+            .catchError((Object error) {
+          debugPrint('[AutoRunPoll] immediate refreshPointState: $error');
+        }),
+      );
+
+      final String serverFetchKey =
+          'srv_${widget.pollId}_${result.sessionId}';
+      if (_autoRunPollBalanceServerFetchOnceKeys.add(serverFetchKey)) {
+        if (_autoRunPollBalanceServerFetchOnceKeys.length > 300) {
+          _autoRunPollBalanceServerFetchOnceKeys.clear();
+        }
+        unawaited(
+          Future<void>.delayed(const Duration(seconds: 3)).then((_) async {
+            await PointProvider.instance
+                .refreshPointState(
+              userId: widget.userId.toString(),
+              forceRefresh: true,
+              refreshBalance: true,
+              refreshTransactions: true,
+              refreshUserCallback: authProvider == null
+                  ? null
+                  : () => authProvider!.refreshUser(),
+            )
+                .catchError((Object error) {
+              debugPrint('[AutoRunPoll] delayed refreshPointState: $error');
+            });
+          }),
+        );
+      }
+
+      /*
+       * POPUP KILL-SWITCH (SILENT MODE) — UI celebration disabled:
+       *   // showDialog(...);
+       *   // showModalBottomSheet(...);
+       *
+       * In-app poll-win point notification / modal (PointNotificationManager) — kept off so only balance updates.
+       *
+      final eventId = 'poll_stable_${widget.pollId}_${result.sessionId}';
       final pollLabel = (widget.title != null && widget.title!.isNotEmpty)
           ? '${widget.title} — '
           : '';
@@ -647,8 +733,10 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
           'sessionId': result.sessionId,
         },
       );
+      */
       widget.onPointsEarned?.call();
 
+      /*
       // 3. Defer server reconcile with AGGRESSIVE ANTI-STALE LOOP.
       unawaited(
         Future<void>.microtask(() async {
@@ -656,14 +744,24 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
           for (int i = 1; i <= 3; i++) {
             await Future<void>.delayed(const Duration(seconds: 2));
 
-            // ANTI-STALE: Forcefully re-apply the optimistic balance to BOTH UI providers
-            // before the network call, in case a background feed silently overwrote them.
-            authProvider?.applyPointsBalanceSnapshot(effectiveBalance);
-            finalPointProvider.applyRemoteBalanceSnapshot(
+            // OLD CODE:
+            // authProvider?.applyPointsBalanceSnapshot(effectiveBalance);
+            // finalPointProvider.applyRemoteBalanceSnapshot(
+            //   userId: userIdStr,
+            //   currentBalance: effectiveBalance,
+            // );
+
+            // NEW FIX: Re-apply canonical state without extra broadcasts (loop runs 3×).
+            await CanonicalPointBalanceSync.apply(
               userId: userIdStr,
               currentBalance: effectiveBalance,
+              source: 'poll_win_auto_run_resync',
+              emitBroadcast: false,
+              authProvider: authProvider,
+              pointProvider: finalPointProvider,
             );
 
+            // Old Code:
             try {
               await finalPointProvider.loadBalance(userIdStr,
                   forceRefresh: true);
@@ -672,9 +770,25 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
             } catch (e) {
               debugPrint('[AutoRunPoll] sync loop $i error: $e');
             }
+
+            // New Code:
+            try {
+              await finalPointProvider.refreshPointState(
+                userId: userIdStr,
+                forceRefresh: true,
+                refreshBalance: true,
+                refreshTransactions: true,
+                refreshUserCallback: authProvider == null
+                    ? null
+                    : () => authProvider!.refreshUser(),
+              );
+            } catch (e) {
+              debugPrint('[AutoRunPoll] sync loop $i refreshPointState error: $e');
+            }
           }
         }),
       );
+      */
     } catch (e, st) {
       debugPrint('Poll win popup/sync error: $e\n$st');
     }
@@ -808,7 +922,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
 
     final int baseCost = _perUnitPnpForState(_stateData);
     final int safePerUnit = baseCost > 0 ? baseCost : 1000;
-    final int rewardMult = _stateData?.rewardMultiplier.toInt() ?? 4;
+    /*
+    Old Code — `rewardMultiplier.toInt()` silently truncated non-whole values server sends (eg 9.5x):
+      final int rewardMult = _stateData?.rewardMultiplier.toInt() ?? 4;
+    */
+
+    /// Full precision from `/poll/state` ([PollStateData.rewardMultiplier] is server float).
+    final double rewardMultEffective = _stateData?.rewardMultiplier ?? 4;
 
     final sessionId = _stateData?.currentSessionId ?? '';
     final cacheKey =
@@ -830,9 +950,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       return null;
     }
 
+    bool sameApproxMultiplier(num a, num b) =>
+        ((a.toDouble()) - (b.toDouble())).abs() < 1e-9;
+
     bool isSuspiciousMultiplierValue(int raw, int normalizedUnits) {
-      if (rewardMult > 1 &&
-          (raw == rewardMult || normalizedUnits == rewardMult)) {
+      if (rewardMultEffective <= 1) return false;
+      if (sameApproxMultiplier(raw, rewardMultEffective) ||
+          sameApproxMultiplier(normalizedUnits, rewardMultEffective)) {
         return true;
       }
       return false;
@@ -998,10 +1122,23 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
             } catch (_) {}
           }
 
-          authProvider?.applyPointsBalanceSnapshot(newBalance);
-          (pointProvider ?? PointProvider.instance).applyRemoteBalanceSnapshot(
+          /*
+          // OLD CODE:
+          // authProvider?.applyPointsBalanceSnapshot(newBalance);
+          // (pointProvider ?? PointProvider.instance).applyRemoteBalanceSnapshot(
+          //   userId: widget.userId.toString(),
+          //   currentBalance: newBalance,
+          // );
+          */
+
+          // NEW FIX: Vote deduction — canonical memory + meta + disk (no duplicate broadcast).
+          await CanonicalPointBalanceSync.apply(
             userId: widget.userId.toString(),
             currentBalance: newBalance,
+            source: 'poll_vote_deduct_auto_run',
+            emitBroadcast: false,
+            authProvider: authProvider,
+            pointProvider: pointProvider ?? PointProvider.instance,
           );
         }
 

@@ -21,6 +21,40 @@ class PointProvider with ChangeNotifier {
   PointProvider._internal() {
     _initialize();
     _syncSubscription = PointSyncTelemetry.events.listen(_handleSyncEvent);
+    // Context-free earn/cache updates still reach Home My PNP.
+    _pointBroadcastSubscription =
+        PointService.pointSyncBroadcast.listen(_onPointSyncBroadcast);
+  }
+
+  /// Applies balance from [PointService.pointSyncBroadcast] (e.g. poll win emit).
+  /// [applyOptimisticBalanceUpdate] ends with [notifyListeners] so Home My PNP
+  /// (Consumer2) rebuilds without a separate StreamBuilder.
+  void _onPointSyncBroadcast(PointSyncBroadcast event) {
+    Logger.info(
+      'DEBUG_SYNC: _onPointSyncBroadcast received userId=${event.userId} '
+      'newBalance=${event.newBalance} source=${event.source} '
+      '_currentUserId=$_currentUserId',
+      tag: 'PointProvider',
+    );
+    if (event.userId.isEmpty) {
+      Logger.info(
+        'DEBUG_SYNC: _onPointSyncBroadcast skipped (empty userId)',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+    if (_currentUserId != null && _currentUserId != event.userId) {
+      Logger.info(
+        'DEBUG_SYNC: _onPointSyncBroadcast skipped (user mismatch '
+        'event=${event.userId} current=$_currentUserId)',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+    applyOptimisticBalanceUpdate(
+      userId: event.userId,
+      currentBalance: event.newBalance,
+    );
   }
 
   // Factory constructor for Provider compatibility
@@ -28,13 +62,14 @@ class PointProvider with ChangeNotifier {
 
   PointBalance? _balance;
   List<PointTransaction> _transactions = [];
-  PointHistorySummary? _historySummary;
   bool _isLoading = false;
   bool _isLoadingMore = false;
   String? _errorMessage;
   StreamSubscription<PointSyncEvent>? _syncSubscription;
+  StreamSubscription<PointSyncBroadcast>? _pointBroadcastSubscription;
   String? _currentUserId;
   bool _hasLoadedForCurrentUser = false;
+  final Set<String> _optimisticRefs = {};
 
   // OPTIMIZED: Cache ConnectivityService instance to avoid repeated creation
   late final ConnectivityService _connectivityService = ConnectivityService();
@@ -61,7 +96,6 @@ class PointProvider with ChangeNotifier {
   // Getters
   PointBalance? get balance => _balance;
   List<PointTransaction> get transactions => List.unmodifiable(_transactions);
-  PointHistorySummary? get historySummary => _historySummary;
   bool get isLoading => _isLoading;
   bool get isLoadingMore => _isLoadingMore;
   String? get errorMessage => _errorMessage;
@@ -70,7 +104,8 @@ class PointProvider with ChangeNotifier {
   int _totalTransactionPages = 1;
   int get currentTransactionsPage => _currentTransactionsPage;
   int get totalTransactionPages => _totalTransactionPages;
-  bool get hasMoreTransactions => _currentTransactionsPage < _totalTransactionPages;
+  bool get hasMoreTransactions =>
+      _currentTransactionsPage < _totalTransactionPages;
   int get currentBalance => _balance?.currentBalance ?? 0;
   bool get hasPoints => currentBalance > 0;
   String get formattedBalance => _balance?.formattedBalance ?? '0 points';
@@ -109,7 +144,6 @@ class PointProvider with ChangeNotifier {
         // Clear old user's data immediately
         _balance = null;
         _transactions = [];
-        _historySummary = null;
         _currentTransactionsPage = 1;
         _transactionsPerPage = 20;
         _totalTransactionPages = 1;
@@ -123,12 +157,23 @@ class PointProvider with ChangeNotifier {
 
       // Only load if this is a new user or we haven't loaded for this user yet
       if (_currentUserId != userId || !_hasLoadedForCurrentUser) {
+        final bool isUserSwitching =
+            _currentUserId != null && _currentUserId != userId;
         _currentUserId = userId;
         Logger.info(
             'User authenticated, loading point balance for user: $userId',
             tag: 'PointProvider');
-        // PROFESSIONAL FIX: Force refresh when user changes to ensure fresh data
-        await loadBalance(userId, forceRefresh: _currentUserId != userId);
+        final bool forceRefreshOnLoad =
+            isUserSwitching || !_hasLoadedForCurrentUser;
+        if (forceRefreshOnLoad) {
+          Logger.debug(
+            'Forcing balance refresh due to user switch or explicit request '
+            '(handleAuthStateChange: first hydrate/account switch, '
+            'isUserSwitching=$isUserSwitching)',
+            tag: 'PointProvider',
+          );
+        }
+        await loadBalance(userId, forceRefresh: forceRefreshOnLoad);
         _hasLoadedForCurrentUser = true;
       } else {
         Logger.info(
@@ -142,7 +187,6 @@ class PointProvider with ChangeNotifier {
       _hasLoadedForCurrentUser = false;
       _balance = null;
       _transactions = [];
-      _historySummary = null;
       _currentTransactionsPage = 1;
       _transactionsPerPage = 20;
       _totalTransactionPages = 1;
@@ -169,6 +213,21 @@ class PointProvider with ChangeNotifier {
   Future<void> loadBalance(String userId, {bool forceRefresh = false}) async {
     // First successful hydrate for this session (startup / login sync), not an in-session earn.
     final bool isInitialLoad = !_sessionInitialBalanceLoadComplete;
+    Logger.info(
+      'PointProvider.loadBalance start: userId=$userId, forceRefresh=$forceRefresh, '
+      'isConnected=${_connectivityService.isConnected}, currentUserId=$_currentUserId, '
+      'localBalance=${_balance?.currentBalance}',
+      tag: 'PointProvider',
+    );
+    if (forceRefresh) {
+      Logger.debug(
+        'Forcing balance refresh due to user switch or explicit request '
+        '(loadBalance forceRefresh=true, userId=$userId)',
+        tag: 'PointProvider',
+      );
+      // Force path must invalidate "already loaded" guard before any fetch.
+      _hasLoadedForCurrentUser = false;
+    }
 
     // PROFESSIONAL FIX: Check if userId matches before skipping
     // If userId changed, we need to reload even if balance exists
@@ -188,7 +247,6 @@ class PointProvider with ChangeNotifier {
             'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
             tag: 'PointProvider');
         _balance = null;
-        _historySummary = null;
         _hasLoadedForCurrentUser = false;
       }
     }
@@ -211,7 +269,10 @@ class PointProvider with ChangeNotifier {
       // OPTIMIZED: Use cached connectivity service
       if (_connectivityService.isConnected) {
         // Load balance from API first (source of truth)
-        final balance = await PointService.getPointBalance(userId);
+        final balance = await PointService.getPointBalance(
+          userId,
+          cacheBypassTimestampMs: DateTime.now().millisecondsSinceEpoch,
+        );
         if (balance != null) {
           // PROFESSIONAL FIX: Don't overwrite with a LOWER balance when we recently
           // applied a poll/push snapshot. Prevents stale API from undoing a poll win.
@@ -220,46 +281,238 @@ class PointProvider with ChangeNotifier {
           final isRecentSnapshot = lastSnapshot != null &&
               now.difference(lastSnapshot).inSeconds < 8;
           final guardUntil = _balanceNonDowngradeUntil;
-          final guardActive =
-              guardUntil != null && !now.isAfter(guardUntil);
+          final guardActive = guardUntil != null && !now.isAfter(guardUntil);
           final currentFromSnapshot = _balance?.currentBalance ?? 0;
-          // Old Code: if ((isRecentSnapshot || guardActive) &&
-          // Old Code:     currentFromSnapshot > 0 &&
-          // Old Code:     balance.currentBalance < currentFromSnapshot) {
-          if (!forceRefresh &&
+          final bool snapshotWouldPreferLocal =
               (isRecentSnapshot || guardActive) &&
-              currentFromSnapshot > 0 &&
-              balance.currentBalance < currentFromSnapshot) {
+                  currentFromSnapshot > 0 &&
+                  balance.currentBalance < currentFromSnapshot;
+          // Safety check: even during forceRefresh, do not downgrade to a lower API
+          // value while snapshot guard window is active (likely stale read).
+          final bool keepLocalSnapshotBecauseStaleApi =
+              snapshotWouldPreferLocal;
+
+          if (keepLocalSnapshotBecauseStaleApi) {
             Logger.info(
-                'Keeping applied snapshot balance $currentFromSnapshot (API returned ${balance.currentBalance})',
-                tag: 'PointProvider');
+              'Keeping applied snapshot balance $currentFromSnapshot '
+              '(API returned ${balance.currentBalance}, forceRefresh=$forceRefresh)',
+              tag: 'PointProvider',
+            );
           } else {
+            if (forceRefresh && snapshotWouldPreferLocal) {
+              Logger.info(
+                'Forcing balance refresh due to user switch or explicit request — '
+                'applying API balance ${balance.currentBalance} '
+                '(snapshot guard bypassed; local snapshot was $currentFromSnapshot)',
+                tag: 'PointProvider',
+              );
+            }
             _balance = balance;
             Logger.info(
-                'Point balance loaded from API: ${balance.currentBalance} points',
-                tag: 'PointProvider');
+              'Point balance loaded from API: ${balance.currentBalance} points',
+              tag: 'PointProvider',
+            );
           }
           _hasLoadedForCurrentUser = true;
-          _notifyListenersDebounced();
+          // Balance must hit My PNP immediately after API read (do not wait for transactions
+          // or debounce — poll-win UX depends on this).
+          _debounceTimer?.cancel();
+          notifyListeners();
         } else {
-          // If API fails, try cache
-          await _loadCachedBalance(userId: userId);
+          if (forceRefresh) {
+            // Force refresh must trust server as source of truth; do not reuse stale cache.
+            Logger.error(
+              'PointProvider.loadBalance forceRefresh API returned null. '
+              'Clearing in-memory balance and skipping cache fallback for userId=$userId',
+              tag: 'PointProvider',
+            );
+            _balance = null;
+            _hasLoadedForCurrentUser = false;
+            _setError(_buildBalanceSyncErrorMessage());
+            _debounceTimer?.cancel();
+            notifyListeners();
+          } else {
+            Logger.warning(
+              'PointProvider.loadBalance API returned null, entering cache fallback '
+              'for userId=$userId',
+              tag: 'PointProvider',
+            );
+            await _loadCachedBalance(
+              userId: userId,
+              preferImmediateNotify: isInitialLoad,
+            );
+          }
         }
       } else {
         // Load from cache if offline
-        await _loadCachedBalance(userId: userId);
+        await _loadCachedBalance(
+          userId: userId,
+          preferImmediateNotify: isInitialLoad,
+        );
       }
     } catch (e, stackTrace) {
       Logger.error('Error loading point balance: $e',
           tag: 'PointProvider', error: e, stackTrace: stackTrace);
-      _setError('Failed to load point balance');
-      // Try to load from cache on error
-      await _loadCachedBalance(userId: userId);
+      if (forceRefresh) {
+        Logger.error(
+          'PointProvider.loadBalance forceRefresh threw error, skipping cache fallback '
+          'and clearing balance for userId=$userId',
+          tag: 'PointProvider',
+        );
+        _balance = null;
+        _hasLoadedForCurrentUser = false;
+        _setError(_buildBalanceSyncErrorMessage(error: e));
+        _debounceTimer?.cancel();
+        notifyListeners();
+      } else {
+        _setError('Failed to load point balance');
+        Logger.warning(
+          'PointProvider.loadBalance catch branch entering cache fallback '
+          'for userId=$userId',
+          tag: 'PointProvider',
+        );
+        await _loadCachedBalance(
+          userId: userId,
+          preferImmediateNotify: isInitialLoad,
+        );
+      }
     } finally {
       _setLoading(false);
       if (_balance != null && isInitialLoad) {
         _sessionInitialBalanceLoadComplete = true;
       }
+    }
+  }
+
+  /// Centralized point-state refresh flow used by Home, point history, and
+  /// point mutation events so all screens reconcile with the same logic.
+  Future<void> refreshPointState({
+    required String userId,
+    bool forceRefresh = true,
+    bool refreshBalance = true,
+    bool refreshTransactions = true,
+    int transactionsPage = 1,
+    int transactionsPerPage = 20,
+    int? transactionsRangeDays,
+    DateTime? transactionsDateFrom,
+    DateTime? transactionsDateTo,
+    Future<void> Function()? refreshUserCallback,
+  }) async {
+    if (kDebugMode) {
+      debugPrint(
+        '📥 [PNP DEBUG] [${DateTime.now()}] PointProvider: refreshPointState called. | UserID: $userId | Force: $forceRefresh',
+      );
+    }
+    Logger.info(
+      'PointProvider.refreshPointState called: userId=$userId, '
+      'forceRefresh=$forceRefresh, refreshBalance=$refreshBalance, '
+      'refreshTransactions=$refreshTransactions',
+      tag: 'PointProvider',
+    );
+
+    if (refreshBalance) {
+      if (forceRefresh) {
+        // Ensure next fetch cannot be short-circuited by in-memory "already loaded" state.
+        _hasLoadedForCurrentUser = false;
+      }
+      await loadBalance(userId, forceRefresh: forceRefresh);
+    }
+
+    final refreshUser = refreshUserCallback;
+    if (refreshUser != null) {
+      unawaited(
+        refreshUser().catchError((Object e, StackTrace st) {
+          Logger.error(
+            'refreshUserCallback failed: $e',
+            tag: 'PointProvider',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
+    }
+
+    if (refreshTransactions) {
+      unawaited(
+        loadTransactions(
+          userId,
+          page: transactionsPage,
+          perPage: transactionsPerPage,
+          forceRefresh: forceRefresh,
+          rangeDays: transactionsRangeDays ?? 90,
+          dateFrom: transactionsDateFrom,
+          dateTo: transactionsDateTo,
+        ).catchError((Object e, StackTrace st) {
+          Logger.error(
+            'refreshPointState loadTransactions failed: $e',
+            tag: 'PointProvider',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
+    }
+  }
+
+  /// Compatibility helper for UI/service call sites that only need
+  /// "refresh latest points now" semantics after a poll winner event.
+  Future<void> fetchPoints({
+    String? userId,
+    Future<void> Function()? refreshUserCallback,
+  }) async {
+    final effectiveUserId =
+        (userId != null && userId.isNotEmpty) ? userId : _currentUserId;
+    if (effectiveUserId == null || effectiveUserId.isEmpty) {
+      Logger.warning(
+        'PointProvider.fetchPoints skipped: no userId available',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+
+    await refreshPointState(
+      userId: effectiveUserId,
+      forceRefresh: true,
+      refreshBalance: true,
+      refreshTransactions: true,
+      refreshUserCallback: refreshUserCallback,
+    );
+  }
+
+  /// Optimistically increments current balance for instant UI feedback.
+  /// Intended for poll-win paths before server reconciliation finishes.
+  void optimisticAddPoints(int pointsToAdd, {required String refId}) {
+    if (_optimisticRefs.length > 50) {
+      Logger.info(
+        'Clearing old optimistic refs to prevent memory leak.',
+        tag: 'PointProvider',
+      );
+      _optimisticRefs.clear();
+    }
+    if (_optimisticRefs.contains(refId)) {
+      Logger.info(
+        'Optimistic points already added for $refId, skipping.',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+    Logger.info(
+      'DEBUG_SYNC: optimisticAddPoints accept refId=$refId pointsToAdd=$pointsToAdd',
+      tag: 'PointProvider',
+    );
+    _optimisticRefs.add(refId);
+    if (_balance != null) {
+      final previous = _balance!;
+      _balance = PointBalance(
+        userId: previous.userId,
+        currentBalance: previous.currentBalance + pointsToAdd,
+        lifetimeEarned: previous.lifetimeEarned,
+        lifetimeRedeemed: previous.lifetimeRedeemed,
+        lifetimeExpired: previous.lifetimeExpired,
+        lastUpdated: DateTime.now(),
+        pointsExpireAt: previous.pointsExpireAt,
+      );
+      notifyListeners();
     }
   }
 
@@ -269,10 +522,10 @@ class PointProvider with ChangeNotifier {
     required String userId,
     required int currentBalance,
   }) {
+    final int previousBalance = _balance?.currentBalance ?? -1;
     if (_currentUserId != null && _currentUserId != userId) {
       _balance = null;
       _transactions = [];
-      _historySummary = null;
       _lastTransactionsHash = null;
       _hasLoadedForCurrentUser = false;
     }
@@ -288,8 +541,21 @@ class PointProvider with ChangeNotifier {
       pointsExpireAt: previous?.pointsExpireAt,
     );
     _hasLoadedForCurrentUser = true;
+    final bool balanceChanged =
+        previous == null || previous.currentBalance != currentBalance;
+    Logger.info(
+      'DEBUG_SYNC: applyOptimisticBalanceUpdate userId=$userId '
+      'previousBalance=$previousBalance newBalance=$currentBalance '
+      'balanceActuallyChanged=$balanceChanged — calling notifyListeners()',
+      tag: 'PointProvider',
+    );
     // Optimistic updates (e.g. poll win) need immediate UI refresh
     notifyListeners();
+    Logger.info(
+      'DEBUG_SYNC: applyOptimisticBalanceUpdate notifyListeners() returned '
+      '(scheduled listeners; newBalance=$currentBalance)',
+      tag: 'PointProvider',
+    );
   }
 
   /// Apply point balance snapshot coming from push notification payload.
@@ -321,10 +587,10 @@ class PointProvider with ChangeNotifier {
       pointsExpireAt: previous?.pointsExpireAt,
     );
 
-    _lastPushBalanceSnapshotAt = DateTime.now();
-    // Extended window: poll win + deferred loadBalance (4s) + slow API/meta sync.
-    _balanceNonDowngradeUntil =
-        DateTime.now().add(const Duration(seconds: 35));
+    // Prevent stale API overwrite: extend non-downgrade window on every remote snapshot.
+    final DateTime snapshotClock = DateTime.now();
+    _lastPushBalanceSnapshotAt = snapshotClock;
+    _balanceNonDowngradeUntil = snapshotClock.add(const Duration(seconds: 35));
     _hasLoadedForCurrentUser = true;
     // PROFESSIONAL FIX: Notify immediately so My PNP card and popup show same balance.
     // Poll/push snapshots are user-critical; 300ms debounce caused balance to lag behind popup.
@@ -374,20 +640,6 @@ class PointProvider with ChangeNotifier {
     return true;
   }
 
-  bool _isHistorySummaryEqual(
-    PointHistorySummary? a,
-    PointHistorySummary? b,
-  ) {
-    if (identical(a, b)) return true;
-    if (a == null || b == null) return false;
-    return a.openingBalance == b.openingBalance &&
-        a.closingBalance == b.closingBalance &&
-        a.totalAdded == b.totalAdded &&
-        a.totalDeducted == b.totalDeducted &&
-        a.actualCurrentBalance == b.actualCurrentBalance &&
-        a.rangeDays == b.rangeDays;
-  }
-
   /// Load point transactions for user
   /// IMPORTANT: Pending transactions SHOULD be shown in history (transparency),
   /// but they do NOT affect balance until approved.
@@ -402,8 +654,7 @@ class PointProvider with ChangeNotifier {
       DateTime? dateTo}) async {
     DateTime? effectiveFrom = dateFrom;
     DateTime? effectiveTo = dateTo;
-    // OLD CODE: date range was passed-through as-is.
-    // New Code: normalize reversed inputs defensively for API reliability.
+    // Normalize reversed inputs defensively for API reliability.
     if (effectiveFrom != null &&
         effectiveTo != null &&
         effectiveFrom.isAfter(effectiveTo)) {
@@ -455,8 +706,7 @@ class PointProvider with ChangeNotifier {
     }
 
     if (isLoadMoreRequest) {
-      // OLD CODE: all transaction requests shared the same full-page loading state.
-      // New Code: use a dedicated incremental loading flag for pagination UX.
+      // Use a dedicated incremental loading flag for pagination UX.
       _isLoadingMore = true;
       notifyListeners();
     } else {
@@ -473,8 +723,7 @@ class PointProvider with ChangeNotifier {
         Logger.info(
             'PointProvider - Force refresh requested, will load fresh data from API',
             tag: 'PointProvider');
-        // OLD CODE: Don't load from cache on force refresh - go straight to API
-        // New Code: clear local transaction cache first to rebuild with latest schema/data.
+        // Clear local transaction cache first to rebuild with latest schema/data.
         await PointService.clearTransactionsCache(userId);
       } else if (_transactions.isEmpty && !isLoadMoreRequest) {
         // Only load cached transactions if we don't have any AND not forcing refresh
@@ -510,13 +759,7 @@ class PointProvider with ChangeNotifier {
         }
       }
 
-      // Now load fresh data from API
-      // OLD CODE:
-      // final transactions = await PointService.getPointTransactions(userId,
-      //     page: page, perPage: perPage);
-      //
-      // New Code: keep transactions plus timeframe summary in sync.
-      final previousSummary = _historySummary;
+      // Load fresh data from API and keep list state in sync.
       final historyResult = await PointService.getPointTransactions(
         userId,
         page: page,
@@ -526,7 +769,6 @@ class PointProvider with ChangeNotifier {
         dateTo: effectiveTo,
       );
       final transactions = historyResult.transactions;
-      _historySummary = historyResult.summary;
       _currentTransactionsPage = historyResult.page;
       _transactionsPerPage = historyResult.perPage;
       _totalTransactionPages = historyResult.totalPages;
@@ -558,16 +800,14 @@ class PointProvider with ChangeNotifier {
       // Pending transactions are informational and do not affect balance.
       var filteredTransactions = sortedTransactions;
 
-      // OLD CODE: final filteredTransactions = sortedTransactions;
-      // New Code: preserve already-known poll details if API row is temporarily missing them.
+      // Preserve already-known poll details if API row is temporarily missing them.
       filteredTransactions = _mergeTransactionsPreservingPollDetails(
         current: _transactions,
         incoming: filteredTransactions,
       );
 
       if (isLoadMoreRequest) {
-        // OLD CODE: new API results replaced the whole list.
-        // New Code: append additional pages while preserving existing enriched rows.
+        // Append additional pages while preserving existing enriched rows.
         final existingById = <String, PointTransaction>{
           for (final tx in _transactions) tx.id: tx,
         };
@@ -586,7 +826,6 @@ class PointProvider with ChangeNotifier {
       // Also ensure we update if transactions list is empty (to show empty state)
       final shouldUpdate =
           !_areTransactionsEqual(_transactions, filteredTransactions) ||
-              !_isHistorySummaryEqual(previousSummary, historyResult.summary) ||
               forceRefresh ||
               _transactions.isEmpty != filteredTransactions.isEmpty;
 
@@ -608,7 +847,6 @@ class PointProvider with ChangeNotifier {
               tag: 'PointProvider');
         }
       } else {
-        _historySummary = historyResult.summary;
         Logger.info(
             'PointProvider - Transactions unchanged, skipping UI update',
             tag: 'PointProvider');
@@ -633,11 +871,6 @@ class PointProvider with ChangeNotifier {
             // Only update if different
             if (!_areTransactionsEqual(_transactions, fallbackTransactions)) {
               _transactions = fallbackTransactions;
-              _historySummary = PointHistorySummary(
-                rangeDays: rangeDays,
-                startDate: effectiveFrom,
-                endDate: effectiveTo,
-              );
               _currentUserId = userId;
               _notifyListenersDebounced(force: true);
               Logger.info(
@@ -650,11 +883,6 @@ class PointProvider with ChangeNotifier {
                 'No transactions found: API failed and no cached transactions available',
                 tag: 'PointProvider');
             _transactions = [];
-            _historySummary = PointHistorySummary(
-              rangeDays: rangeDays,
-              startDate: effectiveFrom,
-              endDate: effectiveTo,
-            );
             _currentUserId = userId;
             _notifyListenersDebounced(force: true);
           }
@@ -665,11 +893,6 @@ class PointProvider with ChangeNotifier {
               error: cacheError);
           // Even if cache fails, ensure UI is notified
           _transactions = [];
-          _historySummary = PointHistorySummary(
-            rangeDays: rangeDays,
-            startDate: effectiveFrom,
-            endDate: effectiveTo,
-          );
           _currentUserId = userId;
           _notifyListenersDebounced(force: true);
         }
@@ -702,43 +925,6 @@ class PointProvider with ChangeNotifier {
       dateFrom: dateFrom,
       dateTo: dateTo,
     );
-  }
-
-  Future<void> loadProfileHistorySummary(
-    String userId, {
-    DateTime? dateFrom,
-    DateTime? dateTo,
-  }) async {
-    try {
-      final now = DateTime.now();
-      final effectiveStart =
-          dateFrom ?? DateTime(now.year, now.month, 1);
-      final effectiveEnd = dateTo ?? now;
-
-      // OLD CODE: only loadTransactions() refreshed historySummary, which also
-      // replaced the visible transaction list state.
-      // New Code: fetch a summary-only payload for profile/dashboard surfaces.
-      final historyResult = await PointService.getPointTransactions(
-        userId,
-        page: 1,
-        perPage: 1,
-        rangeDays: 31,
-        dateFrom: effectiveStart,
-        dateTo: effectiveEnd,
-      );
-
-      if (!_isHistorySummaryEqual(_historySummary, historyResult.summary)) {
-        _historySummary = historyResult.summary;
-        _notifyListenersDebounced(force: true);
-      }
-    } catch (e, stackTrace) {
-      Logger.error(
-        'Error loading profile history summary: $e',
-        tag: 'PointProvider',
-        error: e,
-        stackTrace: stackTrace,
-      );
-    }
   }
 
   List<PointTransaction> _mergeTransactionsPreservingPollDetails({
@@ -781,8 +967,23 @@ class PointProvider with ChangeNotifier {
       );
 
       if (success) {
-        // Reload balance and transactions
-        await loadBalance(userId);
+        // Align in-memory balance with local cache immediately (notify inside
+        // applyOptimisticBalanceUpdate), then force server reconcile so loadBalance cannot skip.
+        final cached = await PointService.getCachedBalance(userId);
+        if (cached != null) {
+          applyOptimisticBalanceUpdate(
+            userId: userId,
+            currentBalance: cached.currentBalance,
+          );
+        } else if (type == PointTransactionType.earn && points > 0) {
+          final prior = _balance?.currentBalance ?? 0;
+          applyOptimisticBalanceUpdate(
+            userId: userId,
+            currentBalance: prior + points,
+          );
+        }
+
+        await loadBalance(userId, forceRefresh: true);
         await loadTransactions(userId);
         Logger.info('Points earned successfully: $points points',
             tag: 'PointProvider');
@@ -792,11 +993,11 @@ class PointProvider with ChangeNotifier {
           // PROFESSIONAL FIX: Detect engagement points by checking orderId pattern
           // Engagement points have orderId starting with 'engagement:' (e.g., 'engagement:quiz:123:timestamp')
           final earnOrderId = orderId;
-          final isEngagementPoints = earnOrderId != null &&
-              earnOrderId.startsWith('engagement:');
+          final isEngagementPoints =
+              earnOrderId != null && earnOrderId.startsWith('engagement:');
           // Poll wins: in-app notification only (matches carousel / auto-run poll UX).
-          final isPollEngagement = earnOrderId != null &&
-              earnOrderId.startsWith('engagement:poll:');
+          final isPollEngagement =
+              earnOrderId != null && earnOrderId.startsWith('engagement:poll:');
           final notificationType = isEngagementPoints
               ? PointNotificationType.engagementEarned
               : PointNotificationType.earned;
@@ -936,7 +1137,10 @@ class PointProvider with ChangeNotifier {
   }
 
   /// Load cached balance from local storage
-  Future<void> _loadCachedBalance({String? userId}) async {
+  Future<void> _loadCachedBalance({
+    String? userId,
+    bool preferImmediateNotify = false,
+  }) async {
     try {
       final id =
           (userId != null && userId.isNotEmpty) ? userId : _currentUserId;
@@ -946,7 +1150,13 @@ class PointProvider with ChangeNotifier {
       if (cached != null) {
         _balance = cached;
         _hasLoadedForCurrentUser = true;
-        _notifyListenersDebounced();
+        // Same as API path — initial session hydrate should paint immediately.
+        if (preferImmediateNotify && !_sessionInitialBalanceLoadComplete) {
+          _debounceTimer?.cancel();
+          notifyListeners();
+        } else {
+          _notifyListenersDebounced();
+        }
         Logger.info(
           'Cached point balance loaded: ${_balance?.currentBalance} points',
           tag: 'PointProvider',
@@ -972,6 +1182,31 @@ class PointProvider with ChangeNotifier {
     _notifyListenersDebounced();
   }
 
+  String _buildBalanceSyncErrorMessage({Object? error}) {
+    final status = PointService.lastPointBalanceStatusCode;
+    final reason = (PointService.lastPointBalanceFailureMessage ?? '').trim();
+    final lowerError = (error?.toString() ?? '').toLowerCase();
+    final lowerReason = reason.toLowerCase();
+
+    if (status == 401 || status == 403) {
+      return 'Session expired. Please re-login.';
+    }
+    if (status != null && status >= 500) {
+      return 'Server error. Please try again later.';
+    }
+    final bool timeoutLike = lowerError.contains('timeout') ||
+        lowerError.contains('timed out') ||
+        lowerReason.contains('timeout') ||
+        lowerReason.contains('timed out');
+    if (timeoutLike) {
+      return 'Connection timeout.';
+    }
+    if (reason.isNotEmpty) {
+      return 'Sync failed: $reason';
+    }
+    return 'Sync failed: unable to load latest balance';
+  }
+
   /// Clear error message
   void _clearError() {
     _errorMessage = null;
@@ -982,6 +1217,7 @@ class PointProvider with ChangeNotifier {
   void dispose() {
     _debounceTimer?.cancel();
     _syncSubscription?.cancel();
+    _pointBroadcastSubscription?.cancel();
     super.dispose();
   }
 }

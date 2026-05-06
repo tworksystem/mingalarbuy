@@ -62,6 +62,9 @@ class _MainPageState extends State<MainPage>
   // Stream subscription for point notification events
   StreamSubscription<PointNotificationEvent>? _pointNotificationSubscription;
   bool _isModalShowing = false;
+  int _lastMainTabIndexForPnp = 0;
+  Timer? _homePnpDebouncedRefreshTimer;
+  static const Duration _homePnpRefreshDebounce = Duration(seconds: 2);
 
   // Track point balance changes to detect updates from app side
   int? _lastKnownBalance;
@@ -72,11 +75,32 @@ class _MainPageState extends State<MainPage>
   /// After login, skip one balance baseline when [PointProvider] finishes first hydrate.
   bool _initialPointHydrationSyncHandled = false;
 
+  /// Poll / engagement automated popups: do not show [PointNotificationModal] from MainPage.
+  bool _shouldSilencePollRelatedPointModal(PointNotificationEvent event) {
+    // engagement_earned → engagement points (includes poll_win path via FCM / sync)
+    if (event.type == PointNotificationType.engagementEarned) {
+      return true;
+    }
+    // points_earned when clearly poll-related
+    if (event.type == PointNotificationType.earned) {
+      final oid = event.orderId ?? '';
+      if (oid.startsWith('engagement:poll:')) return true;
+      final itemType = (event.additionalData?['itemType'] ??
+              event.additionalData?['item_type'])
+          ?.toString()
+          .toLowerCase();
+      if (itemType == 'poll') return true;
+    }
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
     // Bottom navigation now only has Home and Profile tabs.
     bottomTabController = TabController(length: 2, vsync: this);
+    _lastMainTabIndexForPnp = bottomTabController.index;
+    bottomTabController.addListener(_onBottomTabChangedForMyPnp);
     // Load cached products first, then fetch fresh data if online
     _initializeProducts();
     // Listen for point notification events for modal popup
@@ -135,6 +159,13 @@ class _MainPageState extends State<MainPage>
           Future.delayed(const Duration(milliseconds: 100), () {
             // Check if modal is still not showing (PointNotificationManager might have shown it)
             if (mounted && !_isModalShowing) {
+              if (_shouldSilencePollRelatedPointModal(event)) {
+                Logger.info(
+                  'MainPage: silencing point modal (poll/engagement rule): ${event.type}',
+                  tag: 'MainPage',
+                );
+                return;
+              }
               _showPointNotificationModal(event);
             } else {
               Logger.info(
@@ -297,7 +328,14 @@ class _MainPageState extends State<MainPage>
             _lastShownTransactionId = latestTransaction?.id;
             _lastModalShownTime = now;
 
-            _showPointNotificationModal(event);
+            if (!_shouldSilencePollRelatedPointModal(event)) {
+              _showPointNotificationModal(event);
+            } else {
+              Logger.info(
+                'MainPage: silencing balance-driven point modal (poll/engagement): ${event.type}',
+                tag: 'MainPage',
+              );
+            }
           }
         }
 
@@ -346,6 +384,14 @@ class _MainPageState extends State<MainPage>
     if (_isModalShowing) {
       Logger.info(
         'Modal already showing, skipping duplicate modal request.',
+        tag: 'MainPage',
+      );
+      return;
+    }
+
+    if (_shouldSilencePollRelatedPointModal(event)) {
+      Logger.info(
+        'MainPage: _showPointNotificationModal blocked (poll/engagement rule): ${event.type}',
         tag: 'MainPage',
       );
       return;
@@ -408,9 +454,29 @@ class _MainPageState extends State<MainPage>
     }
   }
 
+  void _onBottomTabChangedForMyPnp() {
+    if (_isDisposed || !mounted) return;
+    if (bottomTabController.indexIsChanging) return;
+    final int current = bottomTabController.index;
+    if (current == 0 && _lastMainTabIndexForPnp != 0) {
+      _homePnpDebouncedRefreshTimer?.cancel();
+      _homePnpDebouncedRefreshTimer = Timer(_homePnpRefreshDebounce, () {
+        if (_isDisposed || !mounted) return;
+        Logger.info(
+          'MainPage: debounced Home revisit refresh for My PNP',
+          tag: 'MainPage',
+        );
+        _myPointWidgetKey.currentState?.refreshBalance();
+      });
+    }
+    _lastMainTabIndexForPnp = current;
+  }
+
   @override
   void dispose() {
     _isDisposed = true;
+    _homePnpDebouncedRefreshTimer?.cancel();
+    bottomTabController.removeListener(_onBottomTabChangedForMyPnp);
     _pointNotificationSubscription?.cancel();
     _pointChangeCheckTimer?.cancel();
     bottomTabController.dispose();
@@ -601,16 +667,27 @@ class _MainPageState extends State<MainPage>
           authProvider.token != null) {
         final userId = user.id.toString();
 
-        // Refresh user data first (needed for other operations)
-        // Use async/await pattern for cleaner error handling
+        // Refresh user and balance together for pull-to-refresh freshness.
         refreshTasks.add(
           (() async {
             try {
+              /*
+              Old Code:
               await authProvider.refreshUser();
-              // After user refresh, run dependent operations in parallel
               await Future.wait([
-                // These can all run in parallel as they're independent
                 pointProvider.loadBalance(userId, forceRefresh: true),
+                ...
+              ]);
+              */
+              await Future.wait([
+                authProvider.refreshUser(),
+                pointProvider.loadBalance(userId, forceRefresh: true),
+              ]);
+              Logger.info(
+                'MainPage pull-to-refresh: refreshUser + loadBalance(forceRefresh) completed',
+                tag: 'MainPage',
+              );
+              await Future.wait([
                 pointProvider.loadTransactions(userId, forceRefresh: true),
                 spinWheelProvider.loadConfigForUser(userId, forceRefresh: true),
                 engagementProvider.refresh(
@@ -1938,7 +2015,10 @@ class _MyPointWidget extends StatefulWidget {
 }
 
 class _MyPointWidgetState extends State<_MyPointWidget> {
+  /*
+  Old Code:
   bool _isInitialLoadComplete = false;
+  */
   bool _isRefreshing = false;
   String? _lastUserId; // Track last user ID to detect account switches
 
@@ -1966,7 +2046,6 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
             'MyPointWidget - User account changed from $_lastUserId to $currentUserId, resetting state',
             tag: 'MyPointWidget');
         setState(() {
-          _isInitialLoadComplete = false;
           _isRefreshing = false;
         });
         _lastUserId = currentUserId;
@@ -1983,7 +2062,6 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
       // User logged out
       _lastUserId = null;
       setState(() {
-        _isInitialLoadComplete = false;
         _isRefreshing = false;
       });
     }
@@ -1992,23 +2070,21 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
   /// Public method to refresh balance - called from parent when refresh is triggered
   Future<void> refreshBalance() async {
     if (!mounted) return;
-
-    // Reset the initial load flag to allow refresh
+    /*
+    Old Code:
     setState(() {
       _isInitialLoadComplete = false;
     });
+    */
 
     // Load balance again
     await _loadBalanceIfNeeded();
   }
 
-  /// Load balance if user is authenticated and we haven't loaded yet
-  /// This method is safe to call multiple times - it will only load once
+  /// Load/refresh balance whenever requested (guarded by [_isRefreshing]).
   /// PROFESSIONAL FIX: Validates user ID, timeout to prevent loading spinner from getting stuck
   Future<void> _loadBalanceIfNeeded() async {
     if (!mounted || _isRefreshing) return;
-
-    // Allow reload if user changed (even if _isInitialLoadComplete is true)
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     if (!authProvider.isAuthenticated || authProvider.user == null) {
       return;
@@ -2021,16 +2097,10 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
       Logger.info(
           'MyPointWidget - User changed during load, resetting and reloading',
           tag: 'MyPointWidget');
-      setState(() {
-        _isInitialLoadComplete = false;
-      });
       _lastUserId = userId;
     }
 
-    // Skip if already loaded for current user
-    if (_isInitialLoadComplete && _lastUserId == userId) {
-      return;
-    }
+    // Removed old "load once" guard to allow revisit refresh.
 
     final pointProvider = Provider.of<PointProvider>(context, listen: false);
 
@@ -2046,6 +2116,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
           tag: 'MyPointWidget');
 
       // PROFESSIONAL FIX: Wrap in timeout so loading never gets stuck (e.g. API hang)
+      /*
+      // Old Code:
       await Future.wait([
         authProvider.refreshUser(),
         pointProvider.loadBalance(userId, forceRefresh: true),
@@ -2059,10 +2131,38 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
           return <void>[];
         },
       );
+      */
+
+      /*
+      Old Code:
+      await pointProvider.refreshPointState(
+        userId: userId,
+        forceRefresh: true,
+        refreshBalance: true,
+        refreshTransactions: false,
+        refreshUserCallback: () => authProvider.refreshUser(),
+      ).timeout(...)
+      */
+      await Future.wait([
+        authProvider.refreshUser(),
+        pointProvider.loadBalance(userId, forceRefresh: true),
+      ]).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          Logger.warning(
+            'MyPointWidget - Balance load timed out after 30s',
+            tag: 'MyPointWidget',
+          );
+          return <void>[];
+        },
+      );
+      Logger.info(
+        'MyPointWidget - refreshUser + loadBalance(forceRefresh) pairing completed',
+        tag: 'MyPointWidget',
+      );
 
       if (mounted) {
         setState(() {
-          _isInitialLoadComplete = true;
           _isRefreshing = false;
         });
       }
@@ -2075,8 +2175,6 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
       if (mounted) {
         setState(() {
           _isRefreshing = false;
-          // Still mark as complete to avoid infinite retry loops
-          _isInitialLoadComplete = true;
         });
       }
     }
@@ -2084,6 +2182,7 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
 
   /// Extract numeric value from points_balance string
   /// Handles various formats: "100", "100 points", "0", etc.
+  // ignore: unused_element — retained for legacy My PNP max-balance logic (commented above).
   String _extractBalanceValue(String? rawValue) {
     if (rawValue == null || rawValue.isEmpty) {
       return '0';
@@ -2112,6 +2211,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
 
   @override
   Widget build(BuildContext context) {
+    /*
+    Old Code:
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -2124,205 +2225,336 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
       return const SizedBox.shrink();
     }
 
-    final user = authProvider.user!;
-
-    // Priority 1: Check for my_point or my_points (primary source for display)
-    final myPointValue = user.customFields['my_point'] ??
-        user.customFields['my_points'] ??
-        user.customFields['My Point Value'];
-
-    // Priority 2: Get points_balance from user object (alternative source)
-    final pointsBalanceFromBackend = user.customFields['points_balance'];
-
-    // Fallback to PointProvider if backend value is not available
-    final balanceFromProvider = pointProvider.currentBalance;
-    Logger.info(
-        'MyPointWidget - DEBUG: PointProvider balance: $balanceFromProvider',
-        tag: 'MyPointWidget');
-
-    // Determine which value to use — use MAX of all sources so poll win / push snapshot
-    // is never hidden when one source updates before another.
-    final fromMyPoint = (myPointValue != null && myPointValue.isNotEmpty)
-        ? (int.tryParse(_extractBalanceValue(myPointValue)) ?? 0)
-        : 0;
-    final fromPointsBalance =
-        (pointsBalanceFromBackend != null && pointsBalanceFromBackend.isNotEmpty)
-            ? (int.tryParse(_extractBalanceValue(pointsBalanceFromBackend)) ?? 0)
-            : 0;
-    final maxBalance = [
-      fromMyPoint,
-      fromPointsBalance,
-      balanceFromProvider,
-    ].reduce((a, b) => a > b ? a : b);
-    String displayBalance = maxBalance.toString();
-
-    // Ensure we always have a valid display value (even if 0)
-    if (displayBalance.isEmpty || displayBalance == 'null') {
-      displayBalance = '0';
-    }
-
-    // Determine loading state - stop loading as soon as we have displayable data
-    // Show loading if:
-    // 1. We're actively refreshing, OR
-    // 2. PointProvider is loading AND we have no backend value (my_point/points_balance)
-    final hasBackendValue = (myPointValue != null &&
-            myPointValue.isNotEmpty &&
-            myPointValue != '0') ||
-        (pointsBalanceFromBackend != null &&
-            pointsBalanceFromBackend.isNotEmpty &&
-            pointsBalanceFromBackend != '0');
-    final isLoading = _isRefreshing ||
-        (pointProvider.isLoading && !hasBackendValue);
-
+    // ... balanceFromProvider / displayBalance / isLoading from pointProvider ...
     return RepaintBoundary(
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              colorScheme.primary.withValues(alpha: 0.1),
-              colorScheme.secondary.withValues(alpha: 0.05),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: colorScheme.primary.withValues(alpha: 0.2),
-            width: 1.5,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: colorScheme.primary.withValues(alpha: 0.1),
-              blurRadius: 12,
-              spreadRadius: 0,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: () {
-              // Navigate to My Points page (Point History with Exchange Process)
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const PointHistoryPage(),
-                ),
-              );
-            },
-            borderRadius: BorderRadius.circular(20),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  // Icon with gradient background
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          colorScheme.primary,
-                          colorScheme.secondary,
-                        ],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: colorScheme.primary.withValues(alpha: 0.3),
-                          blurRadius: 8,
-                          spreadRadius: 0,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.account_balance_wallet_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  // Point balance info
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'My PNP',
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: colorScheme.onSurface.withValues(alpha: 0.6),
-                            fontWeight: FontWeight.w500,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        if (isLoading)
-                          SizedBox(
-                            height: 24,
-                            width: 80,
-                            child: LinearProgressIndicator(
-                              backgroundColor:
-                                  colorScheme.surfaceContainerHighest,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                colorScheme.primary,
-                              ),
-                              minHeight: 2,
-                            ),
-                          )
-                        else
-                          // Display actual user points count from points_balance custom field (same as Profile page)
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              Text(
-                                'ⓟ',
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: colorScheme.onSurface
-                                      .withValues(alpha: 0.7),
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                // Render backend points_balance value directly
-                                displayBalance,
-                                style: theme.textTheme.headlineMedium?.copyWith(
-                                  color: colorScheme.primary,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 28,
-                                  height: 1.2,
-                                ),
-                              ),
-                            ],
-                          ),
-                      ],
-                    ),
-                  ),
-                  // Arrow icon
-                  Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(
-                      Icons.arrow_forward_ios_rounded,
-                      color: colorScheme.onPrimaryContainer,
-                      size: 16,
-                    ),
-                  ),
+      ...
+    );
+    */
+
+    // Consumer2 subscribes to [PointProvider] so balance/notifyListeners updates rebuild immediately
+    // (equivalent to Provider.of<PointProvider>(context, listen: true) for the subtree).
+    return Consumer2<AuthProvider, PointProvider>(
+      builder: (context, authProvider, pointProvider, _) {
+        Logger.info(
+          'DEBUG_SYNC: My PNP Widget Rebuilt with balance: ${pointProvider.currentBalance} '
+          '(auth=${authProvider.isAuthenticated}, isLoading=${pointProvider.isLoading}, '
+          'error=${pointProvider.errorMessage})',
+          tag: 'MyPointWidget',
+        );
+        final theme = Theme.of(context);
+        final colorScheme = theme.colorScheme;
+
+        if (!authProvider.isAuthenticated || authProvider.user == null) {
+          return const SizedBox.shrink();
+        }
+
+        /*
+        // Old Code:
+        final user = authProvider.user!;
+        */
+
+        /*
+        // Old Code:
+        // Priority 1: Check for my_point or my_points (primary source for display)
+        final myPointValue = user.customFields['my_point'] ??
+            user.customFields['my_points'] ??
+            user.customFields['My Point Value'];
+
+        // Priority 2: Get points_balance from user object (alternative source)
+        final pointsBalanceFromBackend = user.customFields['points_balance'];
+
+        // Fallback to PointProvider if backend value is not available
+        final balanceFromProvider = pointProvider.currentBalance;
+        Logger.info(
+            'MyPointWidget - DEBUG: PointProvider balance: $balanceFromProvider',
+            tag: 'MyPointWidget');
+
+        // Determine which value to use — use MAX of all sources so poll win / push snapshot
+        // is never hidden when one source updates before another.
+        final fromMyPoint = (myPointValue != null && myPointValue.isNotEmpty)
+            ? (int.tryParse(_extractBalanceValue(myPointValue)) ?? 0)
+            : 0;
+        final fromPointsBalance =
+            (pointsBalanceFromBackend != null && pointsBalanceFromBackend.isNotEmpty)
+                ? (int.tryParse(_extractBalanceValue(pointsBalanceFromBackend)) ?? 0)
+                : 0;
+        final maxBalance = [
+          fromMyPoint,
+          fromPointsBalance,
+          balanceFromProvider,
+        ].reduce((a, b) => a > b ? a : b);
+        String displayBalance = maxBalance.toString();
+
+        // Ensure we always have a valid display value (even if 0)
+        if (displayBalance.isEmpty || displayBalance == 'null') {
+          displayBalance = '0';
+        }
+
+        // Determine loading state - stop loading as soon as we have displayable data
+        // Show loading if:
+        // 1. We're actively refreshing, OR
+        // 2. PointProvider is loading AND we have no backend value (my_point/points_balance)
+        final hasBackendValue = (myPointValue != null &&
+                myPointValue.isNotEmpty &&
+                myPointValue != '0') ||
+            (pointsBalanceFromBackend != null &&
+                pointsBalanceFromBackend.isNotEmpty &&
+                pointsBalanceFromBackend != '0');
+        final isLoading = _isRefreshing ||
+            (pointProvider.isLoading && !hasBackendValue);
+        */
+
+        // Home My PNP must listen directly to PointProvider so stale user-meta values
+        // (for example an old 16200 snapshot) never override the live balance.
+        final balanceFromProvider = pointProvider.currentBalance;
+        Logger.info(
+          'MyPointWidget - Using PointProvider balance directly: $balanceFromProvider',
+          tag: 'MyPointWidget',
+        );
+        /*
+        // OLD CODE:
+        final String displayBalance = balanceFromProvider.toString();
+        */
+
+        /*
+        // OLD Code: first hydrate could hide a positive balance behind a loading bar
+        after an in-session snapshot (e.g. poll win) before session flag completed.
+        final isLoading = _isRefreshing ||
+            (pointProvider.isLoading &&
+                !pointProvider.hasCompletedSessionInitialBalanceLoad);
+        */
+        /*
+        // OLD CODE:
+        // New Code: if we already have a positive balance, show it immediately.
+        final bool awaitingInitialHydrate =
+            !pointProvider.hasCompletedSessionInitialBalanceLoad;
+        final bool hasDisplayableBalance = pointProvider.currentBalance > 0;
+        final isLoading = _isRefreshing ||
+            (pointProvider.isLoading &&
+                awaitingInitialHydrate &&
+                !hasDisplayableBalance);
+        */
+
+        // NEW FIX: Do not show misleading "0" before first trustworthy hydrate; use ··· / strip.
+        final bool trustworthyBalanceForUi =
+            pointProvider.hasCompletedSessionInitialBalanceLoad ||
+                pointProvider.balance != null;
+        final bool showBalancePlaceholder = !trustworthyBalanceForUi;
+        final String displayBalance =
+            trustworthyBalanceForUi ? balanceFromProvider.toString() : '';
+        final bool showLoadingStrip = _isRefreshing ||
+            (pointProvider.isLoading && showBalancePlaceholder);
+        final bool showSyncWarning = !showLoadingStrip &&
+            pointProvider.errorMessage != null &&
+            pointProvider.errorMessage!.isNotEmpty;
+
+        return RepaintBoundary(
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  colorScheme.primary.withValues(alpha: 0.1),
+                  colorScheme.secondary.withValues(alpha: 0.05),
                 ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: colorScheme.primary.withValues(alpha: 0.2),
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: colorScheme.primary.withValues(alpha: 0.1),
+                  blurRadius: 12,
+                  spreadRadius: 0,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  // Navigate to My Points page (Point History with Exchange Process)
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const PointHistoryPage(),
+                    ),
+                  );
+                },
+                borderRadius: BorderRadius.circular(20),
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    children: [
+                      // Icon with gradient background
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              colorScheme.primary,
+                              colorScheme.secondary,
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: colorScheme.primary.withValues(alpha: 0.3),
+                              blurRadius: 8,
+                              spreadRadius: 0,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.account_balance_wallet_rounded,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      // Point balance info
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'My PNP',
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: colorScheme.onSurface
+                                    .withValues(alpha: 0.6),
+                                fontWeight: FontWeight.w500,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            if (showLoadingStrip)
+                              SizedBox(
+                                height: 24,
+                                width: 80,
+                                child: LinearProgressIndicator(
+                                  backgroundColor:
+                                      colorScheme.surfaceContainerHighest,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    colorScheme.primary,
+                                  ),
+                                  minHeight: 2,
+                                ),
+                              )
+                            else if (showBalancePlaceholder)
+                              SizedBox(
+                                height: 32,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    '···',
+                                    style: theme.textTheme.headlineMedium
+                                        ?.copyWith(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 28,
+                                      height: 1.2,
+                                      letterSpacing: 6,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            else
+                              // Display PointProvider balance (canonical).
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.baseline,
+                                textBaseline: TextBaseline.alphabetic,
+                                children: [
+                                  Text(
+                                    'ⓟ',
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      color: colorScheme.onSurface
+                                          .withValues(alpha: 0.7),
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    displayBalance,
+                                    style: theme.textTheme.headlineMedium
+                                        ?.copyWith(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 28,
+                                      height: 1.2,
+                                    ),
+                                  ),
+                                  if (showSyncWarning) ...[
+                                    const SizedBox(width: 8),
+                                    Tooltip(
+                                      message: pointProvider.errorMessage!,
+                                      child: IconButton(
+                                        visualDensity: VisualDensity.compact,
+                                        constraints: const BoxConstraints(
+                                          minWidth: 28,
+                                          minHeight: 28,
+                                        ),
+                                        padding: EdgeInsets.zero,
+                                        splashRadius: 16,
+                                        icon: Icon(
+                                          Icons.error_outline_rounded,
+                                          size: 18,
+                                          color: Colors.orange.shade700,
+                                        ),
+                                        onPressed: () async {
+                                          final user = authProvider.user;
+                                          if (user == null) return;
+                                          final uid = user.id.toString();
+                                          await pointProvider.loadBalance(
+                                            uid,
+                                            forceRefresh: true,
+                                          );
+                                          if (!context.mounted) return;
+                                          final msg = pointProvider.errorMessage;
+                                          if (msg != null && msg.isNotEmpty) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(content: Text(msg)),
+                                            );
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                          ],
+                        ),
+                      ),
+                      // Arrow icon
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          color: colorScheme.onPrimaryContainer,
+                          size: 16,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

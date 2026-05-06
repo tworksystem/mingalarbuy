@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/providers/in_app_notification_provider.dart';
-import 'package:ecommerce_int2/providers/point_provider.dart';
 import 'package:ecommerce_int2/services/in_app_notification_service.dart';
+import 'package:ecommerce_int2/services/canonical_point_balance_sync.dart';
 import 'package:ecommerce_int2/services/global_keys.dart';
 import 'package:ecommerce_int2/widgets/point_notification_modal.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
@@ -72,6 +72,9 @@ class PointNotificationManager {
   final Map<String, DateTime> _recentNotifications = {};
   static const Duration _duplicatePreventionWindow = Duration(minutes: 5);
 
+  /// When true: no in-app rows, modals, or [modalEvents] — FCM tray + sync remain in [PushNotificationService] / callers.
+  static const bool _suppressInternalPointNotificationUi = true;
+
   // Modal queue to handle multiple notifications
   final List<PointNotificationEvent> _modalQueue = [];
   bool _isShowingModal = false;
@@ -131,6 +134,24 @@ class PointNotificationManager {
       // Record notification
       _recordNotification(notificationKey);
 
+      /*
+      Old Code:
+      // Home "My PNP" only received balance updates when a modal was shown, because
+      // AuthProvider + PointProvider snapshots lived exclusively inside
+      // _ensureBalanceAppliedForWinModal (called from modal show / close paths).
+      // notifyPointEvent(..., showModalPopup: false) — e.g. poll wins — therefore
+      // skipped that sync and could leave PointProvider stale until another refresh.
+      */
+
+      // New Code: Apply authoritative [currentBalance] to Auth + PointProvider for every
+      // notification type that carries a balance, before in-app / modal UX, so My PNP
+      // rebuilds immediately even when no modal is shown.
+      _syncHomeBalanceFromNotifyPointEvent(
+        type: type,
+        currentBalance: currentBalance,
+        userId: userId,
+      );
+
       // Get notification content
       final notificationContent = _getNotificationContent(
         type: type,
@@ -140,8 +161,8 @@ class PointNotificationManager {
         additionalData: additionalData,
       );
 
-      // Create in-app notification
-      if (showInAppNotification) {
+      // Create in-app notification (suppressed — rows come only from disabled writes; see InAppNotificationService).
+      if (!_suppressInternalPointNotificationUi && showInAppNotification) {
         await _createInAppNotification(
           type: type,
           title: notificationContent['title'] as String,
@@ -163,7 +184,8 @@ class PointNotificationManager {
       }
 
       // Show modal popup (only for positive/significant events)
-      if (showModalPopup &&
+      if (!_suppressInternalPointNotificationUi &&
+          showModalPopup &&
           _shouldShowModal(type,
               additionalData: additionalData, points: points)) {
         final event = PointNotificationEvent(
@@ -223,30 +245,45 @@ class PointNotificationManager {
     required int points,
     Map<String, dynamic>? additionalData,
   }) {
-    // Use transaction ID if available (most unique)
+    /*
+    Old Code:
+
+    ```dart
     if (transactionId != null) {
       return '${type.toString()}_$transactionId';
     }
-    // Poll winner: use orderId when available so EVERY win gets its own notification row.
-    // orderId includes timestamp (e.g. poll_1_default_1234567890) — unique per round.
+    if (type == engagementEarned && poll) {
+       if (orderId != null) return ... poll_$orderId  // millis suffix broke nothing,
+       ...
+    }
+    if (orderId != null) return ...
+    ```
+
+    Problem: Carousel + FCM emitted **different** `orderId` strings (`poll_…_millis`
+    vs `fcm_engagement_ITEM`) so duplicates within `_duplicatePreventionWindow` slipped through.
+    */
+
+    // New Code — one stable key **per poll session** (Carousel + REST + backend FCM all align):
     if (type == PointNotificationType.engagementEarned &&
         additionalData?['itemType']?.toString() == 'poll') {
-      if (orderId != null && orderId.isNotEmpty) {
-        return '${type.toString()}_poll_$orderId';
+      final pollPk =
+          additionalData?['pollId'] ?? additionalData?['poll_id'];
+      final sessPk =
+          additionalData?['sessionId'] ?? additionalData?['session_id'];
+      if (pollPk != null && pollPk.toString().trim().isNotEmpty) {
+        return '${type.toString()}_poll_stable_${pollPk}_${sessPk ?? ''}';
       }
-      final pollId = additionalData?['pollId'] ?? additionalData?['itemId'];
-      final sessionId = additionalData?['sessionId'];
-      if (pollId != null &&
-          sessionId != null &&
-          sessionId.toString().isNotEmpty) {
-        return '${type.toString()}_poll_${pollId}_$sessionId';
-      }
-      if (pollId != null) {
-        return '${type.toString()}_poll_${pollId}';
+      if (orderId != null && orderId.startsWith('poll_stable_')) {
+        return '${type.toString()}_poll_${orderId}';
       }
     }
-    // Use order ID if available
-    if (orderId != null) {
+
+    // Use transaction ID if available (ledger-granular non-poll flows)
+    if (transactionId != null && transactionId.isNotEmpty) {
+      return '${type.toString()}_$transactionId';
+    }
+    // Fallback order id tie-breaker (quiz/banner/other engagement):
+    if (orderId != null && orderId.isNotEmpty) {
       return '${type.toString()}_$orderId';
     }
     // Fallback to type + points + timestamp (rounded to minute)
@@ -334,10 +371,10 @@ class PointNotificationManager {
             additionalData?['itemType']?.toString() == 'poll';
         final itemTitle = additionalData?['itemTitle'] as String?;
         if (isPollWinner) {
+          // Poll-win celebration copy disabled (neutral placeholders for logs/FCM fallbacks).
           return {
-            'title': "Congratulations! You're the Winner! 🏆",
-            'body': description ??
-                'Your selection matched the winning result. $points PNP has been credited to your balance. Keep playing to win more!',
+            'title': 'Points update',
+            'body': description ?? 'Your balance was updated.',
           };
         }
         return {
@@ -376,8 +413,13 @@ class PointNotificationManager {
     switch (type) {
       case PointNotificationType.earned:
       case PointNotificationType.approved:
-      case PointNotificationType.engagementEarned:
       case PointNotificationType.exchangeApproved:
+        return true;
+      case PointNotificationType.engagementEarned:
+        // POPUP KILL-SWITCH: poll wins use silent balance sync; never show winner modal.
+        if (additionalData?['itemType']?.toString() == 'poll') {
+          return false;
+        }
         return true;
       case PointNotificationType.adjusted:
         // Manual adjustments can be positive (add) or negative (deduct).
@@ -391,6 +433,15 @@ class PointNotificationManager {
       case PointNotificationType.exchangeRejected:
         return false; // These can be shown as notifications only
     }
+  }
+
+  bool _isPollWinnerEvent(PointNotificationEvent event) {
+    final itemType =
+        (event.additionalData?['itemType'] ?? event.additionalData?['item_type'])
+            ?.toString()
+            .toLowerCase();
+    return event.type == PointNotificationType.engagementEarned &&
+        itemType == 'poll';
   }
 
   /// Create in-app notification
@@ -516,9 +567,83 @@ class PointNotificationManager {
     );
   }
 
+  /*
+  // OLD CODE:
+  /// Pushes [currentBalance] into user meta + PointProvider so Home My PNP listeners update.
+  // void _applyBalanceSnapshotToProviders({
+  //   required String userId,
+  //   required int currentBalance,
+  // }) {
+  //   AuthProvider().applyPointsBalanceSnapshot(currentBalance);
+  //   PointProvider.instance.applyRemoteBalanceSnapshot(
+  //     userId: userId,
+  //     currentBalance: currentBalance,
+  //   );
+  // }
+  */
+
+  /// NEW FIX: Same as above + disk; no extra broadcast (legacy behavior).
+  void _applyBalanceSnapshotToProviders({
+    required String userId,
+    required int currentBalance,
+  }) {
+    unawaited(
+      CanonicalPointBalanceSync.apply(
+        userId: userId,
+        currentBalance: currentBalance,
+        source: 'point_notification_manager',
+        emitBroadcast: false,
+      ),
+    );
+  }
+
+  /// Whether [notifyPointEvent] should treat [currentBalance] as server/UI truth for Home sync.
+  bool _notificationTypeCarriesBalanceForHomeSync(PointNotificationType type) {
+    switch (type) {
+      case PointNotificationType.earned:
+      case PointNotificationType.engagementEarned:
+      case PointNotificationType.approved:
+      case PointNotificationType.redeemed:
+      case PointNotificationType.expired:
+      case PointNotificationType.exchangeApproved:
+      case PointNotificationType.adjusted:
+        return true;
+      case PointNotificationType.exchangeRejected:
+        return false;
+    }
+  }
+
+  /// Resolves user id and applies snapshot when authenticated user matches.
+  void _syncHomeBalanceFromNotifyPointEvent({
+    required PointNotificationType type,
+    required int currentBalance,
+    String? userId,
+  }) {
+    if (!_notificationTypeCarriesBalanceForHomeSync(type)) {
+      return;
+    }
+    final auth = AuthProvider();
+    if (!auth.isAuthenticated || auth.user == null) {
+      return;
+    }
+    final sessionUserId = auth.user!.id.toString();
+    final effectiveUserId = (userId != null && userId.trim().isNotEmpty)
+        ? userId.trim()
+        : sessionUserId;
+    if (effectiveUserId != sessionUserId) {
+      return;
+    }
+    _applyBalanceSnapshotToProviders(
+      userId: sessionUserId,
+      currentBalance: currentBalance,
+    );
+  }
+
   /// Ensure balance is applied to providers before/after showing win modal.
   /// Prevents "points not added" when modal is queued/delayed or something overwrote.
   void _ensureBalanceAppliedForWinModal(PointNotificationEvent event) {
+    /*
+    Old Code:
     final isBalanceChange =
         event.type == PointNotificationType.engagementEarned ||
             event.type == PointNotificationType.earned ||
@@ -535,12 +660,37 @@ class PointNotificationManager {
       userId: userId,
       currentBalance: event.currentBalance,
     );
+    */
+
+    // New Code: Same modal eligibility rules; delegate to shared snapshot helper.
+    final isBalanceChange =
+        event.type == PointNotificationType.engagementEarned ||
+            event.type == PointNotificationType.earned ||
+            event.type == PointNotificationType.approved ||
+            event.type == PointNotificationType.exchangeApproved ||
+            (event.type == PointNotificationType.adjusted &&
+                (event.additionalData?['isPositive'] as bool? ?? event.points > 0));
+    if (!isBalanceChange) return;
+    final auth = AuthProvider();
+    if (!auth.isAuthenticated || auth.user == null) return;
+    final userId = auth.user!.id.toString();
+    _applyBalanceSnapshotToProviders(
+      userId: userId,
+      currentBalance: event.currentBalance,
+    );
   }
 
   /// Show modal directly using provided context (most reliable when caller has valid context)
   Future<void> _showModalWithContext(
       BuildContext context, PointNotificationEvent event) async {
     if (!context.mounted) return;
+    if (_suppressInternalPointNotificationUi) {
+      return;
+    }
+    if (_isPollWinnerEvent(event)) {
+      // Global UI silence: never show poll winner modal via showDialog.
+      return;
+    }
     try {
       _ensureBalanceAppliedForWinModal(event);
       await showDialog(
@@ -596,6 +746,12 @@ class PointNotificationManager {
     var isFirstInBatch = true;
     while (_modalQueue.isNotEmpty) {
       final event = _modalQueue.removeAt(0);
+      if (_suppressInternalPointNotificationUi) {
+        continue;
+      }
+      if (_isPollWinnerEvent(event)) {
+        continue;
+      }
 
       try {
         // Stagger only *between* modals (not before the first), so the first

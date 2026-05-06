@@ -14,6 +14,9 @@ class InAppNotificationService {
   static const String _notificationsKey = 'in_app_notifications';
   static const int _maxNotifications = 100; // Limit stored notifications
 
+  /// When true, all `create*` writers no-op (FCM tray + data sync stay elsewhere).
+  static const bool _suppressInternalNotificationWrites = true;
+
   /// Normalize notification timestamp for stable sorting.
   /// If date is missing/invalid, return epoch so it goes to the bottom in DESC order.
   DateTime _safeNotificationDate(InAppNotification notification) {
@@ -239,6 +242,10 @@ class InAppNotificationService {
     required String total,
     String? currency,
   }) async {
+    if (_suppressInternalNotificationWrites) {
+      return false;
+    }
+
     // Check for duplicate notifications (same order ID and status within last 5 minutes)
     final existingNotifications = await getNotifications();
     final now = DateTime.now();
@@ -295,6 +302,10 @@ class InAppNotificationService {
     String? imageUrl,
     String? actionUrl,
   }) async {
+    if (_suppressInternalNotificationWrites) {
+      return;
+    }
+
     final notification = InAppNotification(
       id: 'promo_${DateTime.now().millisecondsSinceEpoch}',
       title: title,
@@ -314,6 +325,10 @@ class InAppNotificationService {
     required String trackingNumber,
     String? carrier,
   }) async {
+    if (_suppressInternalNotificationWrites) {
+      return;
+    }
+
     final notification = InAppNotification(
       id: 'shipping_${orderId}_${DateTime.now().millisecondsSinceEpoch}',
       title: 'Order #$orderId Shipped',
@@ -347,6 +362,10 @@ class InAppNotificationService {
     /// When set (e.g. transaction time or FCM `created_at`), avoids "Just now" for old events.
     DateTime? eventOccurredAt,
   }) async {
+    if (_suppressInternalNotificationWrites) {
+      return false;
+    }
+
     // OLD CODE:
     // Check for duplicate notifications (same type and transaction/request ID within last 5 minutes)
     // final existingNotifications = await getNotifications();

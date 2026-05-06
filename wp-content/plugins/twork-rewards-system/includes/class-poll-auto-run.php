@@ -484,6 +484,9 @@ class TWork_Poll_Auto_Run {
         $current_balance = 0;
         $user_bet_pnp = 0;
         $user_detailed_bets = array(); // NEW: Store exact breakdown
+        $awarded_txn_id = 0;
+        $session_token = ($session_id !== '') ? $session_id : 'default';
+        $request_id = 'poll_stable_' . (string) $poll_id . '_' . (string) $session_token;
 
         if ($requesting_user_id > 0 && $winning_index >= 0) {
             foreach ($rows as $row) {
@@ -538,6 +541,16 @@ class TWork_Poll_Auto_Run {
                         } else {
                             $current_balance = (int) get_user_meta($requesting_user_id, 'points_balance', true);
                         }
+                        // Try to include the latest award transaction id for this exact poll/session/user.
+                        $table_point_transactions = $wpdb->prefix . 'twork_point_transactions';
+                        $order_like = 'engagement:poll:' . $poll_id . ':session:' . $session_token . ':%:' . $requesting_user_id;
+                        $awarded_txn_id = (int) $wpdb->get_var(
+                            $wpdb->prepare(
+                                "SELECT id FROM $table_point_transactions WHERE user_id = %d AND order_id LIKE %s ORDER BY id DESC LIMIT 1",
+                                $requesting_user_id,
+                                $order_like
+                            )
+                        );
                         break;
                     }
                 }
@@ -549,6 +562,8 @@ class TWork_Poll_Auto_Run {
             'session_id' => $session_id,
             'winning_option' => $winning_option,
             'winning_index' => (int) $winning_index,
+            'poll_id' => (int) $poll_id,
+            'request_id' => $request_id,
         );
         if ($requesting_user_id > 0) {
             $response_data['user_won'] = $user_won;
@@ -556,6 +571,7 @@ class TWork_Poll_Auto_Run {
             $response_data['current_balance'] = $current_balance;
             $response_data['user_bet_pnp'] = (int) $user_bet_pnp;
             $response_data['user_detailed_bets'] = $user_detailed_bets; // SEND EXACT MAP TO APP
+            $response_data['awarded_txn_id'] = (int) $awarded_txn_id;
         }
 
         return new WP_REST_Response(array(

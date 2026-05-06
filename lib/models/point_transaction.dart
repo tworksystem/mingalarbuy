@@ -159,8 +159,7 @@ class PointTransaction {
   /// Create from JSON
   factory PointTransaction.fromJson(Map<String, dynamic> json) {
     PollTransactionDetails? parsedPollDetails;
-    // OLD CODE: Only parse poll_details / pollDetails objects.
-    // New Code: also support legacy flat keys from backend and normalize into PollTransactionDetails.
+    // Support legacy flat keys from backend and normalize into PollTransactionDetails.
     if (json['poll_details'] is Map<String, dynamic>) {
       parsedPollDetails = PollTransactionDetails.fromJson(
         json['poll_details'] as Map<String, dynamic>,
@@ -203,8 +202,7 @@ class PointTransaction {
           : json['expiresAt'] != null
               ? _parseServerDateTime(json['expiresAt'])
               : null,
-      // OLD CODE: isExpired: json['is_expired'] ?? json['isExpired'] ?? false,
-      // New Code: safe bool parsing from bool/int/string payloads.
+      // Safe bool parsing from bool/int/string payloads.
       isExpired: _parseBool(json['is_expired'] ?? json['isExpired']),
       status: PointTransactionStatusExtension.fromString(
           json['status']?.toString() ?? 'approved'),
@@ -371,71 +369,8 @@ class PointTransaction {
   bool get isRejected => status == PointTransactionStatus.rejected;
 }
 
-class PointHistorySummary {
-  final int openingBalance;
-  final int closingBalance;
-  final int totalAdded;
-  final int totalDeducted;
-  final int actualCurrentBalance;
-  final int rangeDays;
-  final DateTime? startDate;
-  final DateTime? endDate;
-
-  const PointHistorySummary({
-    this.openingBalance = 0,
-    this.closingBalance = 0,
-    this.totalAdded = 0,
-    this.totalDeducted = 0,
-    this.actualCurrentBalance = 0,
-    this.rangeDays = 90,
-    this.startDate,
-    this.endDate,
-  });
-
-  factory PointHistorySummary.fromJson(Map<String, dynamic> json) {
-    return PointHistorySummary(
-      openingBalance:
-          PointTransaction._parseInt(json['opening_balance'] ?? json['openingBalance']),
-      closingBalance:
-          PointTransaction._parseInt(json['closing_balance'] ?? json['closingBalance']),
-      totalAdded:
-          PointTransaction._parseInt(json['total_added'] ?? json['totalAdded']),
-      totalDeducted: PointTransaction._parseInt(
-          json['total_deducted'] ?? json['totalDeducted']),
-      actualCurrentBalance: PointTransaction._parseInt(
-          json['actual_current_balance'] ?? json['actualCurrentBalance']),
-      rangeDays:
-          PointTransaction._parseInt(json['range_days'] ?? json['rangeDays']),
-      startDate: json['start_date'] != null
-          ? PointTransaction._parseServerDateTime(json['start_date'])
-          : json['startDate'] != null
-              ? PointTransaction._parseServerDateTime(json['startDate'])
-              : null,
-      endDate: json['end_date'] != null
-          ? PointTransaction._parseServerDateTime(json['end_date'])
-          : json['endDate'] != null
-              ? PointTransaction._parseServerDateTime(json['endDate'])
-              : null,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'opening_balance': openingBalance,
-      'closing_balance': closingBalance,
-      'total_added': totalAdded,
-      'total_deducted': totalDeducted,
-      'actual_current_balance': actualCurrentBalance,
-      'range_days': rangeDays,
-      'start_date': startDate?.toIso8601String(),
-      'end_date': endDate?.toIso8601String(),
-    };
-  }
-}
-
 class PointTransactionHistoryResult {
   final List<PointTransaction> transactions;
-  final PointHistorySummary? summary;
   final int total;
   final int page;
   final int perPage;
@@ -443,7 +378,6 @@ class PointTransactionHistoryResult {
 
   const PointTransactionHistoryResult({
     required this.transactions,
-    this.summary,
     this.total = 0,
     this.page = 1,
     this.perPage = 20,
@@ -460,13 +394,8 @@ class PointTransactionHistoryResult {
             .toList()
         : <PointTransaction>[];
 
-    final summaryRaw = json['summary'];
-
     return PointTransactionHistoryResult(
       transactions: transactions,
-      summary: summaryRaw is Map
-          ? PointHistorySummary.fromJson(Map<String, dynamic>.from(summaryRaw))
-          : null,
       total: PointTransaction._parseInt(json['total']),
       page: PointTransaction._parseInt(json['page']),
       perPage: PointTransaction._parseInt(json['per_page'] ?? json['perPage']),

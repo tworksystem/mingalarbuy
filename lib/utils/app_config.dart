@@ -35,6 +35,16 @@ class AppConfig {
   static const String backendUrl = 'https://mingalarbuy.com';
   static const String backendRegisterTokenEndpoint =
       '/wp-json/twork/v1/register-token';
+  static const String tworkApiBasePath = '/wp-json/twork/v1';
+  static const String tworkPointsEarnEndpoint = '$tworkApiBasePath/points/earn';
+  static const String tworkPointsRedeemEndpoint =
+      '$tworkApiBasePath/points/redeem';
+  static const String tworkPointsBalancePath = '$tworkApiBasePath/points/balance';
+  static const String tworkPointsTransactionsPath =
+      '$tworkApiBasePath/points/transactions';
+  static const String tworkEngagementFeedPath =
+      '$tworkApiBasePath/engagement/feed';
+  static const String tworkPollStatePath = '$tworkApiBasePath/poll/state';
 
   // Performance Settings
   static const int maxCacheSize = 100;
@@ -96,6 +106,11 @@ class AppConfig {
   /// Get API endpoint
   static String getApiEndpoint(String endpoint) {
     return '$baseUrl/$endpoint';
+  }
+
+  /// Build a full backend URL from a twork endpoint path.
+  static String tworkEndpoint(String endpointPath) {
+    return '$backendUrl$endpointPath';
   }
 
   /// Get headers for API requests

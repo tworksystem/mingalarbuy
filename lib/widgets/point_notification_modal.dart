@@ -1,21 +1,29 @@
+// Hard-kill modal UI: legacy helpers kept for future re-enable; analyzer may warn on unused.
+// ignore_for_file: unused_element, unused_field
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ecommerce_int2/services/point_notification_manager.dart';
 import 'dart:math' as math;
 
-/// Professional, Creative Point Notification Modal
+/// Point celebration UI for **[showDialog]** routes only.
 ///
-/// A beautiful modal popup that displays point notifications on the home page
-/// - Requires user interaction to close (not dismissible by tapping outside)
-/// - Animated entrance and exit
-/// - Creative design with gradients and animations
-/// - Responsive and accessible
+/// In-feed **poll results** (percentages / winner option) are rendered by
+/// the carousel poll result card, **not** by this widget.
+///
+/// When [suppressAsDialogOverlay] is true (default), the dialog shows no
+/// celebration surface (poll win popups stay off; carousel results unaffected).
 class PointNotificationModal extends StatefulWidget {
   final PointNotificationEvent event;
+
+  /// `true` = silence popup chrome when this widget is used as a dialog overlay.
+  /// Does not affect carousel poll result widgets (they never construct this class).
+  final bool suppressAsDialogOverlay;
 
   const PointNotificationModal({
     super.key,
     required this.event,
+    this.suppressAsDialogOverlay = true,
   });
 
   @override
@@ -39,6 +47,13 @@ class _PointNotificationModalState extends State<PointNotificationModal>
   @override
   void initState() {
     super.initState();
+
+    if (widget.suppressAsDialogOverlay) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.of(context).pop();
+      });
+      return;
+    }
 
     // Scale animation for entrance
     _scaleController = AnimationController(
@@ -122,11 +137,13 @@ class _PointNotificationModalState extends State<PointNotificationModal>
 
   @override
   void dispose() {
-    _scaleController.dispose();
-    _fadeController.dispose();
-    _rotationController.dispose();
-    _pulseController.dispose();
-    _confettiController.dispose();
+    if (!widget.suppressAsDialogOverlay) {
+      _scaleController.dispose();
+      _fadeController.dispose();
+      _rotationController.dispose();
+      _pulseController.dispose();
+      _confettiController.dispose();
+    }
     super.dispose();
   }
 
@@ -282,370 +299,7 @@ class _PointNotificationModalState extends State<PointNotificationModal>
 
   @override
   Widget build(BuildContext context) {
-    final style = _getNotificationStyle();
-
-    return PopScope(
-      canPop:
-          false, // Prevent back button from closing - user must interact with button
-      child: AnimatedBuilder(
-        animation: Listenable.merge([_fadeAnimation, _scaleAnimation]),
-        builder: (context, child) {
-          return Opacity(
-            opacity: _fadeAnimation.value,
-            child: Transform.scale(
-              scale: _scaleAnimation.value,
-              child: child,
-            ),
-          );
-        },
-        child: Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.all(20),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 400),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(32),
-              boxShadow: [
-                BoxShadow(
-                  color:
-                      (style['primaryColor'] as Color).withValues(alpha: 0.3),
-                  blurRadius: 30,
-                  spreadRadius: 5,
-                  offset: const Offset(0, 10),
-                ),
-                const BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 20,
-                  spreadRadius: 2,
-                  offset: Offset(0, 5),
-                ),
-              ],
-            ),
-            child: Stack(
-              children: [
-                // Decorative background gradient
-                Positioned.fill(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(32),
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          (style['primaryColor'] as Color)
-                              .withValues(alpha: 0.1),
-                          (style['secondaryColor'] as Color)
-                              .withValues(alpha: 0.05),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Content
-                Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Decorative rotating icon background with pulse animation
-                      AnimatedBuilder(
-                        animation: Listenable.merge([
-                          _rotationAnimation,
-                          _pulseAnimation,
-                        ]),
-                        builder: (context, child) {
-                          return Transform.scale(
-                            scale: _pulseAnimation.value,
-                            child: Transform.rotate(
-                              angle: _rotationAnimation.value * 0.1,
-                              child: Container(
-                                width: 120,
-                                height: 120,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  gradient: style['gradient'] as LinearGradient,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: (style['primaryColor'] as Color)
-                                          .withValues(alpha: 0.4),
-                                      blurRadius: 25,
-                                      spreadRadius: 8,
-                                    ),
-                                    BoxShadow(
-                                      color: (style['primaryColor'] as Color)
-                                          .withValues(alpha: 0.2),
-                                      blurRadius: 40,
-                                      spreadRadius: 15,
-                                    ),
-                                  ],
-                                ),
-                                child: Center(
-                                  child: Icon(
-                                    style['icon'] as IconData,
-                                    size: 60,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Title
-                      Text(
-                        _getTitle(),
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                          color: style['primaryColor'] as Color,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-
-                      const SizedBox(height: 16),
-
-                      // Points display with animation and confetti effect
-                      Builder(
-                        builder: (context) {
-                          // PROFESSIONAL FIX: Determine if this is a positive event (for confetti)
-                          final isPositiveEvent = widget.event.type !=
-                                  PointNotificationType.exchangeApproved &&
-                              (widget.event.type !=
-                                      PointNotificationType.adjusted ||
-                                  (widget.event.additionalData?['isPositive']
-                                          as bool? ??
-                                      widget.event.points > 0));
-
-                          return Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              // Confetti particles (decorative) - only for positive events
-                              if (isPositiveEvent &&
-                                  _confettiController.value > 0)
-                                ...List.generate(8, (index) {
-                                  final angle = (index * math.pi * 2) / 8;
-                                  final progress = _confettiController.value;
-                                  final distance = 30 * progress;
-                                  return Positioned(
-                                    left: math.cos(angle) * distance,
-                                    top: math.sin(angle) * distance,
-                                    child: Opacity(
-                                      opacity: 1 - progress,
-                                      child: Icon(
-                                        Icons.star,
-                                        size: 16,
-                                        color: (style['primaryColor'] as Color)
-                                            .withValues(alpha: 0.7),
-                                      ),
-                                    ),
-                                  );
-                                }),
-                              // Points text
-                              // PROFESSIONAL FIX: Show negative points for exchange requests
-                              TweenAnimationBuilder<double>(
-                                tween: Tween<double>(
-                                    begin: 0,
-                                    end: widget.event.points.toDouble()),
-                                duration: const Duration(milliseconds: 1200),
-                                curve: Curves.easeOutBack,
-                                builder: (context, value, child) {
-                                  // Determine if this is a deduction (exchange request or negative adjustment)
-                                  final isDeduction = widget.event.type ==
-                                          PointNotificationType
-                                              .exchangeApproved ||
-                                      (widget.event.type ==
-                                              PointNotificationType.adjusted &&
-                                          (widget.event.additionalData?[
-                                                      'isPositive'] as bool? ??
-                                                  widget.event.points > 0) ==
-                                              false);
-
-                                  // Format points with appropriate sign
-                                  final pointsText = isDeduction
-                                      ? '-${value.toInt()}'
-                                      : '+${value.toInt()}';
-
-                                  return Text(
-                                    pointsText,
-                                    style: TextStyle(
-                                      fontSize: 52,
-                                      fontWeight: FontWeight.bold,
-                                      color: style['primaryColor'] as Color,
-                                      height: 1.2,
-                                      shadows: [
-                                        Shadow(
-                                          color:
-                                              (style['primaryColor'] as Color)
-                                                  .withValues(alpha: 0.3),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-
-                      Text(
-                        'Points',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w500,
-                          color: Colors.grey[700],
-                        ),
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Description if available
-                      if (widget.event.description != null &&
-                          widget.event.description!.isNotEmpty)
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.grey[100],
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Text(
-                            widget.event.description!,
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey[800],
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-
-                      if (widget.event.description != null &&
-                          widget.event.description!.isNotEmpty)
-                        const SizedBox(height: 16),
-
-                      // Current balance - Professional fix for overflow prevention
-                      Container(
-                        constraints: const BoxConstraints(
-                          maxWidth: double.infinity,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: (style['primaryColor'] as Color)
-                              .withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: (style['primaryColor'] as Color)
-                                .withValues(alpha: 0.3),
-                            width: 1.5,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Icon - fixed size, always visible
-                            Icon(
-                              Icons.account_balance_wallet_rounded,
-                              color: style['primaryColor'] as Color,
-                              size: 20,
-                            ),
-                            const SizedBox(width: 8),
-                            // Text - flexible to prevent overflow
-                            Flexible(
-                              child: Text(
-                                'New Balance: ${widget.event.currentBalance} points',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: style['primaryColor'] as Color,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                softWrap: false,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 32),
-
-                      // Action button with improved styling
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          onPressed: _handleClose,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: style['primaryColor'] as Color,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 18),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            elevation: 6,
-                            shadowColor: (style['primaryColor'] as Color)
-                                .withValues(alpha: 0.4),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Text(
-                                'Got it!',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Icon(
-                                Icons.check_circle_outline,
-                                size: 20,
-                                color: Colors.white,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // Decorative corner elements
-                Positioned(
-                  top: -20,
-                  right: -20,
-                  child: AnimatedBuilder(
-                    animation: _rotationAnimation,
-                    builder: (context, child) {
-                      return Transform.rotate(
-                        angle: _rotationAnimation.value * 0.05,
-                        child: Container(
-                          width: 80,
-                          height: 80,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: (style['primaryColor'] as Color)
-                                .withValues(alpha: 0.1),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    // Empty surface; [suppressAsDialogOverlay] gates [initState] pop + future full UI.
+    return const SizedBox.shrink();
   }
 }

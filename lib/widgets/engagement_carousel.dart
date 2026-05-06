@@ -9,6 +9,7 @@ import '../providers/auth_provider.dart';
 import '../providers/point_provider.dart';
 import '../services/engagement_service.dart';
 import '../services/poll_winner_popup_service.dart';
+import '../services/canonical_point_balance_sync.dart';
 import '../theme/app_theme.dart';
 import '../utils/logger.dart' as app_logger;
 
@@ -320,20 +321,26 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     return parts.join('|');
   }
 
-  Future<void> _triggerWinnerChecksForVisibleFeedPolls(
-      List<EngagementItem> items) async {
+  /// Non-blocking: each poll sync runs independently so My PNP is not serialized
+  /// behind slow `/poll/state` + `/poll/results` chains.
+  void _triggerWinnerChecksForVisibleFeedPolls(List<EngagementItem> items) {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final uid = auth.user?.id ?? 0;
     if (uid <= 0) return;
-    // Process ONE poll at a time — ensures each round gets its own popup, no delay/merge
     for (final item in items) {
       if (!mounted) return;
       if (!_isPollResultEligibleForWinnerCheck(item)) continue;
-      await PollWinnerPopupService.checkAndShowPollWinnerPopup(
-        context: context,
-        pollId: item.id,
-        userId: uid,
-        itemTitle: item.title.isNotEmpty ? item.title : null,
+      final schedule = item.pollVotingSchedule;
+      final feedSessionId = schedule?['current_session_id']?.toString();
+      unawaited(
+        PollWinnerPopupService.checkAndShowPollWinnerPopup(
+          context: context,
+          pollId: item.id,
+          userId: uid,
+          itemTitle: item.title.isNotEmpty ? item.title : null,
+          feedSessionId: feedSessionId,
+          feedPollResult: item.pollResult,
+        ),
       );
     }
   }
@@ -379,14 +386,13 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               return const SizedBox.shrink();
             }
 
-            // Professional fix: check winner popup for ALL eligible poll-result items,
-            // one poll at a time. Each round gets its own popup.
+            // Silent poll-win balance sync for every eligible result card (no popup UI).
             final winnerSig = _winnerScanSignature(engagementProvider.items);
             if (winnerSig.isNotEmpty && winnerSig != _lastWinnerScanSignature) {
               _lastWinnerScanSignature = winnerSig;
-              WidgetsBinding.instance.addPostFrameCallback((_) async {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
-                await _triggerWinnerChecksForVisibleFeedPolls(
+                _triggerWinnerChecksForVisibleFeedPolls(
                     engagementProvider.items);
               });
             } else if (winnerSig.isEmpty) {
@@ -2202,6 +2208,55 @@ class _PollCountdownOverlay extends StatefulWidget {
 class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
   late int _secondsLeft;
   Timer? _timer;
+  bool _hasTriggeredForceRefreshBurst = false;
+
+  void _triggerForceRefreshBurstOnTimerEnd() {
+    if (_hasTriggeredForceRefreshBurst || !mounted) return;
+    _hasTriggeredForceRefreshBurst = true;
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.id;
+    if (userId == null) return;
+    final userIdStr = userId.toString();
+
+    Future<void> runAttempt(String label) async {
+      try {
+        await PointProvider.instance.refreshPointState(
+          userId: userIdStr,
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: false,
+          refreshUserCallback: authProvider.refreshUser,
+        );
+        app_logger.Logger.info(
+          'Poll timer-end force refresh success ($label) for user=$userIdStr',
+          tag: 'EngagementCarousel',
+        );
+      } catch (e, st) {
+        app_logger.Logger.warning(
+          'Poll timer-end force refresh failed ($label): $e',
+          tag: 'EngagementCarousel',
+          error: e,
+          stackTrace: st,
+        );
+      }
+    }
+
+    // Fire immediately, then retry at +1s and +3s to absorb backend propagation lag.
+    unawaited(runAttempt('immediate'));
+    unawaited(
+      Future<void>.delayed(const Duration(seconds: 1), () async {
+        if (!mounted) return;
+        await runAttempt('after_1s');
+      }),
+    );
+    unawaited(
+      Future<void>.delayed(const Duration(seconds: 3), () async {
+        if (!mounted) return;
+        await runAttempt('after_3s');
+      }),
+    );
+  }
 
   @override
   void initState() {
@@ -2213,6 +2268,7 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
         if (_secondsLeft > 1) {
           _secondsLeft--;
         } else {
+          _triggerForceRefreshBurstOnTimerEnd();
           _timer?.cancel();
         }
       });
@@ -2692,9 +2748,9 @@ Widget _pollDetailedReceiptSection(
   );
 }
 
-/// Wraps [_PollResultCard]. Poll winner API + popup are triggered centrally by
-/// [_triggerWinnerChecksForVisibleFeedPolls] to avoid duplicate API calls when
-/// 2+ polls run in parallel (per-card triggers caused duplicate point awards).
+/// In-place poll result in the carousel (chart/percentages live in [_PollResultCard]).
+/// **Not** a dialog — winner celebration popups are suppressed elsewhere ([PointNotificationModal]).
+/// Poll winner balance sync: [_triggerWinnerChecksForVisibleFeedPolls] (silent).
 class _PollResultWinnerPopupHost extends StatelessWidget {
   final EngagementItem item;
 
@@ -3500,6 +3556,8 @@ class _QuizDialogState extends State<_QuizDialog> {
   }
 
   void _showResultDialog(bool isCorrect, int pointsEarned, [String? message]) {
+    // Ultimate UI silence: quiz result dialog disabled; balance refresh already ran in submit path.
+    /*
     showDialog(
       context: context,
       barrierDismissible: false, // Prevent dismissing by tapping outside
@@ -3634,6 +3692,7 @@ class _QuizDialogState extends State<_QuizDialog> {
         ),
       ),
     );
+    */
   }
 }
 
@@ -4699,11 +4758,25 @@ class _PollDialogState extends State<_PollDialog> {
             '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, Balance: $balanceBefore → $newBalance',
             tag: 'EngagementCarousel');
 
+        /*
+        // OLD CODE:
         // Optimistic update: My PNP card updates instantly (no delay)
-        AuthProvider().applyPointsBalanceSnapshot(newBalance);
-        PointProvider.instance.applyRemoteBalanceSnapshot(
-          userId: currentUserId.toString(),
-          currentBalance: newBalance,
+        // AuthProvider().applyPointsBalanceSnapshot(newBalance);
+        // PointProvider.instance.applyRemoteBalanceSnapshot(
+        //   userId: currentUserId.toString(),
+        //   currentBalance: newBalance,
+        // );
+        */
+
+        // NEW FIX: Canonical sync after poll vote deduction.
+        unawaited(
+          CanonicalPointBalanceSync.apply(
+            userId: currentUserId.toString(),
+            currentBalance: newBalance,
+            source: 'poll_vote_deduct_carousel',
+            emitBroadcast: false,
+            pointProvider: pointProvider,
+          ),
         );
 
         // Show success feedback so user knows points were deducted

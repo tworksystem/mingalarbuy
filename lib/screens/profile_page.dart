@@ -5,7 +5,6 @@ import 'package:ecommerce_int2/screens/faq_page.dart';
 import 'package:ecommerce_int2/screens/payment/payment_page.dart';
 import 'package:ecommerce_int2/screens/settings/settings_page.dart';
 import 'package:ecommerce_int2/widgets/loyalty_summary_card.dart';
-import 'package:ecommerce_int2/widgets/points_dashboard_card.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -59,7 +58,7 @@ class ProfilePage extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    const PointsDashboardCard(),
+                    const SizedBox(height: 16),
                     const LoyaltySummaryCard(),
                     Container(
                       margin: EdgeInsets.symmetric(vertical: 16.0),

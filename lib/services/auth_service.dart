@@ -19,6 +19,15 @@ class AuthService {
 
   static final FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
+  /// Busts reverse proxies / HTTP caches for `GET /users/me` (custom_fields / points).
+  static Uri _usersMeUriNoCache() {
+    return Uri.parse('$wpBaseUrl/users/me').replace(
+      queryParameters: {
+        '_t': DateTime.now().millisecondsSinceEpoch.toString(),
+      },
+    );
+  }
+
   // Storage keys
   static const String _tokenKey = 'auth_token';
   static const String _userKey = 'user_data';
@@ -218,12 +227,11 @@ class AuthService {
       print('DEBUG: getCurrentUser - Token exists: ${token != null}');
       if (token == null) return null;
 
-      final Uri meUri = Uri.parse('$wpBaseUrl/users/me');
+      final Uri meUri = _usersMeUriNoCache();
       final response = await ApiService.executeWithRetry(
         () => ApiService.get(
           meUri.path,
-          queryParameters:
-              meUri.queryParameters.isEmpty ? null : meUri.queryParameters,
+          queryParameters: meUri.queryParameters,
           skipAuth: false,
           headers: const <String, dynamic>{
             'Content-Type': 'application/json',
@@ -673,12 +681,11 @@ class AuthService {
       }
 
       // First verify current password by trying to authenticate
-      final Uri meUri = Uri.parse('$wpBaseUrl/users/me');
+      final Uri meUri = _usersMeUriNoCache();
       final verifyResponse = await ApiService.executeWithRetry(
         () => ApiService.get(
           meUri.path,
-          queryParameters:
-              meUri.queryParameters.isEmpty ? null : meUri.queryParameters,
+          queryParameters: meUri.queryParameters,
           skipAuth: true,
           headers: <String, dynamic>{
             'Content-Type': 'application/json',

@@ -249,6 +249,16 @@ function twork_get_access_token_from_sa() {
 }
 
 function twork_send_fcm($token, $title, $body, $data = []) {
+    /*
+    Old Code — backend-wide kill switch: every FCM send returned false, so poll/quiz wins
+    could never reach the device (My PNP could not real-time sync from push).
+    // Disabled notification for backend-wide suppression.
+    // Old FCM transport logic is intentionally kept below to preserve rollback safety.
+    return false;
+    */
+
+    // New Code: allow FCM v1 delivery (points / engagement payloads depend on this).
+
     // Silent Update: admin saves (e.g. Engagement Hub) can suppress all FCM sends for this request.
     if (isset($_POST['twork_skip_fcm_notify']) && (string) wp_unslash($_POST['twork_skip_fcm_notify']) === '1') {
         return false;
@@ -277,11 +287,36 @@ function twork_send_fcm($token, $title, $body, $data = []) {
     $title = sanitize_text_field($title);
     $body = sanitize_text_field($body);
 
-    // Sanitize data payload
+    /*
+    Old Code — sanitize_key() lowercases keys and breaks camelCase contracts with Flutter
+    (e.g. currentBalance -> currentbalance), so the app could not read currentBalance / userId.
     $sanitized_data = [];
     foreach ($data as $key => $value) {
         $sanitized_key = sanitize_key($key);
         $sanitized_data[$sanitized_key] = is_string($value) ? sanitize_text_field($value) : $value;
+    }
+    */
+
+    // New Code: preserve stable keys; FCM v1 `data` values MUST be strings.
+    $sanitized_data = array();
+    foreach ($data as $key => $value) {
+        if (!is_string($key) || $key === '') {
+            continue;
+        }
+        $k = preg_replace('/[^A-Za-z0-9_\-]/', '', $key);
+        if ($k === '') {
+            continue;
+        }
+        if (is_array($value) || is_object($value)) {
+            $encoded = wp_json_encode($value);
+            $sanitized_data[ $k ] = is_string($encoded) ? $encoded : '';
+        } elseif (is_bool($value)) {
+            $sanitized_data[ $k ] = $value ? '1' : '0';
+        } elseif (is_int($value) || is_float($value)) {
+            $sanitized_data[ $k ] = (string) $value;
+        } else {
+            $sanitized_data[ $k ] = sanitize_text_field((string) $value);
+        }
     }
 
     // Build FCM API URL

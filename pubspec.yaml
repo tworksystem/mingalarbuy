@@ -61,6 +61,7 @@ dependencies:
   # Device and package info for usage tracking
   device_info_plus: ^12.4.0
   package_info_plus: ^9.0.1
+  web: ^1.1.1
 
 
 dev_dependencies:

@@ -1,7 +1,10 @@
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/point_transaction.dart';
+import '../providers/auth_provider.dart';
+import '../providers/point_provider.dart';
 import '../services/in_app_notification_service.dart';
 import '../services/point_service.dart';
+import '../services/canonical_point_balance_sync.dart';
 import '../utils/logger.dart';
 
 /// Service to recover missed notifications for poll wins
@@ -93,6 +96,43 @@ class MissedNotificationRecoveryService {
       Logger.info('Found ${missedWins.length} missed poll winner notification(s)',
           tag: 'MissedNotificationRecovery');
 
+      /*
+      Old Code:
+      // No server balance fetch here; in-app rows used currentBalance: null only.
+      */
+
+      // New Code: One live balance read so recreated notifications + Home My PNP match ledger.
+      String? balanceLabelForMissedRecovery;
+      try {
+        final live = await PointService.getPointBalance(userId);
+        if (live != null) {
+          balanceLabelForMissedRecovery = live.currentBalance.toString();
+          /*
+          // OLD CODE:
+          // AuthProvider().applyPointsBalanceSnapshot(live.currentBalance);
+          // PointProvider.instance.applyRemoteBalanceSnapshot(
+          //   userId: userId,
+          //   currentBalance: live.currentBalance,
+          // );
+          */
+
+          // NEW FIX: Missed poll recovery UI matches ledger + disk.
+          await CanonicalPointBalanceSync.apply(
+            userId: userId,
+            currentBalance: live.currentBalance,
+            source: 'missed_poll_recovery',
+            emitBroadcast: false,
+          );
+        }
+      } catch (e, stackTrace) {
+        Logger.warning(
+          'Missed recovery: could not fetch live balance for UI sync: $e',
+          tag: 'MissedNotificationRecovery',
+          error: e,
+          stackTrace: stackTrace,
+        );
+      }
+
       // Recreate in-app notifications for missed wins
       int recreatedCount = 0;
       for (final txn in missedWins) {
@@ -108,13 +148,30 @@ class MissedNotificationRecoveryService {
 
           // Create in-app notification with transaction ID
           // This ensures duplicate prevention works correctly
-          // Old Code: .createPointNotification( ... transactionId: txn.id only — [eventOccurredAt] missing; in-app [createdAt] was DateTime.now()).
+          /*
+          Old Code:
           final wasCreated = await InAppNotificationService().createPointNotification(
             type: 'engagement_points',
             title: notificationTitle,
             body: notificationBody,
             points: txn.points.toString(),
             currentBalance: null, // Will use cached balance
+            transactionId: txn.id,
+            eventOccurredAt: txn.createdAt,
+            additionalData: {
+              'itemType': 'poll',
+              'itemTitle': pollTitle,
+            },
+          );
+          */
+
+          // New Code: Pass live balance label when available so notification payload matches My PNP.
+          final wasCreated = await InAppNotificationService().createPointNotification(
+            type: 'engagement_points',
+            title: notificationTitle,
+            body: notificationBody,
+            points: txn.points.toString(),
+            currentBalance: balanceLabelForMissedRecovery,
             transactionId: txn.id,
             eventOccurredAt: txn.createdAt,
             additionalData: {
@@ -146,6 +203,29 @@ class MissedNotificationRecoveryService {
           // Still mark as notified to avoid infinite retry
           notifiedIdsSet.add(txn.id);
         }
+      }
+
+      /*
+      Old Code:
+      // No PointProvider.refreshPointState / loadBalance after recovery loop.
+      */
+
+      // New Code: Reconcile balance, transactions, and user meta with server after recovery.
+      try {
+        await PointProvider.instance.refreshPointState(
+          userId: userId,
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: true,
+          refreshUserCallback: () => AuthProvider().refreshUser(),
+        );
+      } catch (e, stackTrace) {
+        Logger.warning(
+          'Missed recovery: refreshPointState after loop failed: $e',
+          tag: 'MissedNotificationRecovery',
+          error: e,
+          stackTrace: stackTrace,
+        );
       }
 
       // Save updated notified transaction IDs

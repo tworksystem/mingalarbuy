@@ -1,6 +1,8 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/providers/auth_provider.dart';
+import 'package:ecommerce_int2/providers/point_provider.dart';
 import 'package:ecommerce_int2/providers/order_provider.dart';
 import 'package:ecommerce_int2/screens/auth/welcome_back_page.dart';
 import 'package:ecommerce_int2/screens/settings/settings_page.dart';
@@ -12,7 +14,6 @@ import 'package:ecommerce_int2/services/global_keys.dart';
 import 'package:ecommerce_int2/services/app_update_service.dart';
 import 'package:ecommerce_int2/services/app_download_service.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
-import 'package:ecommerce_int2/widgets/points_dashboard_card.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -36,8 +37,18 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
     // Ensure latest billing phone/city are merged from Woo on page open
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final pointProvider = Provider.of<PointProvider>(context, listen: false);
       // Refresh user data
       await authProvider.refreshUser();
+      final userId = authProvider.user?.id.toString();
+      if (userId != null && userId.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint(
+            '👤 [PNP DEBUG] [${DateTime.now()}] Profile Tab: Loading Point Balance for User: $userId',
+          );
+        }
+        await pointProvider.loadBalance(userId, forceRefresh: true);
+      }
       // Load app update info
       _loadUpdateInfo();
     });
@@ -354,6 +365,17 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
               onRefresh: () async {
                 // Refresh user data
                 await authProvider.refreshUser();
+                final pointProvider =
+                    Provider.of<PointProvider>(context, listen: false);
+                final userId = authProvider.user?.id.toString();
+                if (userId != null && userId.isNotEmpty) {
+                  if (kDebugMode) {
+                    debugPrint(
+                      '👤 [PNP DEBUG] [${DateTime.now()}] Profile Tab: Loading Point Balance for User: $userId',
+                    );
+                  }
+                  await pointProvider.loadBalance(userId, forceRefresh: true);
+                }
                 // Refresh app update info
                 await _loadUpdateInfo();
               },
@@ -382,7 +404,7 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),
-                      const PointsDashboardCard(),
+                      const SizedBox(height: 16),
                       // App Update Notification (if available)
                       if (!_isLoadingUpdate &&
                           _updateInfo != null &&

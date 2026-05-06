@@ -10,7 +10,6 @@ import '../models/woocommerce_order.dart';
 import '../utils/logger.dart';
 import '../utils/monitoring.dart';
 import '../utils/data_validator.dart';
-import '../services/notification_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/connectivity_service.dart';
 import '../services/point_service.dart';
@@ -743,23 +742,24 @@ class OrderProvider with ChangeNotifier {
             // Only create notification if not skipped (e.g., when triggered by push notification)
             // Push notifications already create in-app notifications, so we skip to avoid duplicates
             if (!skipNotifications) {
-              try {
-                await NotificationService().showOrderStatusUpdate(
-                  orderId: localOrder.id,
-                  oldStatus: localOrder.status.toString(),
-                  newStatus: wooOrder.status,
-                  orderTitle: 'Order Status Updated',
-                );
-                Logger.info(
-                    'Notification sent for order ${localOrder.id} status update',
-                    tag: 'OrderProvider');
-              } catch (e) {
-                Logger.error(
-                    'Failed to show notification for order status update: $e',
-                    tag: 'OrderProvider',
-                    error: e);
-                // Don't fail the sync if notification fails
-              }
+              // Notification disabled by user request
+              // try {
+              //   await NotificationService().showOrderStatusUpdate(
+              //     orderId: localOrder.id,
+              //     oldStatus: localOrder.status.toString(),
+              //     newStatus: wooOrder.status,
+              //     orderTitle: 'Order Status Updated',
+              //   );
+              //   Logger.info(
+              //       'Notification sent for order ${localOrder.id} status update',
+              //       tag: 'OrderProvider');
+              // } catch (e) {
+              //   Logger.error(
+              //       'Failed to show notification for order status update: $e',
+              //       tag: 'OrderProvider',
+              //       error: e);
+              //   // Don't fail the sync if notification fails
+              // }
             } else {
               Logger.info(
                   'Skipping notification creation (already handled by push notification)',
@@ -783,19 +783,20 @@ class OrderProvider with ChangeNotifier {
                   tag: 'OrderProvider');
 
               // Show notification for new order
-              try {
-                await NotificationService().showNewOrderNotification(
-                  orderId: newOrder.id,
-                  total: newOrder.formattedTotal,
-                  orderTitle: 'New Order Received',
-                );
-                Logger.info('Notification sent for new order ${newOrder.id}',
-                    tag: 'OrderProvider');
-              } catch (e) {
-                Logger.error('Failed to show notification for new order: $e',
-                    tag: 'OrderProvider', error: e);
-                // Don't fail the sync if notification fails
-              }
+              // Notification disabled by user request
+              // try {
+              //   await NotificationService().showNewOrderNotification(
+              //     orderId: newOrder.id,
+              //     total: newOrder.formattedTotal,
+              //     orderTitle: 'New Order Received',
+              //   );
+              //   Logger.info('Notification sent for new order ${newOrder.id}',
+              //       tag: 'OrderProvider');
+              // } catch (e) {
+              //   Logger.error('Failed to show notification for new order: $e',
+              //       tag: 'OrderProvider', error: e);
+              //   // Don't fail the sync if notification fails
+              // }
             }
           } catch (e) {
             Logger.error(

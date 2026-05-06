@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api_service.dart';
 import '../utils/logger.dart';
@@ -15,6 +17,7 @@ import '../providers/in_app_notification_provider.dart';
 import '../models/in_app_notification.dart';
 import '../providers/point_provider.dart';
 import '../providers/auth_provider.dart';
+import 'canonical_point_balance_sync.dart';
 import 'point_notification_manager.dart';
 import 'missed_notification_recovery_service.dart';
 
@@ -25,9 +28,17 @@ Future<bool> _verifyNotificationUserInBackground(
   try {
     const secureStorage = FlutterSecureStorage();
 
-    // Get userId from notification data
+    // Get userId from notification data (camelCase / snake_case / legacy lowercased keys).
+    /*
+    Old Code:
     final notificationUserId =
         data['userId']?.toString() ?? data['user_id']?.toString() ?? '';
+    */
+    final notificationUserId = _fcmDataFirstString(data, const [
+      'userId',
+      'user_id',
+      'userid',
+    ]);
 
     if (notificationUserId.isEmpty) {
       // If no userId in notification, log warning but allow processing
@@ -81,6 +92,101 @@ Future<bool> _verifyNotificationUserInBackground(
   }
 }
 
+/// SharedPreferences key: background isolate persists last points FCM snapshot for main isolate.
+const String _kPendingFcmPointSnapshotKey = 'twork_fcm_pending_point_snapshot_v1';
+
+/// Point-related FCM `type` values that carry an authoritative balance snapshot.
+const Set<String> _fcmPointBalanceNotificationTypes = {
+  'points_earned',
+  'points_approved',
+  'points_redeemed',
+  'exchange_approved',
+  'exchange_rejected',
+  'engagement_points',
+  'points_adjusted',
+};
+
+/// First non-empty string among [keys] in FCM [data] (handles int/double from native maps).
+String _fcmDataFirstString(Map<String, dynamic> data, List<String> keys) {
+  for (final String k in keys) {
+    if (!data.containsKey(k)) {
+      continue;
+    }
+    final Object? v = data[k];
+    if (v == null) {
+      continue;
+    }
+    final String s = v.toString().trim();
+    if (s.isNotEmpty) {
+      return s;
+    }
+  }
+  return '';
+}
+
+int _fcmDataFirstInt(Map<String, dynamic> data, List<String> keys, {int fallback = 0}) {
+  final String raw = _fcmDataFirstString(data, keys);
+  if (raw.isEmpty) {
+    return fallback;
+  }
+  final num? n = num.tryParse(raw);
+  if (n == null) {
+    return fallback;
+  }
+  return n.round();
+}
+
+/// Background isolate cannot update [ChangeNotifier]s — persist snapshot for main isolate drain.
+Future<void> persistFcmPointSnapshotForMainIsolate(Map<String, dynamic> data) async {
+  if (kIsWeb) {
+    return;
+  }
+  try {
+    final String type = _fcmDataFirstString(data, const ['type']);
+    if (!_fcmPointBalanceNotificationTypes.contains(type)) {
+      return;
+    }
+    final String uid = _fcmDataFirstString(data, const [
+      'userId',
+      'user_id',
+      'userid',
+    ]);
+    if (uid.isEmpty) {
+      return;
+    }
+    final int balance = _fcmDataFirstInt(
+      data,
+      const [
+        'currentBalance',
+        'current_balance',
+        'currentbalance',
+        'balance',
+      ],
+    );
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _kPendingFcmPointSnapshotKey,
+      json.encode(<String, dynamic>{
+        'userId': uid,
+        'currentBalance': balance,
+        'type': type,
+        'savedAt': DateTime.now().toUtc().millisecondsSinceEpoch,
+      }),
+    );
+    Logger.info(
+      'Background FCM point snapshot persisted for user=$uid balance=$balance type=$type',
+      tag: 'PushNotification',
+    );
+  } catch (e, stackTrace) {
+    Logger.error(
+      'persistFcmPointSnapshotForMainIsolate failed: $e',
+      tag: 'PushNotification',
+      error: e,
+      stackTrace: stackTrace,
+    );
+  }
+}
+
 /// Best-effort event time from FCM [data] for in-app [createdAt] (backend keys vary).
 DateTime? _tryParseFcmDataEventTime(Map<String, dynamic> data) {
   for (final String key in <String>[
@@ -112,6 +218,250 @@ DateTime? _tryParseFcmDataEventTime(Map<String, dynamic> data) {
     }
   }
   return null;
+}
+
+// -----------------------------------------------------------------------------
+// Tray title/body + channel helpers (shared by foreground handler + BG isolate).
+// Non-order payloads must NOT fall back to fake "Your order has been updated" copy.
+// -----------------------------------------------------------------------------
+
+/// Like [PushNotificationService._parseBool] — tri-state for adjustment rows.
+bool? _parseTrayBoolNullable(dynamic value) {
+  if (value == null) return null;
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  final str = value.toString().trim().toLowerCase();
+  if (str.isEmpty) return null;
+  if (str == '0' || str == 'false' || str == 'no') return false;
+  if (str == '1' || str == 'true' || str == 'yes') return true;
+  return null;
+}
+
+String _trayPointTitleForType(String type, String points) {
+  final pointsNum = int.tryParse(points) ?? 0;
+  switch (type) {
+    case 'points_earned':
+      return pointsNum > 0
+          ? '🎉 Congratulations! $pointsNum PNP Earned'
+          : 'Points Balance Updated';
+    case 'points_approved':
+      return pointsNum > 0
+          ? '✅ $pointsNum PNP Successfully Approved'
+          : 'Points Request Approved';
+    case 'points_redeemed':
+      return pointsNum > 0
+          ? '💎 Exchange Request Submitted'
+          : 'Exchange Request Submitted';
+    case 'exchange_approved':
+      return '✅ Exchange Request Approved';
+    case 'exchange_rejected':
+      return '⚠️ Exchange Request Update';
+    case 'engagement_points':
+      return pointsNum > 0 ? '🎯 $pointsNum PNP from Activity' : 'Activity Points Earned';
+    case 'points_adjusted':
+      return '📊 Points Balance Adjusted';
+    default:
+      return 'Points Update';
+  }
+}
+
+String _trayPointBodyForType(
+    String type, String points, String balance, Map<String, dynamic> data) {
+  final pointsNum = int.tryParse(points) ?? 0;
+  final balanceNum = int.tryParse(balance) ?? 0;
+  final fb = balanceNum.toString().replaceAllMapped(
+    RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+    (Match m) => '${m[1]},',
+  );
+  switch (type) {
+    case 'points_earned':
+      return pointsNum > 0
+          ? 'Great news! You\'ve earned $pointsNum PNP. Your current balance is $fb PNP.'
+          : 'Your points balance has been updated.';
+    case 'points_approved':
+      return pointsNum > 0
+          ? 'Your $pointsNum PNP transaction has been approved and added to your account. Current balance: $fb PNP.'
+          : 'Your points request has been approved.';
+    case 'points_redeemed':
+      return pointsNum > 0
+          ? 'Your exchange request for $pointsNum PNP has been submitted and is pending review. Your balance: $fb PNP.'
+          : 'Your exchange request has been submitted and is pending review.';
+    case 'exchange_approved':
+      return 'Your exchange request has been approved and is being processed. You will receive your reward shortly.';
+    case 'exchange_rejected':
+      final reason = data['reason'] ?? '';
+      if (pointsNum > 0) {
+        if (reason.toString().isNotEmpty) {
+          return 'Your exchange request was not approved. Reason: $reason. Your $pointsNum PNP have been refunded to your account.';
+        }
+        return 'Your exchange request was not approved. Your $pointsNum PNP have been refunded. Current balance: $fb PNP.';
+      }
+      if (reason.toString().isNotEmpty) {
+        return 'Your exchange request was not approved. Reason: $reason. Your PNP balance remains unchanged.';
+      }
+      return 'Your exchange request was not approved. Your PNP balance remains unchanged. Current balance: $fb PNP.';
+    case 'engagement_points':
+      final itemTitle = _fcmDataFirstString(
+        data,
+        const ['itemTitle', 'item_title', 'itemtitle'],
+      );
+      final activityName = itemTitle.toString().isNotEmpty ? itemTitle : 'this activity';
+      return pointsNum > 0
+          ? 'Thank you for your participation! You earned $pointsNum PNP from $activityName. Your balance is now $fb PNP.'
+          : 'You earned points from an engagement activity. Check your balance for details.';
+    case 'points_adjusted':
+      final isPositive = _parseTrayBoolNullable(data['isPositive']) ??
+          _parseTrayBoolNullable(data['is_positive']) ??
+          true;
+      final adj = isPositive ? 'increased' : 'decreased';
+      final vb = isPositive ? 'added' : 'deducted';
+      return pointsNum > 0
+          ? 'Your points balance has been $adj. $pointsNum PNP has been $vb. Your current balance is $fb PNP.'
+          : 'Your points balance has been adjusted. Current balance: $fb PNP.';
+    default:
+      return 'Your points balance has been updated. Current balance: $fb PNP.';
+  }
+}
+
+/// Public factory so Isolate / internal logic share one resolver.
+///
+/// Old behavior (removed): every missing title/body used **Order Update** placeholders.
+///
+/// New behavior: chooses channel + sane copy from [Message.data]['type']; only genuine
+/// `order_status_update` rows use Order-style placeholders.
+class TrayLocalSpec {
+  const TrayLocalSpec({
+    required this.channelId,
+    required this.channelName,
+    required this.channelDescription,
+    required this.title,
+    required this.body,
+  });
+
+  final String channelId;
+  final String channelName;
+  final String channelDescription;
+  final String title;
+  final String body;
+
+  factory TrayLocalSpec.fromRemoteMessage(RemoteMessage message) {
+    final d = Map<String, dynamic>.from(message.data);
+    final nt = _fcmDataFirstString(d, const ['type', 'notification_type']);
+    final orderId = _fcmDataFirstString(d, const ['orderId', 'order_id', 'orderid']);
+
+    /*
+    Old Code:
+
+    ```
+    title: message.notification?.title ?? 'Order Update',
+    body: message.notification?.body ?? 'Your order has been updated',
+    ```
+
+    (Always wrong for points/engagement data-only payloads.)
+    */
+
+    // New Code:
+
+    final notifT = message.notification?.title?.trim();
+    final notifB = message.notification?.body?.trim();
+
+    /// Points-ish set (mirror `PushNotificationService._pointNotificationTypes`).
+    const trayPointKinds = {
+      'points_earned',
+      'points_approved',
+      'points_redeemed',
+      'exchange_approved',
+      'exchange_rejected',
+      'engagement_points',
+      'points_adjusted',
+    };
+    /// Mirror `PushNotificationService._engagementNotificationTypes`.
+    const trayEngKinds = {
+      'engagement_quiz_submitted',
+      'engagement_poll_submitted',
+      'engagement_banner_viewed',
+      'engagement_announcement_viewed',
+      'engagement_number_viewed',
+      'engagement_new_item',
+      'engagement_item_updated',
+    };
+
+    if (trayPointKinds.contains(nt) || nt == 'reward_updated') {
+      final points = _fcmDataFirstString(d, const [
+        'points',
+        'points_value',
+        'pointsValue',
+        'pointsEarned',
+      ]);
+      final cb = _fcmDataFirstString(d, const [
+        'currentBalance',
+        'current_balance',
+        'currentbalance',
+        'balance',
+      ]);
+      final t = (notifT != null && notifT.isNotEmpty)
+          ? notifT
+          : (nt == 'reward_updated')
+              ? 'Reward update'
+              : _trayPointTitleForType(nt, points);
+      final bodyText = (notifB != null && notifB.isNotEmpty)
+          ? notifB
+          : (nt == 'reward_updated')
+              ? 'Your rewards profile may have changed. Open the app to review.'
+              : _trayPointBodyForType(nt, points, cb, d);
+
+      return TrayLocalSpec(
+        channelId: 'points_updates',
+        channelName: 'Points Updates',
+        channelDescription: 'Notifications for loyalty points and rewards updates',
+        title: t,
+        body: bodyText,
+      );
+    }
+
+    if (trayEngKinds.contains(nt)) {
+      final t =
+          (notifT != null && notifT.isNotEmpty) ? notifT : 'Engagement Hub';
+      final b = (notifB != null && notifB.isNotEmpty)
+          ? notifB
+          : 'You have a new Engagement Hub activity or update.';
+      return TrayLocalSpec(
+        channelId: 'engagement_updates',
+        channelName: 'Engagement Hub',
+        channelDescription:
+            'Notifications for Engagement Hub activities and announcements',
+        title: t,
+        body: b,
+      );
+    }
+
+    // Canonical WooCommerce order push from server plugin:
+    if (nt == 'order_status_update' && orderId.isNotEmpty) {
+      return TrayLocalSpec(
+        channelId: 'order_updates',
+        channelName: 'Order Updates',
+        channelDescription: 'Notifications for order status updates',
+        title:
+            notifT?.isNotEmpty == true ? notifT! : 'Order update',
+        body:
+            notifB?.isNotEmpty == true ? notifB! : 'Your order has been updated',
+      );
+    }
+
+    // Unknown / malformed type — NEVER masquerade as an order shipment:
+    final tFallback =
+        notifT?.isNotEmpty == true ? notifT! : 'Notification';
+    final bFallback = notifB?.isNotEmpty == true
+        ? notifB!
+        : 'Open the app for details.';
+    return TrayLocalSpec(
+      channelId: 'app_general',
+      channelName: 'App notifications',
+      channelDescription: 'General app notifications',
+      title: tFallback,
+      body: bFallback,
+    );
+  }
 }
 
 /// Background message handler (must be top-level function)
@@ -156,27 +506,68 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
     await localNotifications.initialize(settings: initSettings);
 
-    // Create notification channel for Android
-    const AndroidNotificationChannel channel = AndroidNotificationChannel(
-      'order_updates',
-      'Order Updates',
-      description: 'Notifications for order status updates',
-      importance: Importance.high,
-      playSound: true,
-      enableVibration: true,
-    );
+    /*
+    Old Code — single `order_updates` channel + **Order Update** defaults for every payload:
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(...);
+    ...
+    await localNotifications.show(... title: ... ?? 'Order Update', body: ... ?? 'Your order has been updated', ...);
+    */
 
-    await localNotifications
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
+    // New Code — register all tray channels (Android 8+) so non-order rows never look like orders.
+    final androidImpl = localNotifications.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    const androidChannels = [
+      AndroidNotificationChannel(
+        'order_updates',
+        'Order Updates',
+        description: 'Notifications for order status updates',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      ),
+      AndroidNotificationChannel(
+        'points_updates',
+        'Points Updates',
+        description: 'Notifications for loyalty points and rewards updates',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      ),
+      AndroidNotificationChannel(
+        'engagement_updates',
+        'Engagement Hub',
+        description: 'Notifications for Engagement Hub activities',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      ),
+      AndroidNotificationChannel(
+        'app_general',
+        'App notifications',
+        description: 'General app notifications',
+        importance: Importance.defaultImportance,
+      ),
+    ];
+    for (final ch in androidChannels) {
+      await androidImpl?.createNotificationChannel(ch);
+    }
 
-    // Show notification in background/terminated state
-    const AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-      'order_updates',
-      'Order Updates',
-      channelDescription: 'Notifications for order status updates',
+    final nt = _fcmDataFirstString(message.data, const ['type', 'notification_type']);
+    if (nt == 'order_status_update') {
+      // Notification disabled by user request (order tray notifications only).
+      Logger.info(
+        'Skipping background tray display for order notification',
+        tag: 'PushNotification',
+      );
+      return;
+    }
+
+    final tray = TrayLocalSpec.fromRemoteMessage(message);
+
+    final androidDetails = AndroidNotificationDetails(
+      tray.channelId,
+      tray.channelName,
+      channelDescription: tray.channelDescription,
       importance: Importance.high,
       priority: Priority.high,
       showWhen: true,
@@ -184,27 +575,32 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       playSound: true,
     );
 
-    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+    const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
     );
 
-    const NotificationDetails notificationDetails = NotificationDetails(
+    final notificationDetails = NotificationDetails(
       android: androidDetails,
       iOS: iosDetails,
     );
 
     await localNotifications.show(
       id: message.hashCode,
-      title: message.notification?.title ?? 'Order Update',
-      body: message.notification?.body ?? 'Your order has been updated',
+      title: tray.title,
+      body: tray.body,
       notificationDetails: notificationDetails,
       payload: json.encode(message.data),
     );
 
     Logger.info('Background notification displayed successfully',
         tag: 'PushNotification');
+
+    // Main isolate cannot read background isolate memory — persist balance for startup drain.
+    await persistFcmPointSnapshotForMainIsolate(
+      Map<String, dynamic>.from(message.data),
+    );
   } catch (e, stackTrace) {
     Logger.error('Error handling background message: $e',
         tag: 'PushNotification', error: e, stackTrace: stackTrace);
@@ -362,9 +758,17 @@ class PushNotificationService {
   /// Returns true if notification should be processed, false otherwise
   Future<bool> _verifyNotificationUser(Map<String, dynamic> data) async {
     try {
-      // Get userId from notification data
+      // Get userId from notification data (camelCase / snake_case / legacy lowercased keys).
+      /*
+      Old Code:
       final notificationUserId =
           data['userId']?.toString() ?? data['user_id']?.toString() ?? '';
+      */
+      final notificationUserId = _fcmDataFirstString(data, const [
+        'userId',
+        'user_id',
+        'userid',
+      ]);
 
       if (notificationUserId.isEmpty) {
         // If no userId in notification, log warning but allow processing
@@ -406,6 +810,65 @@ class PushNotificationService {
     }
   }
 
+  /// Applies a points balance snapshot written from [firebaseMessagingBackgroundHandler]
+  /// so Home "My PNP" updates immediately on cold start without manual refresh.
+  Future<void> _applyPendingFcmBalanceSnapshotFromDisk() async {
+    if (kIsWeb) {
+      return;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kPendingFcmPointSnapshotKey);
+      if (raw == null || raw.isEmpty) {
+        return;
+      }
+      await prefs.remove(_kPendingFcmPointSnapshotKey);
+      final decoded = json.decode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        return;
+      }
+      final String uid = decoded['userId']?.toString() ?? '';
+      final int bal =
+          int.tryParse(decoded['currentBalance']?.toString() ?? '') ?? 0;
+      final String? current = await _getCurrentUserId();
+      if (current == null || uid.isEmpty || uid != current) {
+        Logger.info(
+          'Pending FCM balance snapshot skipped (user mismatch or logged out) pending=$uid current=$current',
+          tag: 'PushNotification',
+        );
+        return;
+      }
+      /*
+      // OLD CODE:
+      // AuthProvider().applyPointsBalanceSnapshot(bal);
+      // PointProvider.instance.applyRemoteBalanceSnapshot(
+      //   userId: uid,
+      //   currentBalance: bal,
+      // );
+      */
+
+      // NEW FIX: Pending FCM snapshot — full canonical sync.
+      await CanonicalPointBalanceSync.apply(
+        userId: uid,
+        currentBalance: bal,
+        source: 'push_fcm_pending_snapshot',
+        emitBroadcast: false,
+      );
+      _schedulePointsHardSync(uid);
+      Logger.info(
+        'Pending FCM balance snapshot applied user=$uid balance=$bal (My PNP + reconcile)',
+        tag: 'PushNotification',
+      );
+    } catch (e, stackTrace) {
+      Logger.error(
+        '_applyPendingFcmBalanceSnapshotFromDisk failed: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
   /// Initialize push notification service
   Future<void> initialize() async {
     if (_isInitialized) {
@@ -442,6 +905,7 @@ class PushNotificationService {
         await _configureLocalNotifications();
 
         _isInitialized = true;
+        await _applyPendingFcmBalanceSnapshotFromDisk();
         // New Code: ensure backend token registration is eventually consistent
         // even when release startup races with secure-storage/session hydration.
         _scheduleTokenRecovery(reason: 'initial release reliability check');
@@ -455,6 +919,7 @@ class PushNotificationService {
         await _configureMessageHandlers();
         await _configureLocalNotifications();
         _isInitialized = true;
+        await _applyPendingFcmBalanceSnapshotFromDisk();
         _scheduleTokenRecovery(reason: 'provisional permission reliability check');
       } else {
         Logger.warning('User declined notification permission',
@@ -806,8 +1271,20 @@ class PushNotificationService {
   Future<void> _handleOrderUpdateNotification(RemoteMessage message) async {
     try {
       final data = message.data;
+      /*
+      Old Code:
       final orderId = data['orderId'] ?? data['order_id'];
       final notificationType = data['type'] ?? '';
+      */
+      final String orderId = _fcmDataFirstString(data, const [
+        'orderId',
+        'order_id',
+        'orderid',
+      ]);
+      final String notificationType = _fcmDataFirstString(data, const [
+        'type',
+        'notification_type',
+      ]);
       final notificationReason = data['reason']?.toString() ??
           data['notification_reason']?.toString() ??
           '';
@@ -852,6 +1329,8 @@ class PushNotificationService {
         // PROFESSIONAL REAL-TIME UX:
         // 1) Apply payload snapshot instantly (no manual refresh needed).
         // 2) Throttle a background hard-sync to reconcile server state.
+        /*
+        // Old Code:
         if (userId.isNotEmpty) {
           final balanceInt = int.tryParse(currentBalance.toString()) ?? 0;
 
@@ -867,6 +1346,40 @@ class PushNotificationService {
         } else {
           Logger.warning(
               'No userId in point notification, cannot apply point snapshot/sync',
+              tag: 'PushNotification');
+        }
+        */
+
+        // New Code:
+        final effectiveUserId = userId.isNotEmpty
+            ? userId.toString()
+            : AuthProvider().user?.id.toString();
+
+        if (effectiveUserId != null && effectiveUserId.isNotEmpty) {
+          final balanceInt = int.tryParse(currentBalance.toString()) ?? 0;
+
+          /*
+          // OLD CODE:
+          // AuthProvider().applyPointsBalanceSnapshot(balanceInt);
+          // PointProvider.instance.applyRemoteBalanceSnapshot(
+          //   userId: effectiveUserId,
+          //   currentBalance: balanceInt,
+          // );
+          */
+
+          // NEW FIX: Point notification payload — canonical sync (broadcast optional off).
+          await CanonicalPointBalanceSync.apply(
+            userId: effectiveUserId,
+            currentBalance: balanceInt,
+            source: 'push_point_notification',
+            emitBroadcast: false,
+          );
+
+          // Reconcile from server in background using the centralized refresh flow.
+          _schedulePointsHardSync(effectiveUserId);
+        } else {
+          Logger.warning(
+              'No userId in point notification and no authenticated fallback user available',
               tag: 'PushNotification');
         }
 
@@ -962,6 +1475,27 @@ class PushNotificationService {
             final itemIdRaw =
                 data['itemId'] ?? data['item_id'] ?? data['pollId'] ?? data['poll_id'];
 
+            final pollDedupeId = data['pollId'] ?? data['poll_id'];
+            final sessionDedupeId = data['sessionId'] ?? data['session_id'];
+            /*
+            Old Code — FCM fallback `fcm_engagement_$itemId` could not collide with Carousel’s
+                        per-millisecond `poll_${id}_${session}_${ts}`, so Poll wins doubled rows:
+                orderId: transactionId.isNotEmpty
+                  ? null
+                  : (notificationType == 'engagement_points' &&
+                          itemIdRaw != null &&
+                          itemIdRaw.toString().isNotEmpty)
+                      ? 'fcm_engagement_${itemIdRaw}'
+                      : null,
+            */
+
+            final String? pollStableOrderKey = (notificationType ==
+                        'engagement_points' &&
+                    pollDedupeId != null &&
+                    pollDedupeId.toString().trim().isNotEmpty)
+                ? 'poll_stable_${pollDedupeId}_${sessionDedupeId ?? ''}'
+                : null;
+
             await PointNotificationManager().notifyPointEvent(
               type: modalType,
               points: pointsInt,
@@ -970,11 +1504,12 @@ class PushNotificationService {
               transactionId: transactionId.isNotEmpty ? transactionId : null,
               orderId: transactionId.isNotEmpty
                   ? null
-                  : (notificationType == 'engagement_points' &&
-                          itemIdRaw != null &&
-                          itemIdRaw.toString().isNotEmpty)
-                      ? 'fcm_engagement_${itemIdRaw}'
-                      : null,
+                  : (pollStableOrderKey ??
+                      ((notificationType == 'engagement_points' &&
+                              itemIdRaw != null &&
+                              itemIdRaw.toString().isNotEmpty)
+                          ? 'fcm_engagement_${itemIdRaw}'
+                          : null)),
               userId: userId,
               additionalData: {
                 ...Map<String, dynamic>.from(data),
@@ -1094,50 +1629,42 @@ class PushNotificationService {
       }
 
       // Only process order status update notifications
-      if (notificationType == 'order_status_update' && orderId != null) {
+      if (notificationType == 'order_status_update' && orderId.isNotEmpty) {
         final userId = data['userId'] ?? data['user_id'] ?? '';
         Logger.info(
             'Order update notification received for order: $orderId, userId: $userId',
             tag: 'PushNotification');
 
-        // Create in-app notification
-        try {
-          final status = data['status'] ?? 'updated';
-          final total = data['total'] ?? '0';
-          final currency = data['currency'] ?? 'Ks';
-
-          // Create notification in service (with deduplication)
-          final notificationCreated =
-              await InAppNotificationService().createOrderNotification(
-            orderId: orderId.toString(),
-            status: status.toString(),
-            total: total.toString(),
-            currency: currency.toString(),
-          );
-
-          if (notificationCreated) {
-            // Update provider immediately for real-time UI update
-            try {
-              final notificationProvider = InAppNotificationProvider.instance;
-              await notificationProvider.loadNotifications();
-              Logger.info(
-                  'Notification provider updated immediately for order: $orderId',
-                  tag: 'PushNotification');
-            } catch (e) {
-              Logger.error('Error updating notification provider: $e',
-                  tag: 'PushNotification', error: e);
-            }
-
-            Logger.info('In-app notification created for order: $orderId',
-                tag: 'PushNotification');
-          } else {
-            Logger.info('Duplicate notification prevented for order: $orderId',
-                tag: 'PushNotification');
-          }
-        } catch (e) {
-          Logger.error('Error creating in-app notification: $e',
-              tag: 'PushNotification', error: e);
-        }
+        // Notification disabled by user request
+        // try {
+        //   final status = data['status'] ?? 'updated';
+        //   final total = data['total'] ?? '0';
+        //   final currency = data['currency'] ?? 'Ks';
+        //
+        //   final notificationCreated =
+        //       await InAppNotificationService().createOrderNotification(
+        //     orderId: orderId.toString(),
+        //     status: status.toString(),
+        //     total: total.toString(),
+        //     currency: currency.toString(),
+        //   );
+        //
+        //   if (notificationCreated) {
+        //     final notificationProvider = InAppNotificationProvider.instance;
+        //     await notificationProvider.loadNotifications();
+        //     Logger.info(
+        //         'Notification provider updated immediately for order: $orderId',
+        //         tag: 'PushNotification');
+        //     Logger.info('In-app notification created for order: $orderId',
+        //         tag: 'PushNotification');
+        //   } else {
+        //     Logger.info('Duplicate notification prevented for order: $orderId',
+        //         tag: 'PushNotification');
+        //   }
+        // } catch (e) {
+        //   Logger.error('Error creating in-app notification: $e',
+        //       tag: 'PushNotification', error: e);
+        // }
         Logger.info('Triggering immediate order refresh',
             tag: 'PushNotification');
 
@@ -1183,6 +1710,8 @@ class PushNotificationService {
         Logger.info('Running points hard-sync for user: $userId',
             tag: 'PushNotification');
 
+        /*
+        // Old Code:
         await Future.wait([
           // Refresh user meta (points_balance/my_points etc.)
           AuthProvider().refreshUser(),
@@ -1191,6 +1720,16 @@ class PushNotificationService {
           // Refresh transactions so history updates without manual refresh.
           PointProvider.instance.loadTransactions(userId, forceRefresh: true),
         ]);
+        */
+
+        // New Code:
+        await PointProvider.instance.refreshPointState(
+          userId: userId,
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: true,
+          refreshUserCallback: () => AuthProvider().refreshUser(),
+        );
 
         Logger.info('Points hard-sync completed for user: $userId',
             tag: 'PushNotification');
@@ -1227,6 +1766,19 @@ class PushNotificationService {
       'Engagement Hub',
       description:
           'Notifications for Engagement Hub activities, quizzes, polls, and announcements',
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    );
+
+    /*
+    Old Code — no `app_general` channel for non-order / unknown FCM rows that must not steal the Order tray.
+    */
+
+    const androidChannelGeneral = AndroidNotificationChannel(
+      'app_general',
+      'App notifications',
+      description: 'General notifications that are not WooCommerce orders',
       importance: Importance.high,
       playSound: true,
       enableVibration: true,
@@ -1381,9 +1933,10 @@ class PushNotificationService {
         ?.createNotificationChannel(androidChannelPoints);
     await androidImplementation
         ?.createNotificationChannel(androidChannelEngagement);
+    await androidImplementation?.createNotificationChannel(androidChannelGeneral);
 
     Logger.info(
-        'Local notifications configured with channels: ${androidChannelOrder.id}, ${androidChannelPoints.id}, ${androidChannelEngagement.id}',
+        'Local notifications configured with channels: ${androidChannelOrder.id}, ${androidChannelPoints.id}, ${androidChannelEngagement.id}, ${androidChannelGeneral.id}',
         tag: 'PushNotification');
   }
 
@@ -1405,40 +1958,32 @@ class PushNotificationService {
         return; // Reject notification if not for current user
       }
 
-      // Use different channel for points notifications
-      final String channelId;
-      final String channelName;
-      final String channelDescription;
+      /*
+      Old Code — channel selection OK, but **title/body** always fell back to Order copy:
+      final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+        channelId, ...
+      );
+      await _localNotifications.show(
+        ...,
+        title: message.notification?.title ?? 'Order Update',
+        body: message.notification?.body ?? 'Your order has been updated',
+      );
+      */
 
-      // PROFESSIONAL FCM INTEGRATION: Use appropriate channel based on notification type
-      if (_pointNotificationTypes.contains(notificationType) ||
-          notificationType == 'reward_updated') {
-        channelId = 'points_updates';
-        channelName = 'Points Updates';
-        channelDescription =
-            'Notifications for loyalty points and rewards updates';
-      } else if (_engagementNotificationTypes.contains(notificationType)) {
-        channelId = 'engagement_updates';
-        channelName = 'Engagement Hub';
-        channelDescription =
-            'Notifications for Engagement Hub activities, quizzes, polls, and announcements';
-      } else {
-        channelId = 'order_updates';
-        channelName = 'Order Updates';
-        channelDescription = 'Notifications for order status updates';
-      }
+      final bool isOrderNotification =
+          notificationType == 'order_status_update' && orderId != null;
+      // New Code — same Android heads-up knobs, paired with [TrayLocalSpec]:
+      final tray = TrayLocalSpec.fromRemoteMessage(message);
 
-      // Prepare notification details
       final androidDetails = AndroidNotificationDetails(
-        channelId,
-        channelName,
-        channelDescription: channelDescription,
+        tray.channelId,
+        tray.channelName,
+        channelDescription: tray.channelDescription,
         importance: Importance.high,
         priority: Priority.high,
         showWhen: true,
         enableVibration: true,
         playSound: true,
-        // Enable heads-up notification for immediate visibility
         enableLights: true,
         ledColor: Color.fromARGB(255, 0, 122, 255),
         ledOnMs: 1000,
@@ -1451,23 +1996,30 @@ class PushNotificationService {
         presentSound: true,
       );
 
-      // Cannot use const here because androidDetails is dynamic based on notification type
       final NotificationDetails details = NotificationDetails(
         android: androidDetails,
         iOS: iosDetails,
       );
 
-      // Show notification with payload containing order data
-      await _localNotifications.show(
-        id: message.hashCode,
-        title: message.notification?.title ?? 'Order Update',
-        body: message.notification?.body ?? 'Your order has been updated',
-        notificationDetails: details,
-        payload: json.encode(message.data),
-      );
+      if (isOrderNotification) {
+        // Notification disabled by user request (order tray notifications only).
+        Logger.info(
+          'Skipping foreground tray display for order notification',
+          tag: 'PushNotification',
+        );
+      } else {
+        await _localNotifications.show(
+          id: message.hashCode,
+          title: tray.title,
+          body: tray.body,
+          notificationDetails: details,
+          payload: json.encode(message.data),
+        );
 
-      Logger.info('Foreground notification displayed for order: $orderId',
-          tag: 'PushNotification');
+        Logger.info(
+            'Foreground tray shown type=$notificationType orderId=${orderId ?? "-"} trayChannel=${tray.channelId}',
+            tag: 'PushNotification');
+      }
 
       // PROFESSIONAL FCM INTEGRATION: Trigger immediate refresh for all point notifications
       // Trigger immediate order refresh and in-app notification update when notification arrives in foreground

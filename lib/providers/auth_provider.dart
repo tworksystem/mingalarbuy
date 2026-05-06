@@ -9,8 +9,10 @@ import '../services/auth_service.dart';
 import '../services/connectivity_service.dart';
 import '../services/missed_notification_recovery_service.dart';
 import '../services/push_notification_service.dart';
+import '../services/canonical_point_balance_sync.dart';
 import 'in_app_notification_provider.dart';
 import '../utils/logger.dart';
+import 'point_provider.dart';
 
 enum AuthStatus {
   initial,
@@ -489,6 +491,29 @@ class AuthProvider with ChangeNotifier {
       _setError('Failed to refresh user data: $e');
       // Don't logout on refresh error - user might still be authenticated
     }
+  }
+
+  /*
+  // OLD CODE:
+  // No single entry for Auth + PointProvider + disk; callers chained methods manually.
+  */
+
+  /// NEW FIX: Single source of truth — memory, customFields, disk (+ optional broadcast).
+  Future<void> applyCanonicalBalanceSnapshot({
+    required String userId,
+    required int currentBalance,
+    String source = 'auth_canonical',
+    bool emitBroadcast = false,
+    PointProvider? pointProvider,
+  }) async {
+    await CanonicalPointBalanceSync.apply(
+      userId: userId,
+      currentBalance: currentBalance,
+      source: source,
+      emitBroadcast: emitBroadcast,
+      authProvider: this,
+      pointProvider: pointProvider,
+    );
   }
 
   /// Apply latest points balance from push notification payload (optimistic UI update).

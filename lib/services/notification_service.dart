@@ -15,6 +15,9 @@ class NotificationService {
 
   bool _isInitialized = false;
   bool _isWeb = false;
+
+  /// App-initiated local tray (not FCM foreground handling in [PushNotificationService]).
+  static const bool _suppressAppInitiatedTray = true;
   
   /// Check if service is initialized
   bool get isInitialized => _isInitialized;
@@ -184,6 +187,10 @@ class NotificationService {
     required String newStatus,
     String? orderTitle,
   }) async {
+    if (_suppressAppInitiatedTray) {
+      return;
+    }
+
     if (!_isInitialized) {
       Logger.warning(
           'Notification service not initialized, skipping notification',
@@ -271,6 +278,10 @@ class NotificationService {
     required String total,
     String? orderTitle,
   }) async {
+    if (_suppressAppInitiatedTray) {
+      return;
+    }
+
     if (!_isInitialized) {
       Logger.warning(
           'Notification service not initialized, skipping notification',

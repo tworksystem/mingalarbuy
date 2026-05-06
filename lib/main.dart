@@ -32,6 +32,9 @@ import 'package:ecommerce_int2/services/usage_tracking_service.dart';
 import 'package:ecommerce_int2/services/app_logger.dart';
 import 'package:ecommerce_int2/services/log_buffer_service.dart';
 import 'package:ecommerce_int2/services/global_keys.dart';
+import 'package:ecommerce_int2/services/web_point_visibility_stub.dart'
+    if (dart.library.html) 'package:ecommerce_int2/services/web_point_visibility_web.dart'
+    as web_point_visibility;
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -189,6 +192,9 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   Timer? _releaseFallbackSyncTimer;
+  StreamSubscription<dynamic>? _webVisibilitySubscription;
+  DateTime? _lastWebVisibilityBalanceRefresh;
+  static const Duration _webVisibilityBalanceThrottle = Duration(seconds: 45);
 
   @override
   void initState() {
@@ -207,7 +213,64 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       _setupPushNotificationCallbacks();
       _initializeUsageTracking();
       _startReleaseFallbackSyncLoop();
+      _tryAttachWebPointVisibilityListener();
     });
+  }
+
+  void _tryAttachWebPointVisibilityListener() {
+    if (!kIsWeb) return;
+    _webVisibilitySubscription?.cancel();
+    _webVisibilitySubscription =
+        web_point_visibility.attachWebVisibilityVisibleListener(() {
+      _onWebVisibilityPointRefresh();
+    });
+    if (_webVisibilitySubscription != null) {
+      Logger.info(
+        'Web: document visibility listener registered for point balance refresh',
+        tag: 'Main',
+      );
+    }
+  }
+
+  void _onWebVisibilityPointRefresh() {
+    if (!kIsWeb || !mounted) return;
+    final now = DateTime.now();
+    if (_lastWebVisibilityBalanceRefresh != null &&
+        now.difference(_lastWebVisibilityBalanceRefresh!) <
+            _webVisibilityBalanceThrottle) {
+      return;
+    }
+    _lastWebVisibilityBalanceRefresh = now;
+
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      if (!authProvider.isAuthenticated || authProvider.user == null) {
+        return;
+      }
+      final userIdString = authProvider.user!.id.toString();
+      Logger.debug(
+        'Forcing balance refresh due to user switch or explicit request '
+        '(web visibility change)',
+        tag: 'Main',
+      );
+      PointProvider.instance
+          .loadBalance(userIdString, forceRefresh: true)
+          .catchError((Object e, StackTrace st) {
+        Logger.warning(
+          'Web visibility point refresh failed: $e',
+          tag: 'Main',
+          error: e,
+          stackTrace: st,
+        );
+      });
+    } catch (e, st) {
+      Logger.warning(
+        'Web visibility point refresh skipped: $e',
+        tag: 'Main',
+        error: e,
+        stackTrace: st,
+      );
+    }
   }
 
   /// Initialize usage tracking on app start
@@ -512,6 +575,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void dispose() {
     _releaseFallbackSyncTimer?.cancel();
     _releaseFallbackSyncTimer = null;
+    _webVisibilitySubscription?.cancel();
+    _webVisibilitySubscription = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -536,8 +601,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       // Immediately refresh engagement feed when app comes to foreground
       try {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        final engagementProvider = Provider.of<EngagementProvider>(context, listen: false);
-        
+        final engagementProvider =
+            Provider.of<EngagementProvider>(context, listen: false);
+
         if (authProvider.isAuthenticated && authProvider.user != null) {
           final userId = authProvider.user!.id;
           final token = authProvider.token;
@@ -547,23 +613,25 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           PointProvider.instance
               .loadBalance(userIdString, forceRefresh: true)
               .catchError((e) {
-            Logger.warning(
-                'Error refreshing point balance on app resume: $e',
-                tag: 'Main',
-                error: e);
+            Logger.warning('Error refreshing point balance on app resume: $e',
+                tag: 'Main', error: e);
           });
-          Logger.info('Point balance refresh triggered on app resume (forceRefresh)',
+          Logger.info(
+              'Point balance refresh triggered on app resume (forceRefresh)',
               tag: 'Main');
 
-          engagementProvider.refreshImmediately(
+          engagementProvider
+              .refreshImmediately(
             userId: userId,
             token: token,
-          ).catchError((e) {
+          )
+              .catchError((e) {
             Logger.warning('Error refreshing engagement feed on app resume: $e',
                 tag: 'Main', error: e);
           });
-          
-          Logger.info('Engagement feed refresh triggered on app resume', tag: 'Main');
+
+          Logger.info('Engagement feed refresh triggered on app resume',
+              tag: 'Main');
         }
       } catch (e) {
         Logger.error('Error refreshing engagement feed on app resume: $e',
@@ -723,17 +791,27 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   }
 
   void _startReleaseFallbackSyncLoop() {
+    /*
+    Old Code:
     if (kIsWeb) {
       return;
     }
-
+    */
     // Keep release fallback sync lean and idempotent.
     _releaseFallbackSyncTimer?.cancel();
+    final interval =
+        kIsWeb ? const Duration(minutes: 5) : const Duration(seconds: 75);
     _releaseFallbackSyncTimer = Timer.periodic(
-      const Duration(seconds: 75),
+      interval,
       (_) => _runReleaseFallbackSync(),
     );
     _runReleaseFallbackSync();
+    Logger.info(
+      kIsWeb
+          ? 'Started web periodic fallback sync every ${interval.inMinutes} minutes'
+          : 'Started mobile periodic fallback sync every ${interval.inSeconds} seconds',
+      tag: 'Main',
+    );
   }
 
   void _stopReleaseFallbackSyncLoop() {
@@ -743,7 +821,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<void> _runReleaseFallbackSync() async {
     try {
+      /*
+      Old Code:
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      */
+      // New Code: avoid using MyApp context above MultiProvider scope.
+      final authProvider = AuthProvider();
       if (!authProvider.isAuthenticated || authProvider.user == null) {
         return;
       }
@@ -751,7 +834,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       final userIdString = authProvider.user!.id.toString();
       await Future.wait([
         PointProvider.instance.loadBalance(userIdString, forceRefresh: true),
-        PointProvider.instance.loadTransactions(userIdString, forceRefresh: true),
+        PointProvider.instance
+            .loadTransactions(userIdString, forceRefresh: true),
       ]);
       Logger.info(
         'Release fallback sync completed for user=$userIdString',

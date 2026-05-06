@@ -7978,10 +7978,13 @@ class TWork_Rewards_System
             $transaction_id = (int) $ledger_row_id;
         }
 
-        // 4. Send Notification ONLY for NEW transactions (prevent duplicate FCM on idempotent calls)
-        if ($is_new_transaction && $transaction_id > 0) {
+        // 4. Send Notification ONLY for NEW transactions (prevent duplicate FCM on idempotent calls).
+        // Poll-type awards: FCM disabled — award_poll_winner_points / app use REST balance sync only.
+        $balance_after = (int) $this->calculate_points_balance_from_transactions($user_id);
+        $fcm_sent = false;
+        if ($is_new_transaction && $transaction_id > 0 && strtolower((string) $item_type) !== 'poll') {
             $balance_after = (int) $this->calculate_points_balance_from_transactions($user_id);
-            
+
             $fcm_sent = $this->send_points_fcm_notification(
                 $user_id,
                 'engagement_points',
@@ -7994,7 +7997,7 @@ class TWork_Rewards_System
                     'current_balance' => $balance_after, // CRITICAL: Include current balance
                 )
             );
-            
+
             // PROFESSIONAL: Log FCM delivery status
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
@@ -9680,17 +9683,29 @@ class TWork_Rewards_System
                 // Get new balance after awarding.
                 $new_balance = $this->calculate_points_balance_from_transactions($user_id);
 
-                // PROFESSIONAL FCM NOTIFICATION: Send notification for engagement points earned
-                $this->send_points_fcm_notification(
-                    $user_id,
-                    'engagement_points',
-                    array(
-                        'points' => $points_awarded,
-                        'item_type' => $item_type,
-                        'item_title' => $item_title,
-                        'description' => $description,
-                    )
-                );
+                // Poll engagement FCM disabled — sync_user_points above is authoritative; quiz/other unchanged.
+                // $this->send_points_fcm_notification(
+                //     $user_id,
+                //     'engagement_points',
+                //     array(
+                //         'points' => $points_awarded,
+                //         'item_type' => $item_type,
+                //         'item_title' => $item_title,
+                //         'description' => $description,
+                //     )
+                // );
+                if (strtolower((string) $item_type) !== 'poll') {
+                    $this->send_points_fcm_notification(
+                        $user_id,
+                        'engagement_points',
+                        array(
+                            'points' => $points_awarded,
+                            'item_type' => $item_type,
+                            'item_title' => $item_title,
+                            'description' => $description,
+                        )
+                    );
+                }
 
                 // Professional logging.
                 if (defined('WP_DEBUG') && WP_DEBUG) {
@@ -9728,18 +9743,20 @@ class TWork_Rewards_System
                     )
                 );
             } elseif ($item_type === 'poll') {
-                // Send notification for poll vote submission
-                $this->send_engagement_fcm_notification(
-                    $user_id,
-                    'engagement_poll_submitted',
-                    array(
-                        'item_id' => $item_id,
-                        'item_type' => $item_type,
-                        'item_title' => $item_title,
-                        'points_awarded' => $points_awarded,
-                        'current_balance' => $new_balance,
-                    )
-                );
+                // Vote submission notification intentionally disabled:
+                // keep interaction/database flow intact while suppressing "Vote Recorded" push notification.
+                // Old Code (kept for rollback):
+                // $this->send_engagement_fcm_notification(
+                //     $user_id,
+                //     'engagement_poll_submitted',
+                //     array(
+                //         'item_id' => $item_id,
+                //         'item_type' => $item_type,
+                //         'item_title' => $item_title,
+                //         'points_awarded' => $points_awarded,
+                //         'current_balance' => $new_balance,
+                //     )
+                // );
             }
 
             // Professional logging for dashboard analytics
@@ -13122,7 +13139,11 @@ class TWork_Rewards_System
             'lifetime_redeemed' => $lifetime_redeemed,
             'lifetime_expired' => $lifetime_expired,
             'last_updated' => $last_updated,
-        ), 200);
+        ), 200, array(
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma'        => 'no-cache',
+            'Expires'       => 'Wed, 11 Jan 1984 05:00:00 GMT',
+        ));
     }
 
     /**
@@ -15858,6 +15879,19 @@ class TWork_Rewards_System
     }
 
     /**
+     * Backend-wide notification kill switch.
+     *
+     * Keeps core rewards/order/engagement logic running while suppressing all
+     * backend-triggered notification side effects.
+     *
+     * @return bool
+     */
+    private function are_backend_notifications_disabled()
+    {
+        return true;
+    }
+
+    /**
      * Send professional FCM notification for engagement hub events
      *
      * PROFESSIONAL ENGAGEMENT NOTIFICATIONS: Handles all engagement hub activities
@@ -15871,6 +15905,12 @@ class TWork_Rewards_System
      */
     private function send_engagement_fcm_notification($user_id, $type, $data = array())
     {
+        if ($this->are_backend_notifications_disabled()) {
+            // Disabled notification for backend-wide suppression.
+            // Old engagement notification transport logic is intentionally kept below.
+            return false;
+        }
+
         // Validate user ID
         if (empty($user_id) || !is_numeric($user_id)) {
             return false;
@@ -16252,6 +16292,12 @@ class TWork_Rewards_System
      */
     private function send_points_fcm_notification($user_id, $type, $data = array())
     {
+        if ($this->are_backend_notifications_disabled()) {
+            // Disabled notification for backend-wide suppression.
+            // Old points notification transport logic is intentionally kept below.
+            return false;
+        }
+
         // Validate user ID
         if (empty($user_id) || !is_numeric($user_id)) {
             return false;
@@ -16737,10 +16783,21 @@ class TWork_Rewards_System
         $item_title = isset($data['item_title']) ? sanitize_text_field($data['item_title']) : '';
         $reason = isset($data['reason']) ? sanitize_text_field($data['reason']) : '';
 
+        /*
+        Old Code:
         $base_data = array(
             'type' => $type,
             'userId' => (string) $user_id,
             'currentBalance' => (string) $current_balance,
+        );
+        */
+        // New Code: duplicate snake_case mirrors for robust mobile parsing.
+        $base_data = array(
+            'type' => $type,
+            'userId' => (string) $user_id,
+            'user_id' => (string) $user_id,
+            'currentBalance' => (string) $current_balance,
+            'current_balance' => (string) $current_balance,
         );
 
         switch ($type) {
@@ -17404,6 +17461,12 @@ class TWork_Rewards_System
      */
     private function send_luckybox_settings_notification($data)
     {
+        if ($this->are_backend_notifications_disabled()) {
+            // Disabled notification for backend-wide suppression.
+            // Old Lucky Box webhook notification logic is intentionally kept below.
+            return false;
+        }
+
         // Only use explicitly configured webhook URL
         $webhook_url = get_option('twork_rewards_webhook_url', '');
 
@@ -19518,24 +19581,15 @@ class TWork_Rewards_System
             $data['custom_fields'] = array();
         }
 
-        // Use T-Work Points System when available - same source as engagement/poll balance check
-        // This prevents overwriting points_balance/my_points with 0 when balance is in twork-points
-        $my_points_val = 0;
-        if (class_exists('TWork_Points_System')) {
-            $pts = TWork_Points_System::get_instance();
-            if (method_exists($pts, 'get_user_point_balance')) {
-                $my_points_val = (int) $pts->get_user_point_balance($user->ID);
-            }
-        }
-        if ($my_points_val <= 0) {
-            $my_points_val = $this->refresh_user_points_cache($user->ID);
-        }
+        // Ledger-only for REST (live SUM from wp_twork_point_transactions; no TWork_Points_System / meta read-through).
+        $my_points_val = (int) $this->calculate_points_balance_from_transactions($user->ID);
         $my_points = (string) $my_points_val;
 
         // Add to custom_fields
         $data['custom_fields']['my_points'] = is_string($my_points) ? $my_points : '';
         // Also add my_point (singular) for backward compatibility
         $data['custom_fields']['my_point'] = is_string($my_points) ? $my_points : '';
+        $data['custom_fields']['points_balance'] = is_string($my_points) ? $my_points : '';
 
         // Note: Activity status is tracked on backend for admin purposes only
         // It is NOT exposed to mobile app via REST API for privacy and performance reasons
@@ -19547,6 +19601,7 @@ class TWork_Rewards_System
             $data['meta'] = array();
         }
         $data['meta']['my_points'] = is_string($my_points) ? $my_points : '';
+        $data['meta']['points_balance'] = is_string($my_points) ? $my_points : '';
 
         $response->set_data($data);
         return $response;
@@ -21132,7 +21187,8 @@ class TWork_Rewards_System
                                 </div>
                                 <div style="margin-top: 12px;">
                                     <label for="reward_multiplier"><?php esc_html_e('Reward multiplier:', 'twork-rewards'); ?></label>
-                                    <input type="number" name="reward_multiplier" id="reward_multiplier" value="<?php echo esc_attr($reward_multiplier); ?>" min="0" step="0.5" style="width: 80px; margin-left: 6px;"> x
+                                    <!-- <input type="number" name="reward_multiplier" id="reward_multiplier" value="<?php echo esc_attr($reward_multiplier); ?>" min="0" step="0.5" style="width: 80px; margin-left: 6px;"> x -->
+                                    <input type="number" name="reward_multiplier" id="reward_multiplier" value="<?php echo esc_attr($reward_multiplier); ?>" min="0" max="10" step="0.5" style="width: 80px; margin-left: 6px;"> x
                                     <p class="description"><?php esc_html_e('Winners receive: base_cost × multiplier PNP', 'twork-rewards'); ?></p>
                                 </div>
                                 <div style="margin-top: 10px;">
@@ -21198,6 +21254,17 @@ class TWork_Rewards_System
                                 }
                                 modeSelect.addEventListener('change', updateBaseCostVisibility);
                                 updateBaseCostVisibility();
+
+                                // Prevent accidental mouse-wheel step changes on multiplier input.
+                                var rewardMultiplierInput = document.getElementById('reward_multiplier');
+                                if (rewardMultiplierInput) {
+                                    rewardMultiplierInput.addEventListener('wheel', function(e) {
+                                        if (document.activeElement === rewardMultiplierInput) {
+                                            e.preventDefault();
+                                            rewardMultiplierInput.blur();
+                                        }
+                                    }, { passive: false });
+                                }
                             });
                         })();
                         </script>
@@ -22011,7 +22078,25 @@ class TWork_Rewards_System
             // PNP Virtual Currency (Betting) - for polls only
             if ($type === 'poll') {
                 $quiz_data_array['poll_base_cost'] = isset($_POST['poll_base_cost']) ? max(0, absint($_POST['poll_base_cost'])) : 0;
-                $quiz_data_array['reward_multiplier'] = isset($_POST['reward_multiplier']) ? max(0, (float) $_POST['reward_multiplier']) : 4;
+                // $quiz_data_array['reward_multiplier'] = isset($_POST['reward_multiplier']) ? max(0, (float) $_POST['reward_multiplier']) : 4;
+                // $raw_reward_multiplier = isset($_POST['reward_multiplier']) ? wp_unslash($_POST['reward_multiplier']) : '';
+                // if ($raw_reward_multiplier !== '' && is_numeric($raw_reward_multiplier)) {
+                //     $parsed_reward_multiplier = (float) $raw_reward_multiplier;
+                //     // Canonicalize to supported range and 0.5 increments.
+                //     $quiz_data_array['reward_multiplier'] = max(0.0, min(10.0, round($parsed_reward_multiplier * 2) / 2));
+                // } else {
+                //     $quiz_data_array['reward_multiplier'] = 4;
+                // }
+                $raw_reward_multiplier = isset($_POST['reward_multiplier']) ? trim((string) wp_unslash($_POST['reward_multiplier'])) : '';
+                if ($raw_reward_multiplier !== '' && is_numeric($raw_reward_multiplier)) {
+                    $parsed_reward_multiplier = (float) $raw_reward_multiplier;
+                    $clamped_reward_multiplier = max(0.0, min(10.0, $parsed_reward_multiplier));
+                    // Snap using a precision buffer so an exact max like 10 does not drift down to 9.5.
+                    $half_step_units = round($clamped_reward_multiplier * 2, 6);
+                    $quiz_data_array['reward_multiplier'] = max(0.0, min(10.0, round($half_step_units) / 2));
+                } else {
+                    $quiz_data_array['reward_multiplier'] = 4;
+                }
                 $quiz_data_array['require_confirmation'] = isset($_POST['require_confirmation']) && $_POST['require_confirmation'] === '1';
                 $quiz_data_array['allow_user_amount'] = isset($_POST['allow_user_amount']) && $_POST['allow_user_amount'] === '1';
                 $quiz_data_array['bet_amount_step'] = isset($_POST['bet_amount_step']) ? max(1, absint($_POST['bet_amount_step'])) : 1000;
