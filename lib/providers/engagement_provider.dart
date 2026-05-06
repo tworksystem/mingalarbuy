@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/engagement_service.dart';
 import '../utils/logger.dart' as app_logger;
 
@@ -18,6 +19,17 @@ bool _scheduleEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
 
 /// Engagement Provider for managing engagement items state
 class EngagementProvider with ChangeNotifier {
+  static const String _feedCacheKeyPrefix = 'engagement_feed_cache_v1_user_';
+  static const String _pollLocalUnitOverlayKey =
+      'engagement_poll_local_unit_overlay_v1';
+  static const String _pollSessionReceiptCacheKey =
+      'engagement_poll_session_receipt_cache_v1';
+  static const String _pollLastVoteDetailedBetsKey =
+      'engagement_poll_last_vote_detailed_bets_v1';
+  static const String _pollInteractionTouchedAtMsKey =
+      'engagement_poll_interaction_touched_at_ms_v1';
+  static const int _maxRetainedPollInteractionEntries = 50;
+  static const Duration _interactionTtl = Duration(days: 7);
   List<EngagementItem> _items = [];
   bool _isLoading = false;
   String? _error;
@@ -31,6 +43,13 @@ class EngagementProvider with ChangeNotifier {
       false; // Track if we've loaded for current user
   bool _isAutoPollPaused =
       false; // Temporarily pause auto-poll for poll/result transitions
+  final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
+  final Map<String, Map<String, int?>> _pollSessionReceiptCache =
+      <String, Map<String, int?>>{};
+  final Map<int, Map<String, int?>> _pollLastVoteDetailedBets =
+      <int, Map<String, int?>>{};
+  final Map<int, int> _pollInteractionTouchedAtMs = <int, int>{};
+  bool _interactionCacheHydrated = false;
   /*
   Old Code:
   /// 2 seconds for near-instant sync on backend create/delete
@@ -46,6 +65,12 @@ class EngagementProvider with ChangeNotifier {
   String? get error => _error;
   bool get hasItems => _items.isNotEmpty;
   bool get isAutoPollPaused => _isAutoPollPaused;
+
+  String _cacheKeyForUser(int userId) => '$_feedCacheKeyPrefix$userId';
+  String pollUserLocalUnitStorageKey(int engagementItemId, String optionUniqueId) =>
+      '$engagementItemId|$optionUniqueId';
+  String pollReceiptCacheKey(int pollId, String sessionId) =>
+      '${pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
 
   String _toUserFriendlyError(String? raw) {
     // Old Code: provider used raw service error directly in UI.
@@ -135,6 +160,7 @@ class EngagementProvider with ChangeNotifier {
     String? token, // Optional - kept for backward compatibility
     bool forceRefresh = false,
   }) async {
+    await ensureInteractionCacheHydrated();
     // If forcing refresh, always reload even if loading
     if (_isLoading && !forceRefresh) {
       app_logger.Logger.info('Engagement feed already loading, skipping',
@@ -176,19 +202,51 @@ class EngagementProvider with ChangeNotifier {
     // Update current user ID
     _currentUserId = userId;
 
+    // Hydrate from local cache first so "Your Choice" is immediately available.
+    // For force refresh, keep current in-memory values to avoid UI flicker.
+    if (!forceRefresh) {
+      await _loadCachedFeedForUser(userId, notify: true);
+    }
+
     _setLoading(true);
     _error = null;
+    final previousItems = List<EngagementItem>.from(_items);
 
     try {
       app_logger.Logger.info('Loading engagement feed for user: $userId',
           tag: 'EngagementProvider');
 
-      final items = await EngagementService.getFeed(
+      final fetchedItems = await EngagementService.getFeed(
         userId: userId,
         token: token,
       );
 
-      _items = items;
+      // Old Code:
+      // _items = items;
+      //
+      // New Code:
+      // Keep old-good items when refresh is degraded or network result is empty with an error.
+      final hasErrorFromService = EngagementService.lastError != null &&
+          EngagementService.lastError!.trim().isNotEmpty;
+      final shouldKeepPreviousOnError =
+          hasErrorFromService && fetchedItems.isEmpty && previousItems.isNotEmpty;
+
+      if (shouldKeepPreviousOnError) {
+        _items = previousItems;
+        app_logger.Logger.warning(
+          'Keeping previous engagement items due to failed/empty refresh result',
+          tag: 'EngagementProvider',
+        );
+      } else {
+        final persistentSnapshotByItemId =
+            await _buildPersistentInteractionSnapshotByItemId(userId);
+        _items = _mergeWithPreviousInteractionState(
+          previousItems: previousItems,
+          fetchedItems: fetchedItems,
+          persistentSnapshotByItemId: persistentSnapshotByItemId,
+        );
+      }
+
       // Old Code:
       // _error = EngagementService.lastError;
       //
@@ -209,6 +267,10 @@ class EngagementProvider with ChangeNotifier {
             tag: 'EngagementProvider');
       }
 
+      if (_items.isNotEmpty) {
+        await _saveFeedToCache(userId, _items);
+      }
+
       // Start automatic polling after successful load
       _startPolling(userId: userId, token: token);
     } catch (e) {
@@ -219,10 +281,444 @@ class EngagementProvider with ChangeNotifier {
       _error = _toUserFriendlyError('Network error: ${e.toString()}');
       app_logger.Logger.error('Engagement feed exception',
           tag: 'EngagementProvider', error: e);
-      _items = []; // Ensure items is empty on error
+      // Old Code:
+      // if (_items.isEmpty) {
+      //   // Keep UI deterministic if both network and cache are unavailable.
+      //   _items = [];
+      // }
+      //
+      // New Code:
+      // Stale-while-revalidate: keep previous in-memory snapshot on failures.
+      _items = previousItems;
     } finally {
       _setLoading(false);
     }
+  }
+
+  Future<void> ensureInteractionCacheHydrated() async {
+    if (_interactionCacheHydrated) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final localUnitsRaw = prefs.getString(_pollLocalUnitOverlayKey);
+      if (localUnitsRaw != null && localUnitsRaw.isNotEmpty) {
+        final decoded = jsonDecode(localUnitsRaw);
+        if (decoded is Map) {
+          decoded.forEach((k, v) {
+            final key = k.toString();
+            final parsed = v is num ? v.toInt() : int.tryParse(v.toString());
+            if (parsed != null && parsed > 0) {
+              _pollUserLocalUnitOverlay[key] = parsed;
+            }
+          });
+        }
+      }
+
+      final receiptCacheRaw = prefs.getString(_pollSessionReceiptCacheKey);
+      if (receiptCacheRaw != null && receiptCacheRaw.isNotEmpty) {
+        final decoded = jsonDecode(receiptCacheRaw);
+        if (decoded is Map) {
+          decoded.forEach((sessionKey, mapRaw) {
+            if (mapRaw is! Map) return;
+            final parsedMap = <String, int?>{};
+            mapRaw.forEach((optionLabel, value) {
+              if (value == null) {
+                parsedMap[optionLabel.toString()] = null;
+                return;
+              }
+              final parsed =
+                  value is num ? value.toInt() : int.tryParse(value.toString());
+              if (parsed != null && parsed > 0) {
+                parsedMap[optionLabel.toString()] = parsed;
+              }
+            });
+            if (parsedMap.isNotEmpty) {
+              _pollSessionReceiptCache[sessionKey.toString()] = parsedMap;
+            }
+          });
+        }
+      }
+
+      final lastVoteRaw = prefs.getString(_pollLastVoteDetailedBetsKey);
+      if (lastVoteRaw != null && lastVoteRaw.isNotEmpty) {
+        final decoded = jsonDecode(lastVoteRaw);
+        if (decoded is Map) {
+          decoded.forEach((pollIdKey, mapRaw) {
+            final pollId = int.tryParse(pollIdKey.toString());
+            if (pollId == null || mapRaw is! Map) return;
+            final parsedMap = <String, int?>{};
+            mapRaw.forEach((optionLabel, value) {
+              if (value == null) {
+                parsedMap[optionLabel.toString()] = null;
+                return;
+              }
+              final parsed =
+                  value is num ? value.toInt() : int.tryParse(value.toString());
+              if (parsed != null && parsed > 0) {
+                parsedMap[optionLabel.toString()] = parsed;
+              }
+            });
+            if (parsedMap.isNotEmpty) {
+              _pollLastVoteDetailedBets[pollId] = parsedMap;
+            }
+          });
+        }
+      }
+
+      final touchedRaw = prefs.getString(_pollInteractionTouchedAtMsKey);
+      if (touchedRaw != null && touchedRaw.isNotEmpty) {
+        final decoded = jsonDecode(touchedRaw);
+        if (decoded is Map) {
+          decoded.forEach((pollIdKey, touchedAtRaw) {
+            final pollId = int.tryParse(pollIdKey.toString());
+            if (pollId == null) return;
+            final touchedAt = touchedAtRaw is num
+                ? touchedAtRaw.toInt()
+                : int.tryParse(touchedAtRaw.toString());
+            if (touchedAt != null && touchedAt > 0) {
+              _pollInteractionTouchedAtMs[pollId] = touchedAt;
+            }
+          });
+        }
+      }
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed hydrating interaction caches: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    } finally {
+      _interactionCacheHydrated = true;
+    }
+  }
+
+  int? getPollUserLocalUnitOverride(
+    int engagementItemId,
+    String optionUniqueId,
+  ) {
+    final raw =
+        _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)];
+    if (raw != null && raw > 0) {
+      _touchPollInteraction(engagementItemId);
+    }
+    return (raw != null && raw > 0) ? raw : null;
+  }
+
+  Future<void> setPollUserLocalUnitOverride(
+    int engagementItemId,
+    String optionUniqueId,
+    int units,
+  ) async {
+    if (units <= 0) return;
+    await ensureInteractionCacheHydrated();
+    _pollUserLocalUnitOverlay[
+        pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)] = units;
+    _touchPollInteraction(engagementItemId);
+    unawaited(_persistInteractionCaches());
+    notifyListeners();
+  }
+
+  Map<String, int?>? getPollSessionReceiptCache(
+    int pollId,
+    String sessionId,
+  ) {
+    final key = pollReceiptCacheKey(pollId, sessionId);
+    final cached = _pollSessionReceiptCache[key];
+    if (cached != null && cached.isNotEmpty) {
+      _touchPollInteraction(pollId);
+    }
+    return cached == null ? null : Map<String, int?>.from(cached);
+  }
+
+  Future<void> setPollSessionReceiptCache(
+    int pollId,
+    String sessionId,
+    Map<String, int?> receiptMap,
+  ) async {
+    await ensureInteractionCacheHydrated();
+    if (receiptMap.isEmpty) return;
+    _pollSessionReceiptCache[pollReceiptCacheKey(pollId, sessionId)] =
+        Map<String, int?>.from(receiptMap);
+    _touchPollInteraction(pollId);
+    unawaited(_persistInteractionCaches());
+    notifyListeners();
+  }
+
+  Future<void> clearPollSessionReceiptCache(
+    int pollId,
+    String sessionId,
+  ) async {
+    await ensureInteractionCacheHydrated();
+    _pollSessionReceiptCache.remove(pollReceiptCacheKey(pollId, sessionId));
+    _pollLastVoteDetailedBets.remove(pollId);
+    _pollInteractionTouchedAtMs.remove(pollId);
+    unawaited(_persistInteractionCaches());
+    notifyListeners();
+  }
+
+  Map<String, int?>? getPollLastVoteDetailedBets(int pollId) {
+    final v = _pollLastVoteDetailedBets[pollId];
+    if (v != null && v.isNotEmpty) {
+      _touchPollInteraction(pollId);
+    }
+    return v == null ? null : Map<String, int?>.from(v);
+  }
+
+  bool hasPersistentInteractionRecordForItem(int itemId) {
+    final hasLastVote = _pollLastVoteDetailedBets.containsKey(itemId) &&
+        (_pollLastVoteDetailedBets[itemId]?.isNotEmpty ?? false);
+    if (hasLastVote) return true;
+
+    final prefixByItemId = '$itemId|';
+    final hasLocalUnitOverlay =
+        _pollUserLocalUnitOverlay.keys.any((k) => k.startsWith(prefixByItemId));
+    if (hasLocalUnitOverlay) return true;
+
+    final prefixByPollSession = '${itemId}_';
+    final hasSessionReceipt =
+        _pollSessionReceiptCache.keys.any((k) => k.startsWith(prefixByPollSession));
+    return hasSessionReceipt;
+  }
+
+  Future<void> setPollLastVoteDetailedBets(
+    int pollId,
+    Map<String, int?> detailedBets,
+  ) async {
+    await ensureInteractionCacheHydrated();
+    if (detailedBets.isEmpty) {
+      _pollLastVoteDetailedBets.remove(pollId);
+      _pollInteractionTouchedAtMs.remove(pollId);
+    } else {
+      _pollLastVoteDetailedBets[pollId] = Map<String, int?>.from(detailedBets);
+      _touchPollInteraction(pollId);
+    }
+    unawaited(_persistInteractionCaches());
+    notifyListeners();
+  }
+
+  Future<void> _persistInteractionCaches() async {
+    try {
+      _pruneInteractionCaches();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _pollLocalUnitOverlayKey,
+        jsonEncode(_pollUserLocalUnitOverlay),
+      );
+      await prefs.setString(
+        _pollSessionReceiptCacheKey,
+        jsonEncode(_pollSessionReceiptCache),
+      );
+      final lastVotesAsStringKeyed = <String, Map<String, int?>>{};
+      _pollLastVoteDetailedBets.forEach((k, v) {
+        lastVotesAsStringKeyed[k.toString()] = v;
+      });
+      await prefs.setString(
+        _pollLastVoteDetailedBetsKey,
+        jsonEncode(lastVotesAsStringKeyed),
+      );
+      final touchedAsStringKeyed = <String, int>{};
+      _pollInteractionTouchedAtMs.forEach((k, v) {
+        touchedAsStringKeyed[k.toString()] = v;
+      });
+      await prefs.setString(
+        _pollInteractionTouchedAtMsKey,
+        jsonEncode(touchedAsStringKeyed),
+      );
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed persisting interaction caches: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  List<EngagementItem> _mergeWithPreviousInteractionState({
+    required List<EngagementItem> previousItems,
+    required List<EngagementItem> fetchedItems,
+    required Map<int, EngagementItem> persistentSnapshotByItemId,
+  }) {
+    if (fetchedItems.isEmpty) {
+      return fetchedItems;
+    }
+
+    final previousById = <int, EngagementItem>{
+      for (final item in previousItems) item.id: item,
+    };
+
+    var mergedCount = 0;
+    final merged = fetchedItems.map((fresh) {
+      final previous = previousById[fresh.id];
+      final persisted = persistentSnapshotByItemId[fresh.id];
+      final source = previous ?? persisted;
+      if (source == null) return fresh;
+
+      final hadInteractionBefore = source.hasInteracted;
+      final lostInteractionFlag = hadInteractionBefore && !fresh.hasInteracted;
+      final hadUserAnswerBefore =
+          source.userAnswer != null && source.userAnswer!.trim().isNotEmpty;
+      final hasUserAnswerNow =
+          fresh.userAnswer != null && fresh.userAnswer!.trim().isNotEmpty;
+      final lostUserAnswer = hadUserAnswerBefore && !hasUserAnswerNow;
+
+      final hasPersistentLocalRecordForItem =
+          hasPersistentInteractionRecordForItem(fresh.id);
+
+      // Old Code:
+      // if (!lostInteractionFlag && !lostUserAnswer) {
+      //   return fresh;
+      // }
+      //
+      // New Code:
+      // For polls with persisted local interaction evidence, prefer local record
+      // over stale API regressions.
+      final shouldRecoverFromLocal = lostInteractionFlag ||
+          lostUserAnswer ||
+          (hasPersistentLocalRecordForItem &&
+              (!fresh.hasInteracted ||
+                  (fresh.userAnswer == null || fresh.userAnswer!.trim().isEmpty)));
+
+      if (!shouldRecoverFromLocal) {
+        return fresh;
+      }
+
+      mergedCount++;
+      return EngagementItem(
+        id: fresh.id,
+        type: fresh.type,
+        title: fresh.title,
+        mediaUrl: fresh.mediaUrl,
+        content: fresh.content,
+        rewardPoints: fresh.rewardPoints,
+        quizData: fresh.quizData,
+        hasInteracted: source.hasInteracted || fresh.hasInteracted,
+        userAnswer: hasUserAnswerNow ? fresh.userAnswer : source.userAnswer,
+        userBetAmount: fresh.userBetAmount ?? source.userBetAmount,
+        userBetUnitsPerOption:
+            fresh.userBetUnitsPerOption ?? source.userBetUnitsPerOption,
+        rotationDurationSeconds: fresh.rotationDurationSeconds,
+        interactionCount: fresh.interactionCount > source.interactionCount
+            ? fresh.interactionCount
+            : source.interactionCount,
+        pollVotingSchedule: fresh.pollVotingSchedule ?? source.pollVotingSchedule,
+        pollResult: fresh.pollResult ?? source.pollResult,
+      );
+    }).toList();
+
+    if (mergedCount > 0) {
+      app_logger.Logger.warning(
+        'Recovered $mergedCount engagement interaction states from previous snapshot',
+        tag: 'EngagementProvider',
+      );
+    }
+    return merged;
+  }
+
+  void _touchPollInteraction(int pollId) {
+    _pollInteractionTouchedAtMs[pollId] = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void _pruneInteractionCaches() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final ttlMs = _interactionTtl.inMilliseconds;
+    final expiredPollIds = <int>{};
+
+    _pollInteractionTouchedAtMs.forEach((pollId, touchedAt) {
+      if (now - touchedAt > ttlMs) {
+        expiredPollIds.add(pollId);
+      }
+    });
+
+    void removePoll(int pollId) {
+      _pollLastVoteDetailedBets.remove(pollId);
+      _pollInteractionTouchedAtMs.remove(pollId);
+      _pollSessionReceiptCache.removeWhere(
+          (sessionKey, _) => sessionKey.startsWith('${pollId}_'));
+      _pollUserLocalUnitOverlay
+          .removeWhere((overlayKey, _) => overlayKey.startsWith('$pollId|'));
+    }
+
+    for (final pollId in expiredPollIds) {
+      removePoll(pollId);
+    }
+
+    final retainedPollIds = _pollInteractionTouchedAtMs.keys.toList();
+    if (retainedPollIds.length <= _maxRetainedPollInteractionEntries) {
+      return;
+    }
+
+    retainedPollIds.sort((a, b) =>
+        (_pollInteractionTouchedAtMs[a] ?? 0).compareTo(_pollInteractionTouchedAtMs[b] ?? 0));
+    final overflowCount =
+        retainedPollIds.length - _maxRetainedPollInteractionEntries;
+    for (var i = 0; i < overflowCount; i++) {
+      removePoll(retainedPollIds[i]);
+    }
+  }
+
+  Future<Map<int, EngagementItem>> _buildPersistentInteractionSnapshotByItemId(
+      int userId) async {
+    final map = <int, EngagementItem>{};
+
+    for (final item in _items) {
+      if (item.hasInteracted ||
+          (item.userAnswer != null && item.userAnswer!.trim().isNotEmpty)) {
+        map[item.id] = item;
+      }
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKeyForUser(userId));
+      if (raw == null || raw.isEmpty) {
+        return map;
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        return map;
+      }
+      for (final rawItem in decoded) {
+        final asMap = rawItem is Map<String, dynamic>
+            ? rawItem
+            : (rawItem is Map ? Map<String, dynamic>.from(rawItem) : null);
+        if (asMap == null) continue;
+        final parsed = EngagementItem.fromJson(asMap);
+        if (parsed.hasInteracted ||
+            (parsed.userAnswer != null && parsed.userAnswer!.trim().isNotEmpty)) {
+          map[parsed.id] = parsed;
+        }
+      }
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed building persistent interaction snapshot: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+
+    return map;
+  }
+
+  /// Resume flow: immediately rehydrate feed from local cache, then fetch latest.
+  Future<void> refreshFromCacheThenNetwork({
+    required int userId,
+    String? token,
+  }) async {
+    _currentUserId = userId;
+    _hasLoadedForCurrentUser = false;
+    _error = null;
+    notifyListeners();
+    await _loadCachedFeedForUser(userId, notify: true);
+    unawaited(
+      loadFeed(
+        userId: userId,
+        token: token,
+        forceRefresh: true,
+      ),
+    );
   }
 
   /// Apply interaction update locally (fallback when backend does not return updated_item).
@@ -255,6 +751,10 @@ class EngagementProvider with ChangeNotifier {
     );
     _items[index] = updatedItem;
     notifyListeners();
+    final userId = _currentUserId;
+    if (userId != null) {
+      unawaited(_saveFeedToCache(userId, _items));
+    }
     app_logger.Logger.info(
         'Updated item $itemId interaction status locally (hasInteracted=true)',
         tag: 'EngagementProvider');
@@ -317,12 +817,14 @@ class EngagementProvider with ChangeNotifier {
             if (index != -1) {
               _items[index] = parsed;
               notifyListeners();
+              unawaited(_saveFeedToCache(userId, _items));
               app_logger.Logger.info(
                   'Auto-updated item ${parsed.id} from backend updated_item (no refresh needed)',
                   tag: 'EngagementProvider');
             } else {
               _items.add(parsed);
               notifyListeners();
+              unawaited(_saveFeedToCache(userId, _items));
               app_logger.Logger.info(
                   'Added new item ${parsed.id} from backend updated_item',
                   tag: 'EngagementProvider');
@@ -383,6 +885,7 @@ class EngagementProvider with ChangeNotifier {
           );
           _items[index] = updatedItem;
           notifyListeners();
+          unawaited(_saveFeedToCache(userId, _items));
         }
       }
 
@@ -453,6 +956,95 @@ class EngagementProvider with ChangeNotifier {
     _currentUserId = null;
     _hasLoadedForCurrentUser = false;
     _notifyListenersDebounced();
+  }
+
+  Future<void> _loadCachedFeedForUser(
+    int userId, {
+    bool notify = false,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKeyForUser(userId));
+      if (raw == null || raw.isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return;
+      final cachedItems = <EngagementItem>[];
+      for (final item in decoded) {
+        if (item is Map<String, dynamic>) {
+          cachedItems.add(EngagementItem.fromJson(item));
+        } else if (item is Map) {
+          cachedItems.add(
+            EngagementItem.fromJson(Map<String, dynamic>.from(item)),
+          );
+        }
+      }
+      if (cachedItems.isEmpty) return;
+      _items = cachedItems;
+      _hasLoadedForCurrentUser = true;
+      if (notify) {
+        notifyListeners();
+      }
+      app_logger.Logger.info(
+        'Loaded ${cachedItems.length} cached engagement items for user $userId',
+        tag: 'EngagementProvider',
+      );
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed to load cached engagement feed for user $userId: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  Future<void> _saveFeedToCache(int userId, List<EngagementItem> items) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = jsonEncode(items.map(_serializeItemForCache).toList());
+      await prefs.setString(_cacheKeyForUser(userId), encoded);
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed to cache engagement feed for user $userId: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  Map<String, dynamic> _serializeItemForCache(EngagementItem item) {
+    return <String, dynamic>{
+      'id': item.id,
+      'type': item.type.name,
+      'title': item.title,
+      'media_url': item.mediaUrl,
+      'content': item.content,
+      'reward_points': item.rewardPoints,
+      if (item.quizData != null)
+        'quiz_data': <String, dynamic>{
+          'question': item.quizData!.question,
+          'options': item.quizData!.options,
+          'correct_index': item.quizData!.correctIndex,
+          'is_active': item.quizData!.isActive,
+          'poll_base_cost': item.quizData!.pollBaseCost,
+          'allow_user_amount': item.quizData!.allowUserAmount,
+          'bet_amount_step': item.quizData!.betAmountStep,
+        },
+      'has_interacted': item.hasInteracted,
+      'user_answer': item.userAnswer,
+      'user_bet_amount': item.userBetAmount,
+      if (item.userBetUnitsPerOption != null)
+        'user_bet_amount_per_option': item.userBetUnitsPerOption!.map(
+          (key, value) => MapEntry(key.toString(), value),
+        ),
+      'rotation_duration': item.rotationDurationSeconds,
+      'interaction_count': item.interactionCount,
+      if (item.pollVotingSchedule != null)
+        'poll_voting_schedule': Map<String, dynamic>.from(item.pollVotingSchedule!),
+      if (item.pollResult != null)
+        'poll_result': Map<String, dynamic>.from(item.pollResult!),
+    };
   }
 
   /// Start automatic polling for data updates

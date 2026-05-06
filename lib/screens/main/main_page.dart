@@ -44,7 +44,7 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage>
-    with TickerProviderStateMixin<MainPage> {
+    with TickerProviderStateMixin<MainPage>, WidgetsBindingObserver {
   late TabController bottomTabController; // 0: Home, 1: Profile
   List<Product> products = [];
   bool isLoading = true;
@@ -74,6 +74,9 @@ class _MainPageState extends State<MainPage>
   DateTime? _lastModalShownTime; // Track when we last showed a modal
   /// After login, skip one balance baseline when [PointProvider] finishes first hydrate.
   bool _initialPointHydrationSyncHandled = false;
+  bool _isResumeRefreshInProgress = false;
+  DateTime? _lastResumeNetworkRefreshAt;
+  static const Duration _resumeNetworkRefreshMinInterval = Duration(minutes: 2);
 
   /// Poll / engagement automated popups: do not show [PointNotificationModal] from MainPage.
   bool _shouldSilencePollRelatedPointModal(PointNotificationEvent event) {
@@ -97,6 +100,7 @@ class _MainPageState extends State<MainPage>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Bottom navigation now only has Home and Profile tabs.
     bottomTabController = TabController(length: 2, vsync: this);
     _lastMainTabIndexForPnp = bottomTabController.index;
@@ -107,6 +111,79 @@ class _MainPageState extends State<MainPage>
     _setupPointNotificationListener();
     // Setup point balance change listener
     _setupPointBalanceListener();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshStateAfterResume());
+    }
+  }
+
+  Future<void> _refreshStateAfterResume() async {
+    if (!mounted || _isDisposed || _isResumeRefreshInProgress) return;
+    _isResumeRefreshInProgress = true;
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      if (!authProvider.isAuthenticated || authProvider.user == null) {
+        return;
+      }
+      final pointProvider = Provider.of<PointProvider>(context, listen: false);
+      final engagementProvider =
+          Provider.of<EngagementProvider>(context, listen: false);
+      final userId = authProvider.user!.id.toString();
+      final parsedUserId = int.tryParse(userId);
+      if (parsedUserId == null) return;
+
+      final now = DateTime.now();
+      final shouldRunNetworkRefresh = _lastResumeNetworkRefreshAt == null ||
+          now.difference(_lastResumeNetworkRefreshAt!) >=
+              _resumeNetworkRefreshMinInterval;
+
+      if (shouldRunNetworkRefresh) {
+        _lastResumeNetworkRefreshAt = now;
+        // Rehydrate immediately from local cache, then fetch latest from API in background.
+        await engagementProvider.refreshFromCacheThenNetwork(
+          userId: parsedUserId,
+          token: authProvider.token,
+        );
+
+        // Ensure point state is reconciled with latest backend state on resume.
+        await pointProvider.refreshPointState(
+          userId: userId,
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: true,
+          refreshUserCallback: () => authProvider.refreshUser(),
+        );
+      } else {
+        // Old Code:
+        // await engagementProvider.refreshFromCacheThenNetwork(...);
+        // await pointProvider.refreshPointState(...);
+        //
+        // New Code:
+        // Skip aggressive resume network refresh when app was backgrounded briefly.
+        Logger.info(
+          'Skipping resume network refresh (cooldown active: ${_resumeNetworkRefreshMinInterval.inSeconds}s)',
+          tag: 'MainPage',
+        );
+      }
+
+      if (mounted && !_isDisposed) {
+        _myPointWidgetKey.currentState?.refreshBalance();
+        _luckyBoxBannerKey.currentState?.refreshBanner();
+      }
+    } catch (e, st) {
+      Logger.error(
+        'Failed to refresh main page state after app resume: $e',
+        tag: 'MainPage',
+        error: e,
+        stackTrace: st,
+      );
+    } finally {
+      _isResumeRefreshInProgress = false;
+    }
   }
 
   /// Initialize products: load cache first, then fetch fresh if online
@@ -475,6 +552,7 @@ class _MainPageState extends State<MainPage>
   @override
   void dispose() {
     _isDisposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _homePnpDebouncedRefreshTimer?.cancel();
     bottomTabController.removeListener(_onBottomTabChangedForMyPnp);
     _pointNotificationSubscription?.cancel();

@@ -1374,7 +1374,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                       IntrinsicHeight(
                         child: _VoteSubmittedCelebration(
                           key: ValueKey('vote_submitted_${item.id}'),
-                          detailedBets: pollUserDetailedBets(item),
+                          detailedBets: pollUserDetailedBets(
+                            item,
+                            engagementProvider:
+                                Provider.of<EngagementProvider>(context, listen: false),
+                          ),
                         ),
                       ),
                     ] else
@@ -1527,7 +1531,12 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                 child: IntrinsicHeight(
                                   child: _VoteSubmittedCelebration(
                                     key: ValueKey('vote_submitted_${item.id}'),
-                                    detailedBets: pollUserDetailedBets(item),
+                                    detailedBets: pollUserDetailedBets(
+                                      item,
+                                      engagementProvider: Provider.of<EngagementProvider>(
+                                          context,
+                                          listen: false),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -1595,7 +1604,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                               IntrinsicHeight(
                                 child: _VoteSubmittedCelebration(
                                   key: ValueKey('vote_submitted_${item.id}'),
-                                  detailedBets: pollUserDetailedBets(item),
+                                  detailedBets: pollUserDetailedBets(
+                                    item,
+                                    engagementProvider:
+                                        Provider.of<EngagementProvider>(context, listen: false),
+                                  ),
                                 ),
                               ),
                             ] else
@@ -2451,17 +2464,27 @@ String pollUserLocalUnitStorageKey(int engagementItemId, String optionUniqueId) 
 
 /// Last-known units per option; synced from API when present, else from dialog edits.
 /// Survives widget rebuilds before feed returns full [user_bet_amount_per_option].
-final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
+// Old Code:
+// final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
+//
+// New Code:
+// Moved to EngagementProvider for persistence across lifecycle/restart.
 
 /// Writes the same field [pollUserSeparatedBetStates] reads for fallback.
 void recordPollUserLocalUnitOverride(
+  EngagementProvider engagementProvider,
   int engagementItemId,
   String optionUniqueId,
   int units,
 ) {
   if (units <= 0) return;
-  _pollUserLocalUnitOverlay[
-      pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)] = units;
+  unawaited(
+    engagementProvider.setPollUserLocalUnitOverride(
+      engagementItemId,
+      optionUniqueId,
+      units,
+    ),
+  );
 }
 
 /// Single key format for dialog state and receipt: `index::label` (index disambiguates).
@@ -2477,6 +2500,7 @@ String pollOptionUniqueId(List<dynamic> options, int idx) {
 }
 
 int _resolvePollOptionUnits({
+  required EngagementProvider engagementProvider,
   required int itemId,
   required List<dynamic> options,
   required int idx,
@@ -2490,8 +2514,12 @@ int _resolvePollOptionUnits({
     return 1;
   }
   final uid = pollOptionUniqueId(options, idx);
-  final fromLocal =
-      _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(itemId, uid)];
+  // Old Code:
+  // final fromLocal =
+  //    _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(itemId, uid)];
+  //
+  // New Code:
+  final fromLocal = engagementProvider.getPollUserLocalUnitOverride(itemId, uid);
   if (fromLocal != null && fromLocal > 0) return fromLocal;
   if (isSingleSelection && declaredBet != null && declaredBet > 0) {
     return declaredBet;
@@ -2504,7 +2532,10 @@ int _resolvePollOptionUnits({
 ({
   Map<String, int?>? displayBets,
   Map<String, int?>? calculatedTotals,
-})? pollUserSeparatedBetStates(EngagementItem item) {
+})? pollUserSeparatedBetStates(
+  EngagementItem item, {
+  required EngagementProvider engagementProvider,
+}) {
   if (!item.hasInteracted) return null;
   final ua = item.userAnswer?.trim();
   if (ua == null || ua.isEmpty) return null;
@@ -2558,6 +2589,7 @@ int _resolvePollOptionUnits({
 
     final fromApi = isolatedUnitsByOption[idx];
     final units = _resolvePollOptionUnits(
+      engagementProvider: engagementProvider,
       itemId: item.id,
       options: options,
       idx: idx,
@@ -2591,14 +2623,26 @@ int _resolvePollOptionUnits({
 }
 
 /// UI-only map for "Your choice" receipt. Must never consume calc lane directly.
-Map<String, int?>? pollUserDetailedBets(EngagementItem item) {
-  final separated = pollUserSeparatedBetStates(item);
+Map<String, int?>? pollUserDetailedBets(
+  EngagementItem item, {
+  required EngagementProvider engagementProvider,
+}) {
+  final separated = pollUserSeparatedBetStates(
+    item,
+    engagementProvider: engagementProvider,
+  );
   return separated?.displayBets;
 }
 
 /// Calculation-only map for multiplier/reward debugging and backend math tracking.
-Map<String, int?>? pollUserCalculatedTotals(EngagementItem item) {
-  final separated = pollUserSeparatedBetStates(item);
+Map<String, int?>? pollUserCalculatedTotals(
+  EngagementItem item, {
+  required EngagementProvider engagementProvider,
+}) {
+  final separated = pollUserSeparatedBetStates(
+    item,
+    engagementProvider: engagementProvider,
+  );
   return separated?.calculatedTotals;
 }
 
@@ -2810,10 +2854,20 @@ class _PollResultCard extends StatelessWidget {
       }
     }
 
-    final userDetailed =
-        item.hasInteracted ? pollUserDetailedBets(item) : null;
-    final userCalculated =
-        item.hasInteracted ? pollUserCalculatedTotals(item) : null;
+    final engagementProvider =
+        Provider.of<EngagementProvider>(context, listen: false);
+    final userDetailed = item.hasInteracted
+        ? pollUserDetailedBets(
+            item,
+            engagementProvider: engagementProvider,
+          )
+        : null;
+    final userCalculated = item.hasInteracted
+        ? pollUserCalculatedTotals(
+            item,
+            engagementProvider: engagementProvider,
+          )
+        : null;
 
     return _CompactPollResultCard(
       text: winning.text,
@@ -3739,6 +3793,8 @@ class _PollDialogState extends State<_PollDialog> {
   /// Parse [userAnswer] indices; hydrate units from API, else overlay, else 1. Any option count.
   void _updateSelectedFromItem() {
     final options = widget.item.quizData?.options ?? const <dynamic>[];
+    final engagementProvider =
+        Provider.of<EngagementProvider>(context, listen: false);
     if (widget.item.hasInteracted && widget.item.userAnswer != null) {
       final raw = widget.item.userAnswer!.trim();
       _selectedIndices.clear();
@@ -3752,12 +3808,17 @@ class _PollDialogState extends State<_PollDialog> {
         _selectedIndices.add(idx);
         final k = pollOptionUniqueId(options, idx);
         final fromApi = perOption?[idx];
-        final local = _pollUserLocalUnitOverlay[
-            pollUserLocalUnitStorageKey(widget.item.id, k)];
+        // Old Code:
+        // final local = _pollUserLocalUnitOverlay[
+        //     pollUserLocalUnitStorageKey(widget.item.id, k)];
+        //
+        // New Code:
+        final local =
+            engagementProvider.getPollUserLocalUnitOverride(widget.item.id, k);
         final int u;
         if (fromApi != null && fromApi > 0) {
           u = fromApi;
-          recordPollUserLocalUnitOverride(widget.item.id, k, u);
+          recordPollUserLocalUnitOverride(engagementProvider, widget.item.id, k, u);
         } else if (local != null && local > 0) {
           u = local;
         } else {
@@ -3788,9 +3849,12 @@ class _PollDialogState extends State<_PollDialog> {
   void _updateOptionUnitValue(int optionIndex, int nextValue) {
     if (nextValue <= 0) return;
     final k = _optionKeyForIndex(optionIndex);
+    final engagementProvider =
+        Provider.of<EngagementProvider>(context, listen: false);
     setState(() {
       _isolatedUnitsByOption[k] = nextValue;
-      recordPollUserLocalUnitOverride(widget.item.id, k, nextValue);
+      recordPollUserLocalUnitOverride(
+          engagementProvider, widget.item.id, k, nextValue);
       // ignore: avoid_print
       print('User Selected Multiplier: $nextValue (optionKey=$k)');
     });
@@ -4205,10 +4269,12 @@ class _PollDialogState extends State<_PollDialog> {
     }
 
     final isolatedAmountPerOption = <int, int>{};
+    final engagementProvider =
+        Provider.of<EngagementProvider>(context, listen: false);
     for (final idx in selectedList) {
       final k = _optionKeyForIndex(idx);
       final u = _isolatedUnitsByOption[k] ?? 1;
-      recordPollUserLocalUnitOverride(widget.item.id, k, u);
+      recordPollUserLocalUnitOverride(engagementProvider, widget.item.id, k, u);
       isolatedAmountPerOption[idx] = u;
     }
     await _submitVote(amountPerOption: isolatedAmountPerOption);

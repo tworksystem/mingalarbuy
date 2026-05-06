@@ -229,7 +229,11 @@ class AutoRunPollWidget extends StatefulWidget {
 class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     with WidgetsBindingObserver {
   /// Global cache: 'pollId_sessionId' -> { option label: value } (last successful vote).
-  static final Map<String, Map<String, int?>> _sessionReceiptCache = {};
+  // Old Code:
+  // static final Map<String, Map<String, int?>> _sessionReceiptCache = {};
+  //
+  // New Code:
+  // Migrated to EngagementProvider + SharedPreferences persistence.
 
   /// Throttle app-resume calls to GET /poll/state (server runs throttled process_auto_run_poll).
   DateTime? _lastAppResumeServerTick;
@@ -246,8 +250,12 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
   /// Session id for which we've already fetched **final** results — prevents duplicate win handling.
   String? _resultFetchedForSession;
 
-  /// Per-option PNP for the last successful submit (option label → amount).
-  Map<String, int?>? _lastVoteDetailedBets;
+  // Old Code:
+  // /// Per-option PNP for the last successful submit (option label → amount).
+  // Map<String, int?>? _lastVoteDetailedBets;
+  //
+  // New Code:
+  // Provider persistent state is the single source of truth.
 
   /// Stops [_fetchResultsWithRetry] when the widget is disposed.
   bool _abortResultsPoll = false;
@@ -256,6 +264,17 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Old Code:
+    // unawaited(_engagementProvider.ensureInteractionCacheHydrated());
+    // _fetchPollState().then((state) {
+    // New Code:
+    // Hydrate provider cache first to avoid first-frame receipt flicker.
+    unawaited(_initializeAfterHydration());
+  }
+
+  Future<void> _initializeAfterHydration() async {
+    await _engagementProvider.ensureInteractionCacheHydrated();
+    if (!mounted) return;
     _fetchPollState().then((state) {
       if (!mounted || state == null) return;
       _isLifecycleRunning = true;
@@ -340,6 +359,9 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     );
   }
 
+  EngagementProvider get _engagementProvider =>
+      Provider.of<EngagementProvider>(context, listen: false);
+
   void _transitionTo(
     AutoPollState newState, {
     int? countdown,
@@ -350,12 +372,14 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       _state = newState;
       if (countdown != null) _countdownSeconds = countdown;
       if (clearVoteReceipt) {
-        _lastVoteDetailedBets = null;
-        // Cleanup old session cache safely
-        final sessionId = _stateData?.currentSessionId ?? '';
-        final cacheKey =
-            '${widget.pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
-        _sessionReceiptCache.remove(cacheKey);
+        // Old Code:
+        // _lastVoteDetailedBets = null;
+        // final sessionId = _stateData?.currentSessionId ?? '';
+        // _engagementProvider.clearPollSessionReceiptCache(widget.pollId, sessionId);
+        //
+        // New Code:
+        // State retention policy: do NOT purge persistent receipt history
+        // during rollover countdown. Keep until new vote/session truly replaces it.
       }
     });
   }
@@ -876,9 +900,11 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
   }
 
   Map<String, int?>? _getEffectiveDetailedBets() {
+    final providerLastVote =
+        _engagementProvider.getPollLastVoteDetailedBets(widget.pollId);
     print('--- DEBUG POLL RECEIPTS ---');
-    print('1. Last Vote Local: $_lastVoteDetailedBets');
-    print('2. Session Cache: $_sessionReceiptCache');
+    print('1. Last Vote Provider: $providerLastVote');
+    print('2. Session Cache: provider-backed');
     print('3. Backend API Data: ${_resultData?.userDetailedBets}');
     print('---------------------------');
 
@@ -906,13 +932,15 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     final int baseCost = _perUnitPnpForState(_stateData);
     final int safePerUnit = baseCost > 0 ? baseCost : 1000;
     final int rewardMult = _stateData?.rewardMultiplier.toInt() ?? 4;
-    final sessionId = _stateData?.currentSessionId ?? '';
-    final cacheKey =
-        '${widget.pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
-    final cached = _sessionReceiptCache[cacheKey];
-    final trustedMap = (_lastVoteDetailedBets != null &&
-            _lastVoteDetailedBets!.isNotEmpty)
-        ? _lastVoteDetailedBets
+    // Old Code:
+    // final cacheKey =
+    //     '${widget.pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
+    // final cached = _sessionReceiptCache[cacheKey];
+    //
+    // New Code:
+    // cached values are now served from provider persistence layer.
+    final trustedMap = (providerLastVote != null && providerLastVote.isNotEmpty)
+        ? providerLastVote
         : ((cached != null && cached.isNotEmpty) ? cached : null);
 
     int? resolveTrustedUnit(String label) { ... }
@@ -931,14 +959,18 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     final double rewardMultEffective = _stateData?.rewardMultiplier ?? 4;
 
     final sessionId = _stateData?.currentSessionId ?? '';
-    final cacheKey =
-        '${widget.pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
-    final cached = _sessionReceiptCache[cacheKey];
+    // Old Code:
+    // final cacheKey =
+    //    '${widget.pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
+    // final cached = _sessionReceiptCache[cacheKey];
+    //
+    // New Code:
+    final cached =
+        _engagementProvider.getPollSessionReceiptCache(widget.pollId, sessionId);
 
     // UI lane source-of-truth: what user actually selected in the vote dialog.
-    final trustedMap = (_lastVoteDetailedBets != null &&
-            _lastVoteDetailedBets!.isNotEmpty)
-        ? _lastVoteDetailedBets
+    final trustedMap = (providerLastVote != null && providerLastVote.isNotEmpty)
+        ? providerLastVote
         : ((cached != null && cached.isNotEmpty) ? cached : null);
     final fallbackMap = _fallbackVoteDetailedBets();
 
@@ -989,8 +1021,8 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       });
     }
 
-    if (_lastVoteDetailedBets != null && _lastVoteDetailedBets!.isNotEmpty) {
-      return processMap(_lastVoteDetailedBets!);
+    if (providerLastVote != null && providerLastVote.isNotEmpty) {
+      return processMap(providerLastVote);
     }
 
     if (cached != null && cached.isNotEmpty) {
@@ -1050,16 +1082,27 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       betAmount: betAmount,
       betAmountPerOption: betAmountPerOption,
     );
-    setState(() {
-      _lastVoteDetailedBets = map.isEmpty ? null : map;
-    });
+    // Old Code:
+    // setState(() {
+    //   _lastVoteDetailedBets = map.isEmpty ? null : map;
+    // });
+    //
+    // New Code:
+    // Keep only provider persistent copy as single source-of-truth.
 
     // Write to static session cache (handles empty sessionId safely)
     if (map.isNotEmpty) {
       final sessionId = _stateData?.currentSessionId ?? '';
-      final cacheKey =
-          '${widget.pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
-      _sessionReceiptCache[cacheKey] = map;
+      unawaited(
+        _engagementProvider.setPollLastVoteDetailedBets(widget.pollId, map),
+      );
+      unawaited(
+        _engagementProvider.setPollSessionReceiptCache(
+          widget.pollId,
+          sessionId,
+          map,
+        ),
+      );
     }
   }
 

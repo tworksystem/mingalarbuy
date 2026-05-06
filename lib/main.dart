@@ -600,45 +600,48 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             tag: 'Main', error: e);
       }
 
-      // Immediately refresh engagement feed when app comes to foreground
-      try {
-        final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        final engagementProvider =
-            Provider.of<EngagementProvider>(context, listen: false);
-
-        if (authProvider.isAuthenticated && authProvider.user != null) {
-          final userId = authProvider.user!.id;
-          final token = authProvider.token;
-          final userIdString = userId.toString();
-
-          // Sync point balance with server (e.g. poll winner credits from WP-Cron / background).
-          PointProvider.instance
-              .loadBalance(userIdString, forceRefresh: true)
-              .catchError((e) {
-            Logger.warning('Error refreshing point balance on app resume: $e',
-                tag: 'Main', error: e);
-          });
-          Logger.info(
-              'Point balance refresh triggered on app resume (forceRefresh)',
-              tag: 'Main');
-
-          engagementProvider
-              .refreshImmediately(
-            userId: userId,
-            token: token,
-          )
-              .catchError((e) {
-            Logger.warning('Error refreshing engagement feed on app resume: $e',
-                tag: 'Main', error: e);
-          });
-
-          Logger.info('Engagement feed refresh triggered on app resume',
-              tag: 'Main');
-        }
-      } catch (e) {
-        Logger.error('Error refreshing engagement feed on app resume: $e',
-            tag: 'Main', error: e);
-      }
+      // Old Code:
+      // Immediately refresh engagement feed + point balance on app resume.
+      // This duplicated MainPage resume refresh flow and could race/flicker.
+      //
+      // try {
+      //   final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      //   final engagementProvider =
+      //       Provider.of<EngagementProvider>(context, listen: false);
+      //
+      //   if (authProvider.isAuthenticated && authProvider.user != null) {
+      //     final userId = authProvider.user!.id;
+      //     final token = authProvider.token;
+      //     final userIdString = userId.toString();
+      //
+      //     PointProvider.instance
+      //         .loadBalance(userIdString, forceRefresh: true)
+      //         .catchError((e) {
+      //       Logger.warning('Error refreshing point balance on app resume: $e',
+      //           tag: 'Main', error: e);
+      //     });
+      //
+      //     engagementProvider
+      //         .refreshImmediately(
+      //       userId: userId,
+      //       token: token,
+      //     )
+      //         .catchError((e) {
+      //       Logger.warning('Error refreshing engagement feed on app resume: $e',
+      //           tag: 'Main', error: e);
+      //     });
+      //   }
+      // } catch (e) {
+      //   Logger.error('Error refreshing engagement feed on app resume: $e',
+      //       tag: 'Main', error: e);
+      // }
+      //
+      // New Code:
+      // MainPage now owns cache-first resume refresh + debounced background fetch.
+      Logger.info(
+        'Resume data refresh delegated to MainPage (cache-first, debounced)',
+        tag: 'Main',
+      );
 
       // Start usage tracking session when app resumes
       _handleUsageTrackingResume();
