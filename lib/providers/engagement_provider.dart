@@ -142,13 +142,14 @@ class EngagementProvider with ChangeNotifier {
   static const String _pollInteractionTouchedAtMsKey =
       'engagement_poll_interaction_touched_at_ms_v1';
   static const int _maxRetainedPollInteractionEntries = 50;
-  static const Duration _interactionTtl = Duration(days: 7);
+  static const Duration _interactionTtl = Duration(days: 2);
   List<EngagementItem> _items = [];
   bool _isLoading = false;
   String? _error;
   Timer? _debounceTimer;
   Timer? _pollingTimer; // Timer for automatic data refresh
-  Duration? _activePollingInterval; // Track current timer interval for smart polling
+  Duration?
+      _activePollingInterval; // Track current timer interval for smart polling
   String? _lastSmartPollingReason;
   bool _hasLoggedKeptInterval = false;
   int? _currentUserId; // Track which user the data belongs to
@@ -183,7 +184,8 @@ class EngagementProvider with ChangeNotifier {
   bool get isAutoPollPaused => _isAutoPollPaused;
 
   String _cacheKeyForUser(int userId) => '$_feedCacheKeyPrefix$userId';
-  String pollUserLocalUnitStorageKey(int engagementItemId, String optionUniqueId) =>
+  String pollUserLocalUnitStorageKey(
+          int engagementItemId, String optionUniqueId) =>
       '$engagementItemId|$optionUniqueId';
   String pollReceiptCacheKey(int pollId, String sessionId) =>
       '${pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
@@ -344,8 +346,9 @@ class EngagementProvider with ChangeNotifier {
       // Keep old-good items when refresh is degraded or network result is empty with an error.
       final hasErrorFromService = EngagementService.lastError != null &&
           EngagementService.lastError!.trim().isNotEmpty;
-      final shouldKeepPreviousOnError =
-          hasErrorFromService && fetchedItems.isEmpty && previousItems.isNotEmpty;
+      final shouldKeepPreviousOnError = hasErrorFromService &&
+          fetchedItems.isEmpty &&
+          previousItems.isNotEmpty;
 
       if (shouldKeepPreviousOnError) {
         _items = previousItems;
@@ -383,9 +386,11 @@ class EngagementProvider with ChangeNotifier {
             tag: 'EngagementProvider');
       }
 
-      if (_items.isNotEmpty) {
-        await _saveFeedToCache(userId, _items);
-      }
+      await _persistFeedSnapshotForUser(
+        userId: userId,
+        items: _items,
+        hasServiceError: hasErrorFromService,
+      );
 
       // Start automatic polling after successful load
       _startPolling(userId: userId, token: token);
@@ -513,8 +518,8 @@ class EngagementProvider with ChangeNotifier {
     int engagementItemId,
     String optionUniqueId,
   ) {
-    final raw =
-        _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)];
+    final raw = _pollUserLocalUnitOverlay[
+        pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)];
     if (raw != null && raw > 0) {
       _touchPollInteraction(engagementItemId);
     }
@@ -592,8 +597,8 @@ class EngagementProvider with ChangeNotifier {
     if (hasLocalUnitOverlay) return true;
 
     final prefixByPollSession = '${itemId}_';
-    final hasSessionReceipt =
-        _pollSessionReceiptCache.keys.any((k) => k.startsWith(prefixByPollSession));
+    final hasSessionReceipt = _pollSessionReceiptCache.keys
+        .any((k) => k.startsWith(prefixByPollSession));
     return hasSessionReceipt;
   }
 
@@ -681,20 +686,32 @@ class EngagementProvider with ChangeNotifier {
 
       final hasPersistentLocalRecordForItem =
           hasPersistentInteractionRecordForItem(fresh.id);
+      final previousSessionId =
+          source.pollVotingSchedule?['current_session_id']?.toString();
+      final freshSessionId =
+          fresh.pollVotingSchedule?['current_session_id']?.toString();
+      final sessionBoundaryChanged = previousSessionId != null &&
+          previousSessionId.isNotEmpty &&
+          freshSessionId != null &&
+          freshSessionId.isNotEmpty &&
+          previousSessionId != freshSessionId;
 
-      // Old Code:
-      // if (!lostInteractionFlag && !lostUserAnswer) {
-      //   return fresh;
-      // }
-      //
-      // New Code:
-      // For polls with persisted local interaction evidence, prefer local record
-      // over stale API regressions.
       final shouldRecoverFromLocal = lostInteractionFlag ||
           lostUserAnswer ||
           (hasPersistentLocalRecordForItem &&
               (!fresh.hasInteracted ||
-                  (fresh.userAnswer == null || fresh.userAnswer!.trim().isEmpty)));
+                  (fresh.userAnswer == null ||
+                      fresh.userAnswer!.trim().isEmpty)));
+
+      if (sessionBoundaryChanged) {
+        app_logger.Logger.info(
+          'Skipping local interaction recovery for poll ${fresh.id} '
+          'due to session boundary change '
+          '($previousSessionId -> $freshSessionId)',
+          tag: 'EngagementProvider',
+        );
+        return fresh;
+      }
 
       if (!shouldRecoverFromLocal) {
         return fresh;
@@ -718,7 +735,8 @@ class EngagementProvider with ChangeNotifier {
         interactionCount: fresh.interactionCount > source.interactionCount
             ? fresh.interactionCount
             : source.interactionCount,
-        pollVotingSchedule: fresh.pollVotingSchedule ?? source.pollVotingSchedule,
+        pollVotingSchedule:
+            fresh.pollVotingSchedule ?? source.pollVotingSchedule,
         pollResult: fresh.pollResult ?? source.pollResult,
       );
     }).toList();
@@ -750,8 +768,8 @@ class EngagementProvider with ChangeNotifier {
     void removePoll(int pollId) {
       _pollLastVoteDetailedBets.remove(pollId);
       _pollInteractionTouchedAtMs.remove(pollId);
-      _pollSessionReceiptCache.removeWhere(
-          (sessionKey, _) => sessionKey.startsWith('${pollId}_'));
+      _pollSessionReceiptCache
+          .removeWhere((sessionKey, _) => sessionKey.startsWith('${pollId}_'));
       _pollUserLocalUnitOverlay
           .removeWhere((overlayKey, _) => overlayKey.startsWith('$pollId|'));
     }
@@ -765,8 +783,8 @@ class EngagementProvider with ChangeNotifier {
       return;
     }
 
-    retainedPollIds.sort((a, b) =>
-        (_pollInteractionTouchedAtMs[a] ?? 0).compareTo(_pollInteractionTouchedAtMs[b] ?? 0));
+    retainedPollIds.sort((a, b) => (_pollInteractionTouchedAtMs[a] ?? 0)
+        .compareTo(_pollInteractionTouchedAtMs[b] ?? 0));
     final overflowCount =
         retainedPollIds.length - _maxRetainedPollInteractionEntries;
     for (var i = 0; i < overflowCount; i++) {
@@ -802,7 +820,8 @@ class EngagementProvider with ChangeNotifier {
         if (asMap == null) continue;
         final parsed = EngagementItem.fromJson(asMap);
         if (parsed.hasInteracted ||
-            (parsed.userAnswer != null && parsed.userAnswer!.trim().isNotEmpty)) {
+            (parsed.userAnswer != null &&
+                parsed.userAnswer!.trim().isNotEmpty)) {
           map[parsed.id] = parsed;
         }
       }
@@ -1129,6 +1148,43 @@ class EngagementProvider with ChangeNotifier {
     }
   }
 
+  Future<void> _clearFeedCacheForUser(int userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_cacheKeyForUser(userId), jsonEncode(<dynamic>[]));
+      app_logger.Logger.info(
+        'Cleared engagement feed cache for user $userId using empty snapshot',
+        tag: 'EngagementProvider',
+      );
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed to clear engagement feed cache for user $userId: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  Future<void> _persistFeedSnapshotForUser({
+    required int userId,
+    required List<EngagementItem> items,
+    required bool hasServiceError,
+  }) async {
+    if (hasServiceError) {
+      app_logger.Logger.info(
+        'Skipping cache overwrite due to service error; preserving old-good cache for user $userId',
+        tag: 'EngagementProvider',
+      );
+      return;
+    }
+    if (items.isEmpty) {
+      await _clearFeedCacheForUser(userId);
+      return;
+    }
+    await _saveFeedToCache(userId, items);
+  }
+
   Map<String, dynamic> _serializeItemForCache(EngagementItem item) {
     return <String, dynamic>{
       'id': item.id,
@@ -1157,7 +1213,8 @@ class EngagementProvider with ChangeNotifier {
       'rotation_duration': item.rotationDurationSeconds,
       'interaction_count': item.interactionCount,
       if (item.pollVotingSchedule != null)
-        'poll_voting_schedule': Map<String, dynamic>.from(item.pollVotingSchedule!),
+        'poll_voting_schedule':
+            Map<String, dynamic>.from(item.pollVotingSchedule!),
       if (item.pollResult != null)
         'poll_result': Map<String, dynamic>.from(item.pollResult!),
     };
@@ -1174,8 +1231,7 @@ class EngagementProvider with ChangeNotifier {
         _activePollingInterval == computedInterval &&
         _pollingTimer!.isActive) {
       if (!_hasLoggedKeptInterval) {
-        final mode =
-            computedInterval == _fastPollingInterval ? 'FAST' : 'SLOW';
+        final mode = computedInterval == _fastPollingInterval ? 'FAST' : 'SLOW';
         app_logger.Logger.info(
           'Smart Polling: Kept current interval ($mode mode, reason: $reason)',
           tag: 'EngagementProvider',
@@ -1261,6 +1317,9 @@ class EngagementProvider with ChangeNotifier {
             !oldIds.containsAll(newIds) ||
             !newIds.containsAll(oldIds);
 
+        final hasErrorFromService = EngagementService.lastError != null &&
+            EngagementService.lastError!.trim().isNotEmpty;
+
         if (structureChanged) {
           _items = items;
           /*
@@ -1269,6 +1328,11 @@ class EngagementProvider with ChangeNotifier {
           */
           // New Code:
           _notifyListenersThrottledFromPolling();
+          unawaited(_persistFeedSnapshotForUser(
+            userId: userId,
+            items: _items,
+            hasServiceError: hasErrorFromService,
+          ));
           _startPolling(userId: userId, token: token);
         } else {
           bool contentChanged = false;
@@ -1293,6 +1357,11 @@ class EngagementProvider with ChangeNotifier {
             */
             // New Code:
             _notifyListenersThrottledFromPolling();
+            unawaited(_persistFeedSnapshotForUser(
+              userId: userId,
+              items: _items,
+              hasServiceError: hasErrorFromService,
+            ));
             _startPolling(userId: userId, token: token);
           }
         }
@@ -1314,7 +1383,8 @@ class EngagementProvider with ChangeNotifier {
       if (raw.type != EngagementType.poll) continue;
 
       final schedule = raw.pollVotingSchedule;
-      final status = (schedule?['voting_status']?.toString() ?? '').toLowerCase();
+      final status =
+          (schedule?['voting_status']?.toString() ?? '').toLowerCase();
       final mode = (schedule?['poll_mode']?.toString() ?? '').toLowerCase();
       if (mode == 'auto_run') {
         hasAutoRunPoll = true;
@@ -1342,13 +1412,16 @@ class EngagementProvider with ChangeNotifier {
           raw.pollResult == null &&
           (isResultWindow || isAutoRunNearClose || secondsUntilClose <= 20);
 
-      if (isAutoRunNearClose || isResultWindow || waitingResultAfterInteraction) {
+      if (isAutoRunNearClose ||
+          isResultWindow ||
+          waitingResultAfterInteraction) {
         final reason = isResultWindow
             ? 'showing_result'
             : (isAutoRunNearClose
                 ? 'auto_run_near_close'
                 : 'has_interacted_waiting_result');
-        return _SmartPollingDecision(interval: _fastPollingInterval, reason: reason);
+        return _SmartPollingDecision(
+            interval: _fastPollingInterval, reason: reason);
       }
     }
     /*
@@ -1389,8 +1462,7 @@ class EngagementProvider with ChangeNotifier {
         );
       }
       notifyListeners();
-      _pollingNotifyThrottleTimer =
-          Timer(_pollingNotifyMinInterval, () {
+      _pollingNotifyThrottleTimer = Timer(_pollingNotifyMinInterval, () {
         if (_pollingNotifyPending) {
           _pollingNotifyPending = false;
           if (kDebugMode) {

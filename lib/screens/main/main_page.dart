@@ -77,6 +77,13 @@ class _MainPageState extends State<MainPage>
   bool _isResumeRefreshInProgress = false;
   DateTime? _lastResumeNetworkRefreshAt;
   static const Duration _resumeNetworkRefreshMinInterval = Duration(minutes: 2);
+  DateTime? _lastResumeEngagementRefreshAt;
+  static const Duration _resumeEngagementRefreshMinInterval =
+      Duration(seconds: 30);
+  static const bool _forceNetworkOnResumeForEngagement = false;
+  DateTime? _lastHomeTabEngagementRefreshAt;
+  static const Duration _homeTabEngagementRefreshMinInterval =
+      Duration(seconds: 30);
 
   /// Poll / engagement automated popups: do not show [PointNotificationModal] from MainPage.
   bool _shouldSilencePollRelatedPointModal(PointNotificationEvent event) {
@@ -140,15 +147,34 @@ class _MainPageState extends State<MainPage>
       final shouldRunNetworkRefresh = _lastResumeNetworkRefreshAt == null ||
           now.difference(_lastResumeNetworkRefreshAt!) >=
               _resumeNetworkRefreshMinInterval;
+      final shouldRunEngagementNetworkRefresh =
+          _forceNetworkOnResumeForEngagement ||
+              _lastResumeEngagementRefreshAt == null ||
+              now.difference(_lastResumeEngagementRefreshAt!) >=
+                  _resumeEngagementRefreshMinInterval;
 
-      if (shouldRunNetworkRefresh) {
-        _lastResumeNetworkRefreshAt = now;
+      if (shouldRunEngagementNetworkRefresh) {
+        _lastResumeEngagementRefreshAt = now;
+        Logger.info(
+          'MainPage resume: engagement cache-first refresh triggered '
+          '(force=$_forceNetworkOnResumeForEngagement, minInterval=${_resumeEngagementRefreshMinInterval.inSeconds}s)',
+          tag: 'MainPage',
+        );
         // Rehydrate immediately from local cache, then fetch latest from API in background.
         await engagementProvider.refreshFromCacheThenNetwork(
           userId: parsedUserId,
           token: authProvider.token,
         );
+      } else {
+        Logger.info(
+          'MainPage resume: skipping engagement refresh '
+          '(cooldown active: ${_resumeEngagementRefreshMinInterval.inSeconds}s)',
+          tag: 'MainPage',
+        );
+      }
 
+      if (shouldRunNetworkRefresh) {
+        _lastResumeNetworkRefreshAt = now;
         // Ensure point state is reconciled with latest backend state on resume.
         await pointProvider.refreshPointState(
           userId: userId,
@@ -158,12 +184,6 @@ class _MainPageState extends State<MainPage>
           refreshUserCallback: () => authProvider.refreshUser(),
         );
       } else {
-        // Old Code:
-        // await engagementProvider.refreshFromCacheThenNetwork(...);
-        // await pointProvider.refreshPointState(...);
-        //
-        // New Code:
-        // Skip aggressive resume network refresh when app was backgrounded briefly.
         Logger.info(
           'Skipping resume network refresh (cooldown active: ${_resumeNetworkRefreshMinInterval.inSeconds}s)',
           tag: 'MainPage',
@@ -544,6 +564,47 @@ class _MainPageState extends State<MainPage>
           tag: 'MainPage',
         );
         _myPointWidgetKey.currentState?.refreshBalance();
+
+        final now = DateTime.now();
+        final shouldRefreshEngagement =
+            _lastHomeTabEngagementRefreshAt == null ||
+                now.difference(_lastHomeTabEngagementRefreshAt!) >=
+                    _homeTabEngagementRefreshMinInterval;
+        if (!shouldRefreshEngagement) {
+          Logger.info(
+            'MainPage: skipping Home revisit engagement refresh '
+            '(cooldown active: ${_homeTabEngagementRefreshMinInterval.inSeconds}s)',
+            tag: 'MainPage',
+          );
+          return;
+        }
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        if (!authProvider.isAuthenticated || authProvider.user == null) {
+          return;
+        }
+        _lastHomeTabEngagementRefreshAt = now;
+        final engagementProvider =
+            Provider.of<EngagementProvider>(context, listen: false);
+        unawaited(
+          engagementProvider
+              .refresh(
+            userId: authProvider.user!.id,
+            token: authProvider.token,
+          )
+              .then((_) {
+            Logger.info(
+              'MainPage: Home revisit engagement refresh completed',
+              tag: 'MainPage',
+            );
+          }).catchError((Object e, StackTrace st) {
+            Logger.warning(
+              'MainPage: Home revisit engagement refresh failed: $e',
+              tag: 'MainPage',
+              error: e,
+              stackTrace: st,
+            );
+          }),
+        );
       });
     }
     _lastMainTabIndexForPnp = current;
@@ -2319,7 +2380,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
             context.select<PointProvider, bool>((p) => p.isLoading);
         final String? pointErrorMessage =
             context.select<PointProvider, String?>((p) => p.errorMessage);
-        final bool pointInitialHydrateDone = context.select<PointProvider, bool>(
+        final bool pointInitialHydrateDone =
+            context.select<PointProvider, bool>(
           (p) => p.hasCompletedSessionInitialBalanceLoad,
         );
         final bool hasPointBalanceObject =
@@ -2445,8 +2507,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
         final bool showBalancePlaceholder = !trustworthyBalanceForUi;
         final int displayBalanceValue =
             trustworthyBalanceForUi ? balanceFromProvider : 0;
-        final bool showLoadingStrip = _isRefreshing ||
-            (pointIsLoading && showBalancePlaceholder);
+        final bool showLoadingStrip =
+            _isRefreshing || (pointIsLoading && showBalancePlaceholder);
         final bool showSyncWarning = !showLoadingStrip &&
             pointErrorMessage != null &&
             pointErrorMessage.isNotEmpty;
@@ -2593,7 +2655,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                           : displayBalanceValue;
                                       return _AnimatedPointCounter(
                                         value: target,
-                                        duration: const Duration(milliseconds: 650),
+                                        duration:
+                                            const Duration(milliseconds: 650),
                                         style: theme.textTheme.headlineMedium
                                             ?.copyWith(
                                           color: colorScheme.primary,
@@ -2630,7 +2693,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                             forceRefresh: true,
                                           );
                                           if (!context.mounted) return;
-                                          final msg = pointProvider.errorMessage;
+                                          final msg =
+                                              pointProvider.errorMessage;
                                           if (msg != null && msg.isNotEmpty) {
                                             ScaffoldMessenger.of(context)
                                                 .showSnackBar(
