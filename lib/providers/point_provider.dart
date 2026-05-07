@@ -865,8 +865,8 @@ class PointProvider with ChangeNotifier {
       var filteredTransactions = sortedTransactions;
 
       // Preserve already-known poll details if API row is temporarily missing them.
-      filteredTransactions = _mergeTransactionsPreservingPollDetails(
-        current: _transactions,
+      filteredTransactions = PointService.mergeTransactionsPreservingPollDetails(
+        existing: _transactions,
         incoming: filteredTransactions,
       );
 
@@ -991,23 +991,6 @@ class PointProvider with ChangeNotifier {
       dateFrom: dateFrom,
       dateTo: dateTo,
     );
-  }
-
-  List<PointTransaction> _mergeTransactionsPreservingPollDetails({
-    required List<PointTransaction> current,
-    required List<PointTransaction> incoming,
-  }) {
-    final currentById = <String, PointTransaction>{
-      for (final tx in current) tx.id: tx,
-    };
-
-    return incoming.map((tx) {
-      final old = currentById[tx.id];
-      if (old == null) return tx;
-      if (tx.pollDetails != null) return tx;
-      if (old.pollDetails == null) return tx;
-      return tx.copyWith(pollDetails: old.pollDetails);
-    }).toList();
   }
 
   /// Earn points (e.g., on purchase, signup, review)

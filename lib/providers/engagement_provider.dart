@@ -8,13 +8,126 @@ import '../utils/logger.dart' as app_logger;
 bool _pollResultEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   if (a == b) return true;
   if (a == null || b == null) return false;
+  /*
+  Old Code:
   return jsonEncode(a) == jsonEncode(b);
+  */
+  // New Code:
+  // Field-aware compare: ignore noisy counters and focus on winner/session transitions.
+  final sessionA = a['session_id']?.toString();
+  final sessionB = b['session_id']?.toString();
+  if (sessionA != sessionB) {
+    _debugFieldChangeLog(
+      scope: 'poll_result',
+      field: 'session_id',
+      oldValue: sessionA,
+      newValue: sessionB,
+    );
+    return false;
+  }
+
+  final winningIndexA = (a['winning_index'] as num?)?.toInt();
+  final winningIndexB = (b['winning_index'] as num?)?.toInt();
+  if (winningIndexA != winningIndexB) {
+    _debugFieldChangeLog(
+      scope: 'poll_result',
+      field: 'winning_index',
+      oldValue: winningIndexA,
+      newValue: winningIndexB,
+    );
+    return false;
+  }
+
+  final winningOptionA = a['winning_option'] is Map
+      ? Map<String, dynamic>.from(a['winning_option'] as Map)
+      : null;
+  final winningOptionB = b['winning_option'] is Map
+      ? Map<String, dynamic>.from(b['winning_option'] as Map)
+      : null;
+  final optionEqual = jsonEncode(winningOptionA) == jsonEncode(winningOptionB);
+  if (!optionEqual) {
+    _debugFieldChangeLog(
+      scope: 'poll_result',
+      field: 'winning_option',
+      oldValue: winningOptionA,
+      newValue: winningOptionB,
+    );
+    return false;
+  }
+  return true;
 }
 
 bool _scheduleEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   if (a == b) return true;
   if (a == null || b == null) return false;
+  /*
+  Old Code:
   return jsonEncode(a) == jsonEncode(b);
+  */
+  // New Code:
+  // Field-aware compare: intentionally ignore volatile ticking fields
+  // (seconds_until_close, remaining_*, server_time, now, etc.).
+  final votingStatusA = a['voting_status']?.toString();
+  final votingStatusB = b['voting_status']?.toString();
+  if (votingStatusA != votingStatusB) {
+    _debugFieldChangeLog(
+      scope: 'poll_voting_schedule',
+      field: 'voting_status',
+      oldValue: votingStatusA,
+      newValue: votingStatusB,
+    );
+    return false;
+  }
+
+  final sessionIdA = a['current_session_id']?.toString();
+  final sessionIdB = b['current_session_id']?.toString();
+  if (sessionIdA != sessionIdB) {
+    _debugFieldChangeLog(
+      scope: 'poll_voting_schedule',
+      field: 'current_session_id',
+      oldValue: sessionIdA,
+      newValue: sessionIdB,
+    );
+    return false;
+  }
+
+  final resultEndsAtA = a['result_display_ends_at']?.toString();
+  final resultEndsAtB = b['result_display_ends_at']?.toString();
+  if (resultEndsAtA != resultEndsAtB) {
+    _debugFieldChangeLog(
+      scope: 'poll_voting_schedule',
+      field: 'result_display_ends_at',
+      oldValue: resultEndsAtA,
+      newValue: resultEndsAtB,
+    );
+    return false;
+  }
+
+  final pollModeA = a['poll_mode']?.toString();
+  final pollModeB = b['poll_mode']?.toString();
+  if (pollModeA != pollModeB) {
+    _debugFieldChangeLog(
+      scope: 'poll_voting_schedule',
+      field: 'poll_mode',
+      oldValue: pollModeA,
+      newValue: pollModeB,
+    );
+    return false;
+  }
+  return true;
+}
+
+void _debugFieldChangeLog({
+  required String scope,
+  required String field,
+  required Object? oldValue,
+  required Object? newValue,
+}) {
+  if (!kDebugMode) return;
+  debugPrint(
+    '[EngagementProvider] Content changed due to: $scope.$field '
+    '(old: $oldValue, new: $newValue)',
+  );
 }
 
 /// Engagement Provider for managing engagement items state
@@ -43,6 +156,9 @@ class EngagementProvider with ChangeNotifier {
       false; // Track if we've loaded for current user
   bool _isAutoPollPaused =
       false; // Temporarily pause auto-poll for poll/result transitions
+  Timer? _pollingNotifyThrottleTimer;
+  bool _pollingNotifyPending = false;
+  static const Duration _pollingNotifyMinInterval = Duration(milliseconds: 200);
   final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
   final Map<String, Map<String, int?>> _pollSessionReceiptCache =
       <String, Map<String, int?>>{};
@@ -1147,7 +1263,12 @@ class EngagementProvider with ChangeNotifier {
 
         if (structureChanged) {
           _items = items;
+          /*
+          Old Code:
           notifyListeners();
+          */
+          // New Code:
+          _notifyListenersThrottledFromPolling();
           _startPolling(userId: userId, token: token);
         } else {
           bool contentChanged = false;
@@ -1166,7 +1287,12 @@ class EngagementProvider with ChangeNotifier {
           }
           if (contentChanged) {
             _items = items;
+            /*
+            Old Code:
             notifyListeners();
+            */
+            // New Code:
+            _notifyListenersThrottledFromPolling();
             _startPolling(userId: userId, token: token);
           }
         }
@@ -1254,6 +1380,37 @@ class EngagementProvider with ChangeNotifier {
     }
   }
 
+  void _notifyListenersThrottledFromPolling() {
+    if (_pollingNotifyThrottleTimer == null ||
+        !(_pollingNotifyThrottleTimer!.isActive)) {
+      if (kDebugMode) {
+        debugPrint(
+          '[EngagementProvider] Throttled notifyListeners called (immediate)',
+        );
+      }
+      notifyListeners();
+      _pollingNotifyThrottleTimer =
+          Timer(_pollingNotifyMinInterval, () {
+        if (_pollingNotifyPending) {
+          _pollingNotifyPending = false;
+          if (kDebugMode) {
+            debugPrint(
+              '[EngagementProvider] Throttled notifyListeners called (deferred)',
+            );
+          }
+          notifyListeners();
+        }
+      });
+      return;
+    }
+    _pollingNotifyPending = true;
+    if (kDebugMode) {
+      debugPrint(
+        '[EngagementProvider] notifyListeners throttled (queued within 200ms window)',
+      );
+    }
+  }
+
   /// Public control: pause auto-polling (used by Auto-Run Poll result/countdown).
   void pauseAutoPoll() {
     if (_isAutoPollPaused) return;
@@ -1306,6 +1463,7 @@ class EngagementProvider with ChangeNotifier {
   @override
   void dispose() {
     _debounceTimer?.cancel();
+    _pollingNotifyThrottleTimer?.cancel();
     _stopPolling();
     super.dispose();
   }

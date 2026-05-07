@@ -20,6 +20,7 @@ import '../providers/engagement_provider.dart';
 import '../providers/point_provider.dart';
 import '../services/engagement_service.dart';
 import '../services/canonical_point_balance_sync.dart';
+import '../services/point_service.dart';
 import '../utils/logger.dart';
 import 'package:flutter/foundation.dart';
 
@@ -89,10 +90,12 @@ class PollStateData {
       pollBaseCost: (data['poll_base_cost'] as num?)?.toInt() ?? 0,
       betAmountStep: (data['bet_amount_step'] as num?)?.toInt(),
       rewardMultiplier: (data['reward_multiplier'] as num?)?.toDouble() ?? 4,
-      requireConfirmation: data['require_confirmation'] == true ||
+      requireConfirmation:
+          data['require_confirmation'] == true ||
           data['require_confirmation'] == 1 ||
           data['require_confirmation'] == '1',
-      allowUserAmount: data['allow_user_amount'] == null ||
+      allowUserAmount:
+          data['allow_user_amount'] == null ||
           data['allow_user_amount'] == true ||
           data['allow_user_amount'] == 1 ||
           data['allow_user_amount'] == '1',
@@ -117,11 +120,7 @@ class WinningOption {
   final String? mediaUrl;
   final String? mediaType;
 
-  WinningOption({
-    required this.text,
-    this.mediaUrl,
-    this.mediaType,
-  });
+  WinningOption({required this.text, this.mediaUrl, this.mediaType});
 
   factory WinningOption.fromJson(Map<String, dynamic>? json) {
     if (json == null) return WinningOption(text: '');
@@ -160,8 +159,9 @@ class PollResultData {
   factory PollResultData.fromJson(Map<String, dynamic> json) {
     final data = json['data'] as Map<String, dynamic>? ?? json;
     final winning = data['winning_option'];
-    final winningMap =
-        winning is Map ? Map<String, dynamic>.from(winning) : null;
+    final winningMap = winning is Map
+        ? Map<String, dynamic>.from(winning)
+        : null;
     int wi = (data['winning_index'] as num?)?.toInt() ?? -1;
     if (!data.containsKey('winning_index') && winningMap != null) {
       final text = (winningMap['text'] ?? '').toString().trim();
@@ -306,11 +306,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       // Intentionally block any state reset or reload here.
       // This prevents EngagementProvider auto-refresh from
       // killing the 5-second "Next poll" countdown.
-      // Use print to make sure this is visible in release logs too.
-      // (Can be swapped to debugPrint if preferred.)
+      // Old Code:
       // ignore: avoid_print
-      print(
-        '--- BLOCKING EXTERNAL REFRESH. Currently in phase: $_state ---',
+      // print('--- BLOCKING EXTERNAL REFRESH. Currently in phase: $_state ---');
+      // New Code: keep this signal but route through structured logger.
+      Logger.info(
+        'Blocking external refresh while phase=$_state',
+        tag: 'AutoRunPoll',
       );
       return;
     }
@@ -335,7 +337,8 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     }
     final now = DateTime.now();
     if (_lastAppResumeServerTick != null &&
-        now.difference(_lastAppResumeServerTick!) < const Duration(seconds: 30)) {
+        now.difference(_lastAppResumeServerTick!) <
+            const Duration(seconds: 30)) {
       return;
     }
     _lastAppResumeServerTick = now;
@@ -478,8 +481,9 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     }
 
     try {
-      final Map<String, dynamic>? json =
-          await EngagementService.fetchPollState(pollId: widget.pollId);
+      final Map<String, dynamic>? json = await EngagementService.fetchPollState(
+        pollId: widget.pollId,
+      );
       if (json == null || json['success'] != true) {
         if (mounted) setState(() => _state = AutoPollState.activeVoting);
         return null;
@@ -573,10 +577,10 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       try {
         final Map<String, dynamic>? json =
             await EngagementService.fetchPollResults(
-          pollId: widget.pollId,
-          sessionId: sessionId,
-          userId: widget.userId,
-        );
+              pollId: widget.pollId,
+              sessionId: sessionId,
+              userId: widget.userId,
+            );
 
         if (!mounted || _abortResultsPoll) {
           return;
@@ -631,15 +635,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       final finalPointProvider = pointProvider ?? PointProvider.instance;
 
       // Baseline before optimistic bump (avoids double-counting earn twice).
-      final int authBal = authProvider?.userPointsBalance ??
-          AuthProvider().userPointsBalance;
-      final int baseline = math.max(
-        finalPointProvider.currentBalance,
-        authBal,
-      );
+      final int authBal =
+          authProvider?.userPointsBalance ?? AuthProvider().userPointsBalance;
+      final int baseline = math.max(finalPointProvider.currentBalance, authBal);
       final int localWithEarned = baseline + result.pointsEarned;
-      final int effectiveBalance =
-          result.currentBalance > 0 ? result.currentBalance : localWithEarned;
+      final int effectiveBalance = result.currentBalance > 0
+          ? result.currentBalance
+          : localWithEarned;
 
       final optimisticRefId =
           'poll_win_${widget.pollId}_${result.sessionId.isNotEmpty ? result.sessionId : DateTime.now().millisecondsSinceEpoch}';
@@ -677,10 +679,7 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
         authProvider: authProvider,
         pointProvider: finalPointProvider,
       );
-      Logger.info(
-        'DEBUG_SYNC: Canonical sync completed',
-        tag: 'AutoRunPoll',
-      );
+      Logger.info('DEBUG_SYNC: Canonical sync completed', tag: 'AutoRunPoll');
 
       if (kDebugMode) {
         debugPrint(
@@ -690,29 +689,6 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       unawaited(
         PointProvider.instance
             .refreshPointState(
-          userId: widget.userId.toString(),
-          forceRefresh: true,
-          refreshBalance: true,
-          refreshTransactions: true,
-          refreshUserCallback: authProvider == null
-              ? null
-              : () => authProvider!.refreshUser(),
-        )
-            .catchError((Object error) {
-          debugPrint('[AutoRunPoll] immediate refreshPointState: $error');
-        }),
-      );
-
-      final String serverFetchKey =
-          'srv_${widget.pollId}_${result.sessionId}';
-      if (_autoRunPollBalanceServerFetchOnceKeys.add(serverFetchKey)) {
-        if (_autoRunPollBalanceServerFetchOnceKeys.length > 300) {
-          _autoRunPollBalanceServerFetchOnceKeys.clear();
-        }
-        unawaited(
-          Future<void>.delayed(const Duration(seconds: 3)).then((_) async {
-            await PointProvider.instance
-                .refreshPointState(
               userId: widget.userId.toString(),
               forceRefresh: true,
               refreshBalance: true,
@@ -721,9 +697,31 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
                   ? null
                   : () => authProvider!.refreshUser(),
             )
+            .catchError((Object error) {
+              debugPrint('[AutoRunPoll] immediate refreshPointState: $error');
+            }),
+      );
+
+      final String serverFetchKey = 'srv_${widget.pollId}_${result.sessionId}';
+      if (_autoRunPollBalanceServerFetchOnceKeys.add(serverFetchKey)) {
+        if (_autoRunPollBalanceServerFetchOnceKeys.length > 300) {
+          _autoRunPollBalanceServerFetchOnceKeys.clear();
+        }
+        unawaited(
+          Future<void>.delayed(const Duration(seconds: 3)).then((_) async {
+            await PointProvider.instance
+                .refreshPointState(
+                  userId: widget.userId.toString(),
+                  forceRefresh: true,
+                  refreshBalance: true,
+                  refreshTransactions: true,
+                  refreshUserCallback: authProvider == null
+                      ? null
+                      : () => authProvider!.refreshUser(),
+                )
                 .catchError((Object error) {
-              debugPrint('[AutoRunPoll] delayed refreshPointState: $error');
-            });
+                  debugPrint('[AutoRunPoll] delayed refreshPointState: $error');
+                });
           }),
         );
       }
@@ -846,10 +844,11 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
       // PROFESSIONAL FIX: Deduplicate indices to prevent ghost accumulation
       ordered = selectedOptionIds.toSet().toList()..sort();
     } else {
-      for (final p in answer
-          .split(',')
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)) {
+      for (final p
+          in answer
+              .split(',')
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)) {
         final i = int.tryParse(p);
         if (i != null && i >= 0 && i < widget.options.length) {
           ordered.add(i);
@@ -900,13 +899,13 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
   }
 
   Map<String, int?>? _getEffectiveDetailedBets() {
-    final providerLastVote =
-        _engagementProvider.getPollLastVoteDetailedBets(widget.pollId);
-    print('--- DEBUG POLL RECEIPTS ---');
-    print('1. Last Vote Provider: $providerLastVote');
-    print('2. Session Cache: provider-backed');
-    print('3. Backend API Data: ${_resultData?.userDetailedBets}');
-    print('---------------------------');
+    final providerLastVote = _engagementProvider.getPollLastVoteDetailedBets(
+      widget.pollId,
+    );
+    Logger.info(
+      '[AutoRunPoll] receipt debug provider=$providerLastVote backend=${_resultData?.userDetailedBets}',
+      tag: 'AutoRunPoll',
+    );
 
     /*
     // Legacy normalization (kept for reference)
@@ -965,8 +964,10 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     // final cached = _sessionReceiptCache[cacheKey];
     //
     // New Code:
-    final cached =
-        _engagementProvider.getPollSessionReceiptCache(widget.pollId, sessionId);
+    final cached = _engagementProvider.getPollSessionReceiptCache(
+      widget.pollId,
+      sessionId,
+    );
 
     // UI lane source-of-truth: what user actually selected in the vote dialog.
     final trustedMap = (providerLastVote != null && providerLastVote.isNotEmpty)
@@ -1110,8 +1111,10 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
     if (value == null) return null;
     if (value is int) return value;
     if (value is num) return value.toInt();
-    final normalized =
-        value.toString().trim().replaceAll(RegExp(r'[^0-9-]'), '');
+    final normalized = value.toString().trim().replaceAll(
+      RegExp(r'[^0-9-]'),
+      '',
+    );
     if (normalized.isEmpty || normalized == '-') return null;
     return int.tryParse(normalized);
   }
@@ -1141,6 +1144,73 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
           betAmount: betAmount,
           betAmountPerOption: betAmountPerOption,
         );
+        // Old Code: no local poll transaction enrichment payload.
+        // New Code: normalize selected option labels + per-option spend for history.
+        final normalizedSelectedOptions = <Map<String, dynamic>>[];
+        final sortedSelectedIds = (selectedOptionIds ?? <int>[])..sort();
+        final unitPnp = _perUnitPnpForState(_stateData);
+        final int selectionCount = sortedSelectedIds.length;
+        int normalizedTotalBetPnp = 0;
+        for (final idx in sortedSelectedIds) {
+          if (idx < 0 || idx >= widget.options.length) continue;
+          final label = widget.options[idx].trim();
+          int betPnp;
+          int units;
+          if (betAmountPerOption != null && betAmountPerOption.containsKey(idx)) {
+            // Old Code: averaged or ambiguous fallbacks when per-option missing.
+            //
+            // New Code: exact per line — units from map, PNP = perUnit * units.
+            final u = betAmountPerOption[idx] ?? 1;
+            units = u > 0 ? u : 1;
+            betPnp = unitPnp > 0 ? (unitPnp * units) : 0;
+          } else if (betAmount != null && betAmount > 0) {
+            if (selectionCount == 1) {
+              // Single selection: betAmount is the exact PNP stake (no unit multiply).
+              betPnp = betAmount;
+              units = betAmount;
+            } else {
+              // Multi selection, shared amount field: same units applied to each
+              // selected option (matches vote receipt / no averaging).
+              units = betAmount;
+              betPnp = unitPnp > 0 ? (unitPnp * betAmount) : 0;
+            }
+          } else {
+            units = 1;
+            betPnp = unitPnp > 0 ? unitPnp : 0;
+          }
+          normalizedTotalBetPnp += betPnp;
+          normalizedSelectedOptions.add({
+            'index': idx,
+            'label': label,
+            'betPnp': betPnp,
+            'betUnits': units,
+          });
+        }
+        // Old Code: recordPollTransaction was called only inside new_balance branch.
+        // New Code: decouple success-path history recording from balance payload availability.
+        if (normalizedSelectedOptions.isNotEmpty) {
+          final parsedBalance = result['data'] != null
+              ? _safeParseInt(result['data']['new_balance'])
+              : null;
+          unawaited(
+            PointService.recordPollTransaction(
+              userId: widget.userId.toString(),
+              pollId: widget.pollId,
+              pollTitle: widget.title,
+              sessionId: sessionId,
+              selectedOptions: normalizedSelectedOptions,
+              totalBetPnp: normalizedTotalBetPnp,
+              // Keep signature unchanged: use -1 sentinel when server balance is missing.
+              newBalance: parsedBalance ?? -1,
+              // Old Code:
+              // orderId:
+              //     'engagement:poll:${widget.pollId}:${sessionId.isEmpty ? DateTime.now().millisecondsSinceEpoch : sessionId}',
+              //
+              // New Code: let service generate deterministic id for retry-safe dedupe.
+              description: 'Poll vote submitted',
+            ),
+          );
+        }
         // INSTANT BALANCE DEDUCTION FIX
         // Immediately sync the deducted balance to the EXACT UI providers.
         if (result['data'] != null && result['data']['new_balance'] != null) {
@@ -1205,9 +1275,8 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
             code == 'insufficient_balance' || code == 'insufficient_funds';
         final safeBalance = _safeParseInt(result['balance']);
         final safeRequired = _safeParseInt(result['required']);
-        final displayMessage = isInsufficient &&
-                safeBalance != null &&
-                safeRequired != null
+        final displayMessage =
+            isInsufficient && safeBalance != null && safeRequired != null
             ? 'Point မလောက်ပါ။ လက်ကျန်: $safeBalance, လိုအပ်ချက်: $safeRequired'
             : message;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1245,8 +1314,9 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
 
   @override
   Widget build(BuildContext context) {
-    // ဒီစာကြောင်းလေးကို အစမ်းထည့်ကြည့်ပါ
-    debugPrint('👉👉👉 APP IS RUNNING NEW CODE! State: $_state 👈👈👈');
+    // Old Code:
+    // debugPrint('👉👉👉 APP IS RUNNING NEW CODE! State: $_state 👈👈👈');
+    // New Code: removed noisy debug print.
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 350),
@@ -1381,7 +1451,8 @@ class _VotingUI extends StatefulWidget {
     List<int>? selectedOptionIds,
     int? betAmount,
     Map<int, int>? betAmountPerOption,
-  }) onSubmitVote;
+  })
+  onSubmitVote;
   final bool allowUserAmount;
 
   const _VotingUI({
@@ -1498,15 +1569,21 @@ class _VotingUIState extends State<_VotingUI> {
               if (widget.rewardPoints > 0) ...[
                 const Spacer(),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.3),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Text('+${widget.rewardPoints} PTS',
-                      style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold)),
+                  child: Text(
+                    '+${widget.rewardPoints} PTS',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ],
             ],
@@ -1520,62 +1597,75 @@ class _VotingUIState extends State<_VotingUI> {
           if (widget.hasInteracted && formattedUserChoices != null)
             Text(
               'Your choice: $formattedUserChoices',
-              style:
-                  TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 14),
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.9),
+                fontSize: 14,
+              ),
             )
           else ...[
-            ...widget.options.asMap().entries.map((e) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: InkWell(
-                    onTap: () {
-                      setState(() {
-                        if (_selectedIndices.contains(e.key)) {
-                          _selectedIndices.remove(e.key);
-                        } else {
-                          _selectedIndices.add(e.key);
-                        }
-                      });
-                    },
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(
-                            _selectedIndices.contains(e.key) ? 0.35 : 0.2),
-                        borderRadius: BorderRadius.circular(8),
-                        border: _selectedIndices.contains(e.key)
-                            ? Border.all(color: Colors.white, width: 2)
-                            : null,
+            ...widget.options.asMap().entries.map(
+              (e) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  onTap: () {
+                    setState(() {
+                      if (_selectedIndices.contains(e.key)) {
+                        _selectedIndices.remove(e.key);
+                      } else {
+                        _selectedIndices.add(e.key);
+                      }
+                    });
+                  },
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(
+                        _selectedIndices.contains(e.key) ? 0.35 : 0.2,
                       ),
-                      child: Row(
-                        children: [
-                          Checkbox(
-                            value: _selectedIndices.contains(e.key),
-                            onChanged: (v) {
-                              setState(() {
-                                if (v == true) {
-                                  _selectedIndices.add(e.key);
-                                } else {
-                                  _selectedIndices.remove(e.key);
-                                }
-                              });
-                            },
-                            activeColor: Colors.white,
-                            checkColor: Colors.deepOrange,
-                            fillColor: WidgetStateProperty.resolveWith(
-                                (_) => Colors.white.withOpacity(0.5)),
+                      borderRadius: BorderRadius.circular(8),
+                      border: _selectedIndices.contains(e.key)
+                          ? Border.all(color: Colors.white, width: 2)
+                          : null,
+                    ),
+                    child: Row(
+                      children: [
+                        Checkbox(
+                          value: _selectedIndices.contains(e.key),
+                          onChanged: (v) {
+                            setState(() {
+                              if (v == true) {
+                                _selectedIndices.add(e.key);
+                              } else {
+                                _selectedIndices.remove(e.key);
+                              }
+                            });
+                          },
+                          activeColor: Colors.white,
+                          checkColor: Colors.deepOrange,
+                          fillColor: WidgetStateProperty.resolveWith(
+                            (_) => Colors.white.withOpacity(0.5),
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: Text(_optionText(e.value),
-                                  style: const TextStyle(
-                                      color: Colors.white, fontSize: 15))),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _optionText(e.value),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                )),
+                ),
+              ),
+            ),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
@@ -1589,7 +1679,8 @@ class _VotingUIState extends State<_VotingUI> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text(
-                                  'ကျေးဇူးပြု၍ အနည်းဆုံး တစ်ခု ရွေးချယ်ပါ။'),
+                                'ကျေးဇူးပြု၍ အနည်းဆုံး တစ်ခု ရွေးချယ်ပါ။',
+                              ),
                             ),
                           );
                           return;
@@ -1618,8 +1709,9 @@ class _VotingUIState extends State<_VotingUI> {
                         if (requiredPerAmount <= 0) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content:
-                                  Text('Poll cost မမှန်ကန်သဖြင့် ကစား၍မရပါ။'),
+                              content: Text(
+                                'Poll cost မမှန်ကန်သဖြင့် ကစား၍မရပါ။',
+                              ),
                             ),
                           );
                           return;
@@ -1692,7 +1784,7 @@ class _VotingUIState extends State<_VotingUI> {
                         // 6. Per-option amount dialog (each selected option gets its own amount)
                         final selectedList = selectedOptionIds.toList()..sort();
                         final Map<int, int> amountPerOption = {
-                          for (final i in selectedList) i: 1
+                          for (final i in selectedList) i: 1,
                         };
                         final options = widget.options;
 
@@ -1885,8 +1977,9 @@ class _VotingUIState extends State<_VotingUI> {
                                   title: const Text(
                                     'Option တစ်ခုချင်းစီအတွက် Amount သတ်မှတ်ပါ',
                                     style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 16),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
                                   ),
                                   content: SingleChildScrollView(
                                     child: Column(
@@ -1897,13 +1990,15 @@ class _VotingUIState extends State<_VotingUI> {
                                         Text(
                                           'သင့်လက်ရှိ Point: $userBalance',
                                           style: const TextStyle(
-                                              fontWeight: FontWeight.w600),
+                                            fontWeight: FontWeight.w600,
+                                          ),
                                         ),
                                         Text(
                                           'အဆင့် တစ်ခုလျှင်: $perUnit PNP',
                                           style: TextStyle(
-                                              fontSize: 13,
-                                              color: Colors.grey[700]),
+                                            fontSize: 13,
+                                            color: Colors.grey[700],
+                                          ),
                                         ),
                                         const SizedBox(height: 16),
                                         ...selectedList.map((idx) {
@@ -1915,7 +2010,8 @@ class _VotingUIState extends State<_VotingUI> {
                                               userBalance ~/ perUnit;
                                           return Padding(
                                             padding: const EdgeInsets.only(
-                                                bottom: 12),
+                                              bottom: 12,
+                                            ),
                                             child: Row(
                                               children: [
                                                 Expanded(
@@ -1923,7 +2019,8 @@ class _VotingUIState extends State<_VotingUI> {
                                                   child: Text(
                                                     _optionText(optLabel),
                                                     style: const TextStyle(
-                                                        fontSize: 14),
+                                                      fontSize: 14,
+                                                    ),
                                                     overflow:
                                                         TextOverflow.ellipsis,
                                                     maxLines: 2,
@@ -1935,21 +2032,23 @@ class _VotingUIState extends State<_VotingUI> {
                                                   children: [
                                                     IconButton(
                                                       icon: const Icon(
-                                                          Icons
-                                                              .remove_circle_outline,
-                                                          size: 22),
+                                                        Icons
+                                                            .remove_circle_outline,
+                                                        size: 22,
+                                                      ),
                                                       onPressed: amt > 1
                                                           ? () => setDialogState(
                                                               () =>
-                                                                  amountPerOption[
-                                                                          idx] =
-                                                                      amt - 1)
+                                                                  amountPerOption[idx] =
+                                                                      amt - 1,
+                                                            )
                                                           : null,
                                                       padding: EdgeInsets.zero,
                                                       constraints:
                                                           const BoxConstraints(
-                                                              minWidth: 36,
-                                                              minHeight: 36),
+                                                            minWidth: 36,
+                                                            minHeight: 36,
+                                                          ),
                                                     ),
                                                     SizedBox(
                                                       width: 36,
@@ -1958,37 +2057,41 @@ class _VotingUIState extends State<_VotingUI> {
                                                         textAlign:
                                                             TextAlign.center,
                                                         style: const TextStyle(
-                                                            fontWeight:
-                                                                FontWeight.bold,
-                                                            fontSize: 16),
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          fontSize: 16,
+                                                        ),
                                                       ),
                                                     ),
                                                     IconButton(
                                                       icon: const Icon(
-                                                          Icons
-                                                              .add_circle_outline,
-                                                          size: 22),
-                                                      onPressed: amt <
-                                                              maxForThis
+                                                        Icons
+                                                            .add_circle_outline,
+                                                        size: 22,
+                                                      ),
+                                                      onPressed:
+                                                          amt < maxForThis
                                                           ? () => setDialogState(
                                                               () =>
-                                                                  amountPerOption[
-                                                                          idx] =
-                                                                      amt + 1)
+                                                                  amountPerOption[idx] =
+                                                                      amt + 1,
+                                                            )
                                                           : null,
                                                       padding: EdgeInsets.zero,
                                                       constraints:
                                                           const BoxConstraints(
-                                                              minWidth: 36,
-                                                              minHeight: 36),
+                                                            minWidth: 36,
+                                                            minHeight: 36,
+                                                          ),
                                                     ),
                                                   ],
                                                 ),
                                                 Text(
                                                   '${perUnit * amt}',
                                                   style: TextStyle(
-                                                      fontSize: 12,
-                                                      color: Colors.grey[600]),
+                                                    fontSize: 12,
+                                                    color: Colors.grey[600],
+                                                  ),
                                                 ),
                                               ],
                                             ),
@@ -1998,20 +2101,23 @@ class _VotingUIState extends State<_VotingUI> {
                                         Text(
                                           'စုစုပေါင်း ကုန်ကျမည်: $totalCost PNP',
                                           style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              color: canAfford
-                                                  ? null
-                                                  : Colors.red),
+                                            fontWeight: FontWeight.bold,
+                                            color: canAfford
+                                                ? null
+                                                : Colors.red,
+                                          ),
                                         ),
                                         if (!canAfford)
                                           Padding(
-                                            padding:
-                                                const EdgeInsets.only(top: 6),
+                                            padding: const EdgeInsets.only(
+                                              top: 6,
+                                            ),
                                             child: Text(
                                               'Point မလောက်ပါ (လိုအပ်ချက်: $totalCost)',
                                               style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.red[700]),
+                                                fontSize: 12,
+                                                color: Colors.red[700],
+                                              ),
                                             ),
                                           ),
                                       ],
@@ -2028,8 +2134,7 @@ class _VotingUIState extends State<_VotingUI> {
                                     ),
                                     ElevatedButton(
                                       onPressed: canAfford
-                                          ? () => Navigator.pop(
-                                              dialogCtx, true)
+                                          ? () => Navigator.pop(dialogCtx, true)
                                           : null,
                                       child: const Text('ကစားမည်'),
                                     ),
@@ -2052,7 +2157,8 @@ class _VotingUIState extends State<_VotingUI> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text(
-                                  'သတ်မှတ်ထားသော Amount အတွက် Point မလောက်တော့ပါ။ ပြန်လည် ကြိုးစားကြည့်ပါ။'),
+                                'သတ်မှတ်ထားသော Amount အတွက် Point မလောက်တော့ပါ။ ပြန်လည် ကြိုးစားကြည့်ပါ။',
+                              ),
                             ),
                           );
                           return;
@@ -2072,7 +2178,10 @@ class _VotingUIState extends State<_VotingUI> {
                         height: 20,
                         width: 20,
                         child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2))
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
                     : const Text('ကစားမည်'),
               ),
             ),
@@ -2116,8 +2225,10 @@ class _CountdownUI extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               label,
-              style:
-                  TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 16),
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.9),
+                fontSize: 16,
+              ),
             ),
           ],
         ),
@@ -2207,40 +2318,46 @@ List<InlineSpan> _winningPollReceiptInlineSpans(
   var i = 0;
   for (final e in detailedBets.entries) {
     if (i > 0) {
-      spans.add(TextSpan(
-        text: ', ',
+      spans.add(
+        TextSpan(
+          text: ', ',
+          style: TextStyle(
+            color: sepColor,
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            height: 1.35,
+          ),
+        ),
+      );
+    }
+    spans.add(
+      TextSpan(
+        text: _formatOptionLabel(e.key),
         style: TextStyle(
-          color: sepColor,
+          color: label,
           fontSize: 14,
           fontWeight: FontWeight.w500,
           height: 1.35,
         ),
-      ));
-    }
-    spans.add(TextSpan(
-      text: _formatOptionLabel(e.key),
-      style: TextStyle(
-        color: label,
-        fontSize: 14,
-        fontWeight: FontWeight.w500,
-        height: 1.35,
       ),
-    ));
+    );
     if (e.value != null) {
       final raw = e.value!;
       // Legacy conversion logic intentionally disabled.
       // final safePerUnit = perUnitPnp > 0 ? perUnitPnp : 1000;
       // final normalized =
       //     raw >= 100 ? ((raw ~/ safePerUnit) > 0 ? raw ~/ safePerUnit : 1) : raw;
-      spans.add(TextSpan(
-        text: ' : $raw',
-        style: TextStyle(
-          color: amountColor,
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-          height: 1.35,
+      spans.add(
+        TextSpan(
+          text: ' : $raw',
+          style: TextStyle(
+            color: amountColor,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            height: 1.35,
+          ),
         ),
-      ));
+      );
     }
     i++;
   }
@@ -2321,9 +2438,8 @@ class _WinningResultWidgetState extends State<WinningResultWidget> {
           width: double.infinity,
           height: double.infinity,
           fit: BoxFit.cover,
-          placeholder: (_, __) => const Center(
-            child: CircularProgressIndicator(),
-          ),
+          placeholder: (_, __) =>
+              const Center(child: CircularProgressIndicator()),
           errorWidget: (_, __, ___) => Center(
             child: Icon(Icons.broken_image, size: 40, color: Colors.grey[400]),
           ),
@@ -2352,10 +2468,7 @@ class _WinningResultWidgetState extends State<WinningResultWidget> {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.black.withOpacity(0.8),
-                  ],
+                  colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
                 ),
               ),
               child: Padding(
@@ -2381,7 +2494,9 @@ class _WinningResultWidgetState extends State<WinningResultWidget> {
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.16),
                           borderRadius: BorderRadius.circular(14),
@@ -2427,8 +2542,9 @@ class _WinningResultWidgetState extends State<WinningResultWidget> {
                                   Colors.amber.shade100,
                                   perUnitPnp: widget.perUnitPnp,
                                   labelColor: Colors.white.withOpacity(0.92),
-                                  separatorColor:
-                                      Colors.white.withOpacity(0.75),
+                                  separatorColor: Colors.white.withOpacity(
+                                    0.75,
+                                  ),
                                 ),
                               ),
                               maxLines: 4,

@@ -78,7 +78,8 @@ class PointTransaction {
 
       // Check if the string already has timezone information
       // Look for 'Z' suffix, or timezone offset like '+06:30' or '-05:00'
-      final hasTimezone = str.contains('Z') ||
+      final hasTimezone =
+          str.contains('Z') ||
           (str.contains('+') && str.length > 19) ||
           (str.contains('-', 10) && str.length > 19 && !str.startsWith('-'));
 
@@ -96,8 +97,9 @@ class PointTransaction {
         final parts = normalizedStr.split('T');
         if (parts.length == 2) {
           final datePart = parts[0];
-          final timePart =
-              parts[1].split('.')[0]; // Remove milliseconds if present
+          final timePart = parts[1].split(
+            '.',
+          )[0]; // Remove milliseconds if present
           final timeComponents = timePart.split(':');
 
           if (timeComponents.length >= 3) {
@@ -112,8 +114,14 @@ class PointTransaction {
 
               // CRITICAL: Create UTC DateTime explicitly using DateTime.utc()
               // This ensures we're treating the server time as UTC, not device local time
-              utcDateTime =
-                  DateTime.utc(year, month, day, hour, minute, second);
+              utcDateTime = DateTime.utc(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+              );
             } else {
               // Invalid date format, fallback
               utcDateTime = DateTime.parse('${normalizedStr}Z').toUtc();
@@ -131,8 +139,9 @@ class PointTransaction {
       // PROFESSIONAL FIX: Convert UTC to Myanmar time (UTC+06:30 = +390 minutes)
       // Myanmar time is 6 hours and 30 minutes ahead of UTC
       const myanmarOffsetMinutes = 390; // 6 hours 30 minutes
-      final myanmarTime =
-          utcDateTime.add(Duration(minutes: myanmarOffsetMinutes));
+      final myanmarTime = utcDateTime.add(
+        Duration(minutes: myanmarOffsetMinutes),
+      );
 
       // CRITICAL: Create a local DateTime with Myanmar time values
       // We create a local DateTime (not UTC) so it's not affected by device timezone conversion
@@ -175,37 +184,81 @@ class PointTransaction {
       parsedPollDetails = PollTransactionDetails.fromLegacyFlatJson(json);
     }
 
+    // Bulletproof FIX: betPnp သည် 0 ဖြစ်နေပြီး Transaction တွင် အမှန်တကယ် နှုတ်ထားသော Point ရှိနေပါက ထို Point ဖြင့် Override လုပ်မည်
+    final int actualPoints =
+        _parseInt(json['points'] ?? json['amount_deducted']).abs();
+    if (parsedPollDetails != null &&
+        parsedPollDetails.totalBetPnp <= 0 &&
+        actualPoints > 0) {
+      final opts = parsedPollDetails.selectedOptions;
+      if (opts.isNotEmpty) {
+        final avgPnp = actualPoints ~/ opts.length;
+        final remainder = actualPoints % opts.length; // အကြွင်းကို ယူမည်
+
+        final newOpts = <PollOptionSnapshot>[];
+        for (int i = 0; i < opts.length; i++) {
+          final e = opts[i];
+          final extra = (i == opts.length - 1) ? remainder : 0; // နောက်ဆုံး Option တွင် အကြွင်းကို ထည့်ပေါင်းမည်
+          newOpts.add(
+            PollOptionSnapshot(
+              index: e.index,
+              label: e.label,
+              betUnits: e.betUnits,
+              betPnp: e.betPnp <= 0 ? (avgPnp + extra) : e.betPnp,
+            ),
+          );
+        }
+
+        parsedPollDetails = PollTransactionDetails(
+          pollId: parsedPollDetails.pollId,
+          pollTitle: parsedPollDetails.pollTitle,
+          sessionId: parsedPollDetails.sessionId,
+          resultStatus: parsedPollDetails.resultStatus,
+          totalBetPnp: actualPoints,
+          wonAmountPnp: parsedPollDetails.wonAmountPnp,
+          netAmountPnp: parsedPollDetails.netAmountPnp,
+          winningOption: parsedPollDetails.winningOption,
+          selectedOptions: newOpts,
+        );
+      }
+    }
+
     return PointTransaction(
       id: json['id']?.toString() ?? '',
       userId: json['user_id']?.toString() ?? json['userId']?.toString() ?? '',
       type: PointTransactionTypeExtension.fromString(
-          json['type']?.toString() ?? 'earn'),
+        json['type']?.toString() ?? 'earn',
+      ),
       // Backend may send points as int, double, or string depending on DB schema.
       points: _parseInt(json['points']),
       originalBalance: _parseInt(
-          json['original_balance'] ?? json['originalBalance']),
+        json['original_balance'] ?? json['originalBalance'],
+      ),
       amountAdded: _parseInt(json['amount_added'] ?? json['amountAdded']),
-      amountDeducted:
-          _parseInt(json['amount_deducted'] ?? json['amountDeducted']),
-      currentBalance:
-          _parseInt(json['current_balance'] ?? json['currentBalance']),
+      amountDeducted: _parseInt(
+        json['amount_deducted'] ?? json['amountDeducted'],
+      ),
+      currentBalance: _parseInt(
+        json['current_balance'] ?? json['currentBalance'],
+      ),
       description: json['description']?.toString(),
       orderId: json['order_id']?.toString() ?? json['orderId']?.toString(),
       pollDetails: parsedPollDetails,
       createdAt: json['created_at'] != null
           ? _parseServerDateTime(json['created_at'])
           : json['createdAt'] != null
-              ? _parseServerDateTime(json['createdAt'])
-              : DateTime.now(),
+          ? _parseServerDateTime(json['createdAt'])
+          : DateTime.now(),
       expiresAt: json['expires_at'] != null
           ? _parseServerDateTime(json['expires_at'])
           : json['expiresAt'] != null
-              ? _parseServerDateTime(json['expiresAt'])
-              : null,
+          ? _parseServerDateTime(json['expiresAt'])
+          : null,
       // Safe bool parsing from bool/int/string payloads.
       isExpired: _parseBool(json['is_expired'] ?? json['isExpired']),
       status: PointTransactionStatusExtension.fromString(
-          json['status']?.toString() ?? 'approved'),
+        json['status']?.toString() ?? 'approved',
+      ),
     );
   }
 
@@ -272,8 +325,9 @@ class PointTransaction {
   static DateTime _myanmarTimeToUtc(DateTime myanmarTime) {
     // Myanmar time is UTC+06:30, so to convert back to UTC, subtract 390 minutes
     const myanmarOffsetMinutes = 390; // 6 hours 30 minutes
-    final utcTime =
-        myanmarTime.subtract(Duration(minutes: myanmarOffsetMinutes));
+    final utcTime = myanmarTime.subtract(
+      Duration(minutes: myanmarOffsetMinutes),
+    );
     // Return as UTC DateTime
     return DateTime.utc(
       utcTime.year,
@@ -388,10 +442,12 @@ class PointTransactionHistoryResult {
     final transactionsRaw = json['transactions'];
     final transactions = transactionsRaw is List
         ? transactionsRaw
-            .whereType<Map>()
-            .map((item) =>
-                PointTransaction.fromJson(Map<String, dynamic>.from(item)))
-            .toList()
+              .whereType<Map>()
+              .map(
+                (item) =>
+                    PointTransaction.fromJson(Map<String, dynamic>.from(item)),
+              )
+              .toList()
         : <PointTransaction>[];
 
     return PointTransactionHistoryResult(
@@ -399,8 +455,9 @@ class PointTransactionHistoryResult {
       total: PointTransaction._parseInt(json['total']),
       page: PointTransaction._parseInt(json['page']),
       perPage: PointTransaction._parseInt(json['per_page'] ?? json['perPage']),
-      totalPages:
-          PointTransaction._parseInt(json['total_pages'] ?? json['totalPages']),
+      totalPages: PointTransaction._parseInt(
+        json['total_pages'] ?? json['totalPages'],
+      ),
     );
   }
 }
@@ -459,7 +516,11 @@ class PollTransactionDetails {
       pollTitle: json['poll_title']?.toString(),
       sessionId: json['session_id']?.toString(),
       resultStatus: json['result_status']?.toString(),
-      totalBetPnp: _parseInt(json['total_bet_pnp']),
+      // Old Code:
+      // totalBetPnp: _parseInt(json['total_bet_pnp']),
+      //
+      // New Code: [String] payloads from backend are safe via _parseInt.
+      totalBetPnp: _parseInt(json['total_bet_pnp'] ?? json['bet_amount']),
       wonAmountPnp: _parseInt(json['won_amount_pnp']),
       netAmountPnp: _parseInt(json['net_amount_pnp']),
       winningOption: winning,
@@ -467,19 +528,32 @@ class PollTransactionDetails {
     );
   }
 
-  factory PollTransactionDetails.fromLegacyFlatJson(
-      Map<String, dynamic> json) {
+  factory PollTransactionDetails.fromLegacyFlatJson(Map<String, dynamic> json) {
     final selectedRaw = json['selected_option']?.toString() ?? '';
+
+    // Bulletproof FIX: bet_amount မရှိလျှင် Transaction ၏ 'points' သို့မဟုတ် 'amount_deducted' ကို အတင်းဆွဲယူမည်
+    int betUnits = _parseInt(json['bet_amount']);
+    if (betUnits <= 0) {
+      betUnits = _parseInt(json['points'] ?? json['amount_deducted']).abs();
+    }
+
     final selected = <PollOptionSnapshot>[];
     if (selectedRaw.trim().isNotEmpty) {
-      for (final part in selectedRaw.split(',')) {
-        final idx = _parseInt(part.trim());
+      final parts = selectedRaw.split(',');
+      // Division by zero မဖြစ်အောင် ကာကွယ်ခြင်းနှင့် အကြွင်းရှာခြင်း
+      final avgPnp = parts.isNotEmpty ? (betUnits ~/ parts.length) : betUnits;
+      final remainder = parts.isNotEmpty ? (betUnits % parts.length) : 0;
+
+      for (int i = 0; i < parts.length; i++) {
+        final idx = _parseInt(parts[i].trim());
+        // နောက်ဆုံး Option တွင် အကြွင်းကို ထည့်ပေါင်းမည်
+        final extra = (i == parts.length - 1) ? remainder : 0;
         selected.add(
           PollOptionSnapshot(
             index: idx,
             label: 'Option ${idx + 1}',
-            betUnits: _parseInt(json['bet_amount']),
-            betPnp: 0,
+            betUnits: betUnits,
+            betPnp: avgPnp + extra,
           ),
         );
       }
@@ -497,11 +571,10 @@ class PollTransactionDetails {
     }
 
     final won = _parseInt(json['won_amount']);
-    final betUnits = _parseInt(json['bet_amount']);
 
     return PollTransactionDetails(
       resultStatus: won > 0 ? 'won' : 'pending',
-      totalBetPnp: 0,
+      totalBetPnp: betUnits,
       wonAmountPnp: won,
       netAmountPnp: won,
       winningOption: winning,
@@ -509,10 +582,10 @@ class PollTransactionDetails {
           ? [
               PollOptionSnapshot(
                 index: 0,
-                label: '',
+                label: 'Unknown Option',
                 betUnits: betUnits,
-                betPnp: 0,
-              )
+                betPnp: betUnits,
+              ),
             ]
           : selected,
     );
@@ -556,11 +629,20 @@ class PollOptionSnapshot {
   }
 
   factory PollOptionSnapshot.fromJson(Map<String, dynamic> json) {
+    final betUnits = _parseInt(json['bet_units'] ?? json['bet_amount']);
+    // Bulletproof: 0 PNP / missing bet_pnp — use stake fields from same snapshot
+    var betPnp = _parseInt(json['bet_pnp']);
+    if (betPnp <= 0) {
+      betPnp = _parseInt(json['bet_amount'] ?? json['amount']);
+    }
+    if (betPnp <= 0) {
+      betPnp = betUnits;
+    }
     return PollOptionSnapshot(
       index: _parseInt(json['index']),
       label: json['label']?.toString() ?? '',
-      betUnits: _parseInt(json['bet_units']),
-      betPnp: _parseInt(json['bet_pnp']),
+      betUnits: betUnits,
+      betPnp: betPnp,
     );
   }
 
@@ -695,7 +777,11 @@ class PointBalance {
   });
 
   /// Parse balance from JSON — handles num, String (e.g. "18200")
-  static int _parseBalance(Map<String, dynamic> json, String key, String altKey) {
+  static int _parseBalance(
+    Map<String, dynamic> json,
+    String key,
+    String altKey,
+  ) {
     final v = json[key] ?? json[altKey];
     if (v == null) return 0;
     if (v is num) return v.toInt();
@@ -709,20 +795,26 @@ class PointBalance {
       userId: json['user_id']?.toString() ?? json['userId']?.toString() ?? '',
       currentBalance: _parseBalance(json, 'current_balance', 'currentBalance'),
       lifetimeEarned: _parseBalance(json, 'lifetime_earned', 'lifetimeEarned'),
-      lifetimeRedeemed:
-          _parseBalance(json, 'lifetime_redeemed', 'lifetimeRedeemed'),
-      lifetimeExpired:
-          _parseBalance(json, 'lifetime_expired', 'lifetimeExpired'),
+      lifetimeRedeemed: _parseBalance(
+        json,
+        'lifetime_redeemed',
+        'lifetimeRedeemed',
+      ),
+      lifetimeExpired: _parseBalance(
+        json,
+        'lifetime_expired',
+        'lifetimeExpired',
+      ),
       lastUpdated: json['last_updated'] != null
           ? DateTime.parse(json['last_updated'])
           : json['lastUpdated'] != null
-              ? DateTime.parse(json['lastUpdated'])
-              : DateTime.now(),
+          ? DateTime.parse(json['lastUpdated'])
+          : DateTime.now(),
       pointsExpireAt: json['points_expire_at'] != null
           ? DateTime.parse(json['points_expire_at'])
           : json['pointsExpireAt'] != null
-              ? DateTime.parse(json['pointsExpireAt'])
-              : null,
+          ? DateTime.parse(json['pointsExpireAt'])
+          : null,
     );
   }
 

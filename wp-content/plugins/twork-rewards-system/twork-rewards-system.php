@@ -10,6 +10,7 @@
  * Requires PHP: 7.4
  * WC requires at least: 5.0
  */
+
 if (!defined('ABSPATH')) {
     exit;
 }
@@ -313,6 +314,12 @@ class TWork_Rewards_System
 
         // Point Transactions: enqueue Select2 assets for scalable user search filter.
         add_action('admin_enqueue_scripts', array($this, 'enqueue_point_transactions_admin_assets'));
+
+        // One-time admin-triggered data sync for legacy poll loser transactions.
+        add_action('admin_init', array($this, 'maybe_trigger_legacy_loser_transactions_sync'));
+
+        // WP-CLI maintenance commands.
+        add_action('init', array($this, 'register_wp_cli_commands'), 20);
     }
 
     /**
@@ -494,6 +501,399 @@ class TWork_Rewards_System
             });
         ";
         wp_add_inline_script($script_handle, $inline_js);
+    }
+
+    /**
+     * Run legacy loser sync only when explicitly requested via admin URL parameter.
+     *
+     * Trigger example:
+     * /wp-admin/admin.php?page=twork-rewards-point-transactions&twork_sync_old_losers=1
+     *
+     * @return void
+     */
+    public function maybe_trigger_legacy_loser_transactions_sync()
+    {
+        if (!is_admin()) {
+            return;
+        }
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $should_sync = isset($_GET['twork_sync_old_losers']) ? sanitize_text_field(wp_unslash($_GET['twork_sync_old_losers'])) : '';
+        if ($should_sync !== '1') {
+            return;
+        }
+
+        $result = $this->twork_sync_legacy_loser_transactions(300);
+
+        $redirect_url = add_query_arg(
+            array(
+                'twork_sync_old_losers' => null,
+                'twork_sync_done' => 1,
+                'twork_sync_scanned' => isset($result['scanned']) ? (int) $result['scanned'] : 0,
+                'twork_sync_updated' => isset($result['updated']) ? (int) $result['updated'] : 0,
+                'twork_sync_skipped' => isset($result['skipped']) ? (int) $result['skipped'] : 0,
+            ),
+            admin_url('admin.php?page=twork-rewards-point-transactions')
+        );
+        wp_safe_redirect($redirect_url);
+        exit;
+    }
+
+    /**
+     * One-time migration helper:
+     * Backfill legacy poll deduction rows that are missing loser resolution snapshot data.
+     *
+     * - Targets only poll cost transactions: order_id LIKE engagement:poll_cost:%
+     * - Prioritizes rows missing result_status or winning_option in meta_json
+     * - Skips winners by checking user interaction against poll correct index
+     *
+     * @param int $batch_limit Max rows per run (safety guard)
+     * @return array{scanned:int, updated:int, skipped:int}
+     */
+    public function twork_sync_legacy_loser_transactions($batch_limit = 100)
+    {
+        global $wpdb;
+
+        $points_table = $wpdb->prefix . 'twork_point_transactions';
+        $items_table = $wpdb->prefix . 'twork_engagement_items';
+        $interactions_table = $wpdb->prefix . 'twork_user_interactions';
+
+        $limit = max(1, min(500, (int) $batch_limit));
+        $cost_like = 'engagement:poll_cost:%';
+
+        // OLD CODE (kept for rollback safety):
+        // Candidate selection targeted only rows that looked unsynced by meta_json patterns.
+        //
+        // New code (Nuclear overwrite mode): pull all poll deduction rows in batch,
+        // then decide force-overwrite at PHP layer.
+        $candidate_rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, user_id, order_id, meta_json
+             FROM $points_table
+             WHERE order_id LIKE %s
+             ORDER BY id ASC
+             LIMIT %d",
+            $cost_like,
+            $limit
+        ), ARRAY_A);
+
+        $updated = 0;
+        $skipped = 0;
+        $poll_cache = array();
+
+        if (!is_array($candidate_rows) || empty($candidate_rows)) {
+            return array('scanned' => 0, 'updated' => 0, 'skipped' => 0);
+        }
+
+        foreach ($candidate_rows as $row) {
+            if (!is_array($row)) {
+                $skipped++;
+                continue;
+            }
+
+            $txn_id = isset($row['id']) ? (int) $row['id'] : 0;
+            $user_id = isset($row['user_id']) ? (int) $row['user_id'] : 0;
+            $order_id = isset($row['order_id']) ? (string) $row['order_id'] : '';
+            if ($txn_id <= 0 || $user_id <= 0 || $order_id === '') {
+                $skipped++;
+                continue;
+            }
+
+            if (!preg_match('/^engagement:poll_cost:(\d+):/', $order_id, $m)) {
+                $skipped++;
+                continue;
+            }
+            $item_id = isset($m[1]) ? (int) $m[1] : 0;
+            if ($item_id <= 0) {
+                $skipped++;
+                continue;
+            }
+
+            if (!isset($poll_cache[$item_id])) {
+                $item_row = $wpdb->get_row($wpdb->prepare(
+                    "SELECT quiz_data
+                     FROM $items_table
+                     WHERE id = %d
+                     LIMIT 1",
+                    $item_id
+                ), ARRAY_A);
+
+                $poll_cache[$item_id] = array(
+                    'is_resolved' => false,
+                    'correct_index' => -1,
+                    'winning_option' => null,
+                );
+
+                if (is_array($item_row) && isset($item_row['quiz_data'])) {
+                    $quiz_data = json_decode((string) $item_row['quiz_data'], true);
+                    if (is_array($quiz_data) && isset($quiz_data['correct_index']) && is_numeric($quiz_data['correct_index'])) {
+                        $correct_index = (int) $quiz_data['correct_index'];
+                        if ($correct_index >= 0) {
+                            // OLD CODE (kept for rollback safety):
+                            // Previous resolver handled common options/answers/choices layouts.
+                            //
+                            // New code: master search resolver for unknown legacy quiz_data schemas.
+                            $is_placeholder_label = static function ($value) {
+                                if (!is_string($value)) {
+                                    return false;
+                                }
+                                $trimmed = trim($value);
+                                return $trimmed === '' || (bool) preg_match('/^Option\s+\d+$/i', $trimmed);
+                            };
+                            $normalize_candidate = static function ($value) use ($is_placeholder_label) {
+                                $candidate = is_string($value) || is_numeric($value) ? trim((string) $value) : '';
+                                if ($candidate === '' || $is_placeholder_label($candidate)) {
+                                    return '';
+                                }
+                                return $candidate;
+                            };
+                            $extract_label_from_node = static function ($node) use ($normalize_candidate) {
+                                if (is_string($node) || is_numeric($node)) {
+                                    return $normalize_candidate($node);
+                                }
+                                if (!is_array($node)) {
+                                    return '';
+                                }
+                                $keys = array(
+                                    'text', 'label', 'value', 'name', 'title',
+                                    'option', 'answer', 'option_text', 'option_label',
+                                    'choice', 'display', 'content',
+                                );
+                                foreach ($keys as $k) {
+                                    if (isset($node[$k])) {
+                                        $candidate = $normalize_candidate($node[$k]);
+                                        if ($candidate !== '') {
+                                            return $candidate;
+                                        }
+                                    }
+                                }
+                                return '';
+                            };
+                            $extract_index_from_node = static function ($node) {
+                                if (!is_array($node)) {
+                                    return null;
+                                }
+                                $idx_keys = array('index', 'id', 'option_index', 'answer_index', 'choice_index', 'position');
+                                foreach ($idx_keys as $k) {
+                                    if (isset($node[$k]) && is_numeric($node[$k])) {
+                                        return (int) $node[$k];
+                                    }
+                                }
+                                return null;
+                            };
+                            $collect_strings_recursive = static function ($node, &$out) use (&$collect_strings_recursive, $normalize_candidate) {
+                                if (is_string($node) || is_numeric($node)) {
+                                    $candidate = $normalize_candidate($node);
+                                    if ($candidate !== '') {
+                                        $out[] = $candidate;
+                                    }
+                                    return;
+                                }
+                                if (!is_array($node)) {
+                                    return;
+                                }
+                                foreach ($node as $child) {
+                                    $collect_strings_recursive($child, $out);
+                                }
+                            };
+
+                            // Step 2: key guessing pool.
+                            $source_arrays = array();
+                            $source_keys = array('options', 'answers', 'choices', 'questions', 'quiz_data', 'mcq_data');
+                            foreach ($source_keys as $src_key) {
+                                if (isset($quiz_data[$src_key]) && is_array($quiz_data[$src_key])) {
+                                    $source_arrays[] = $quiz_data[$src_key];
+                                }
+                            }
+                            if (isset($quiz_data['options']) && is_array($quiz_data['options'])) {
+                                $source_arrays[] = $quiz_data['options'];
+                            }
+                            if (empty($source_arrays)) {
+                                $source_arrays[] = $quiz_data;
+                            }
+
+                            $winning_label = '';
+                            $index_candidates = array($correct_index);
+                            if ($correct_index > 0) {
+                                $index_candidates[] = $correct_index - 1; // Step D (zero-based/backward check)
+                            }
+                            $index_candidates = array_values(array_unique($index_candidates));
+
+                            // Step B + D: direct key/index and object index matching.
+                            foreach ($source_arrays as $src) {
+                                if (!is_array($src)) {
+                                    continue;
+                                }
+                                foreach ($index_candidates as $idx) {
+                                    if (isset($src[$idx])) {
+                                        $candidate = $extract_label_from_node($src[$idx]);
+                                        if ($candidate !== '') {
+                                            $winning_label = $candidate;
+                                            break 2;
+                                        }
+                                    }
+                                }
+                                foreach ($src as $node) {
+                                    if (!is_array($node)) {
+                                        continue;
+                                    }
+                                    $node_index = $extract_index_from_node($node);
+                                    if ($node_index === null) {
+                                        continue;
+                                    }
+                                    foreach ($index_candidates as $idx) {
+                                        if ($node_index === $idx || $node_index === ($idx + 1)) {
+                                            $candidate = $extract_label_from_node($node);
+                                            if ($candidate !== '') {
+                                                $winning_label = $candidate;
+                                                break 3;
+                                            }
+                                        }
+                                    }
+                                }
+                                $src_values = array_values($src);
+                                foreach ($index_candidates as $idx) {
+                                    if (isset($src_values[$idx])) {
+                                        $candidate = $extract_label_from_node($src_values[$idx]);
+                                        if ($candidate !== '') {
+                                            $winning_label = $candidate;
+                                            break 2;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Step 4: root-level option_N / answer_N keys.
+                            if ($winning_label === '') {
+                                foreach ($index_candidates as $idx) {
+                                    $root_keys = array(
+                                        'option_' . ($idx + 1),
+                                        'option_' . $idx,
+                                        'answer_' . ($idx + 1),
+                                        'answer_' . $idx,
+                                        'choice_' . ($idx + 1),
+                                        'choice_' . $idx,
+                                    );
+                                    foreach ($root_keys as $rk) {
+                                        if (isset($quiz_data[$rk])) {
+                                            $candidate = $extract_label_from_node($quiz_data[$rk]);
+                                            if ($candidate !== '') {
+                                                $winning_label = $candidate;
+                                                break 2;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Step 1 + 3 (deep recursive collection as final attempt).
+                            if ($winning_label === '') {
+                                $all_candidates = array();
+                                $collect_strings_recursive($quiz_data, $all_candidates);
+                                $all_candidates = array_values(array_unique(array_filter($all_candidates, 'strlen')));
+                                foreach ($index_candidates as $idx) {
+                                    if (isset($all_candidates[$idx]) && !$is_placeholder_label($all_candidates[$idx])) {
+                                        $winning_label = $all_candidates[$idx];
+                                        break;
+                                    }
+                                }
+                                if ($winning_label === '' && !empty($all_candidates)) {
+                                    $winning_label = $all_candidates[0];
+                                }
+                            }
+
+                            if ($winning_label === '') {
+                                // OLD CODE (kept for rollback safety):
+                                // $winning_label = 'Option ' . ($correct_index + 1);
+                                //
+                                // New code: explicit unknown marker for force-overwrite diagnostics.
+                                $winning_label = '[No Label Found]';
+                            }
+                            $label = $winning_label;
+                            if ($label === '') {
+                                $label = '[No Label Found]';
+                            }
+                            $poll_cache[$item_id] = array(
+                                'is_resolved' => true,
+                                'correct_index' => $correct_index,
+                                'winning_option' => array(
+                                    'index' => $correct_index,
+                                    'label' => $label,
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+
+            $poll_info = $poll_cache[$item_id];
+            if (!is_array($poll_info) || empty($poll_info['is_resolved'])) {
+                $skipped++;
+                continue;
+            }
+
+            // Skip winners: migration is for loser deduction snapshots only.
+            $latest_interaction = $wpdb->get_var($wpdb->prepare(
+                "SELECT interaction_value
+                 FROM $interactions_table
+                 WHERE user_id = %d AND item_id = %d
+                 ORDER BY id DESC
+                 LIMIT 1",
+                $user_id,
+                $item_id
+            ));
+            if (
+                is_string($latest_interaction) &&
+                $latest_interaction !== '' &&
+                $this->user_answer_contains_correct_index($latest_interaction, (int) $poll_info['correct_index'])
+            ) {
+                $skipped++;
+                continue;
+            }
+
+            $meta_payload = array();
+            $meta_raw = isset($row['meta_json']) ? trim((string) $row['meta_json']) : '';
+            if ($meta_raw !== '') {
+                $decoded_meta = json_decode($meta_raw, true);
+                if (is_array($decoded_meta)) {
+                    $meta_payload = $decoded_meta;
+                }
+            }
+            // OLD CODE (kept for rollback safety):
+            // Some versions skipped rows if winning_option already existed.
+            //
+            // New code: force-overwrite remains enabled for placeholder values;
+            // do not short-circuit when winning_option key exists.
+
+            $meta_overlay = array(
+                'result_status' => 'lost',
+                'winning_option' => $poll_info['winning_option'],
+                'win_option' => $poll_info['winning_option'],
+                'won_amount_pnp' => 0,
+                'win_amount' => 0,
+            );
+            $merged_meta = array_merge($meta_payload, $meta_overlay);
+
+            $update_result = $wpdb->update(
+                $points_table,
+                array('meta_json' => wp_json_encode($merged_meta)),
+                array('id' => $txn_id),
+                array('%s'),
+                array('%d')
+            );
+            if ($update_result !== false) {
+                $updated++;
+            } else {
+                $skipped++;
+            }
+        }
+
+        return array(
+            'scanned' => count($candidate_rows),
+            'updated' => $updated,
+            'skipped' => $skipped,
+        );
     }
 
     /**
@@ -1388,6 +1788,8 @@ class TWork_Rewards_System
             is_expired tinyint(1) DEFAULT 0,
             status varchar(20) NOT NULL DEFAULT 'approved',
             meta_json longtext DEFAULT NULL,
+            selected_option text DEFAULT NULL,
+            bet_amount decimal(10,2) DEFAULT NULL,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             KEY idx_user_id (user_id),
@@ -1630,6 +2032,39 @@ class TWork_Rewards_System
                     error_log('T-Work Rewards: Failed to add meta_json column. Error: ' . $wpdb->last_error);
                 }
             }
+        }
+
+        // OLD CODE: No explicit V2 migration for selected_option / bet_amount on points ledger.
+        // New code: idempotent column migration with flag for safe upgrades.
+        $tx_migration_v2_done = get_option('twork_tx_migration_v2', false);
+        if (!$tx_migration_v2_done && $points_table_exists === $points_table) {
+            $selected_col = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SHOW COLUMNS FROM `" . esc_sql($points_table) . "` LIKE %s",
+                    'selected_option'
+                )
+            );
+            if (empty($selected_col)) {
+                $result = $wpdb->query("ALTER TABLE `" . esc_sql($points_table) . "` ADD COLUMN `selected_option` text DEFAULT NULL AFTER `meta_json`");
+                if ($result === false) {
+                    error_log('T-Work Rewards: Failed to add selected_option column. Error: ' . $wpdb->last_error);
+                }
+            }
+
+            $bet_amount_col = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SHOW COLUMNS FROM `" . esc_sql($points_table) . "` LIKE %s",
+                    'bet_amount'
+                )
+            );
+            if (empty($bet_amount_col)) {
+                $result = $wpdb->query("ALTER TABLE `" . esc_sql($points_table) . "` ADD COLUMN `bet_amount` decimal(10,2) DEFAULT NULL AFTER `selected_option`");
+                if ($result === false) {
+                    error_log('T-Work Rewards: Failed to add bet_amount column. Error: ' . $wpdb->last_error);
+                }
+            }
+
+            update_option('twork_tx_migration_v2', true);
         }
 
         // BIGINT migration: support very large point values safely.
@@ -2217,17 +2652,15 @@ class TWork_Rewards_System
                                     <p style="margin: 10px 0; font-size: 13px; color: #666;">
                                         <?php esc_html_e('Send a test notification to verify the notification system is working correctly.', 'twork-rewards'); ?>
                                     </p>
-                                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                        <?php wp_nonce_field('twork_rewards_test_notification', 'twork_rewards_test_notification_nonce'); ?>
-                                        <input type="hidden" name="action" value="twork_rewards_test_notification" />
-                                        <input type="number" name="test_user_id" placeholder="<?php esc_attr_e('User ID (optional)', 'twork-rewards'); ?>" 
-                                               style="width: 200px; padding: 6px 8px; font-size: 13px;" 
+                                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                        <input type="number" name="test_user_id" form="twork-test-notification-form" placeholder="<?php esc_attr_e('User ID (optional)', 'twork-rewards'); ?>"
+                                               style="width: 200px; padding: 6px 8px; font-size: 13px;"
                                                value="<?php echo esc_attr(get_current_user_id()); ?>" min="1" />
-                                        <button type="submit" class="button button-secondary">
+                                        <button type="submit" form="twork-test-notification-form" class="button button-secondary">
                                             <span class="dashicons dashicons-email-alt" style="vertical-align: middle; font-size: 16px;"></span>
                                             <?php esc_html_e('Send Test Notification', 'twork-rewards'); ?>
                                         </button>
-                                    </form>
+                                    </div>
                                     <?php if (isset($_GET['test_notification_sent'])): ?>
                                         <div style="margin-top: 10px; padding: 10px; background: #d4edda; border-left: 3px solid #46b450; border-radius: 3px;">
                                             <strong style="color: #155724;"><?php esc_html_e('✅ Test notification sent!', 'twork-rewards'); ?></strong>
@@ -3033,7 +3466,11 @@ class TWork_Rewards_System
                         </td>
                     </tr>
                 </table>
-                <?php submit_button(__('Save Settings', 'twork-rewards')); ?>
+                <?php submit_button(__('Save Settings', 'twork-rewards'), 'primary', 'submit'); ?>
+            </form>
+            <form id="twork-test-notification-form" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:none;">
+                <?php wp_nonce_field('twork_rewards_test_notification', 'twork_rewards_test_notification_nonce'); ?>
+                <input type="hidden" name="action" value="twork_rewards_test_notification" />
             </form>
         </div>
         <?php
@@ -3041,15 +3478,44 @@ class TWork_Rewards_System
 
     public function handle_settings_save()
     {
+        // Clear any other actions and focus only on saving.
+        if (!isset($_POST['action']) || $_POST['action'] !== 'twork_rewards_save_settings') {
+            error_log("T-Work Trace: Blocked unwanted action: " . ($_POST['action'] ?? 'none'));
+            return;
+        }
+
+        check_admin_referer('twork_rewards_save_settings');
+
         if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
             wp_die(__('Insufficient permissions.', 'twork-rewards'));
         }
-        die('Reached here');
-        check_admin_referer('twork_rewards_save_settings');
-        die('2. Nonce Passed');
-        error_log("T-Work Trace: POST Data Received: " . print_r($_POST, true));
+        $get_sanitized_text_or_existing = static function ($post_key, $option_key, $default = '') {
+            if (!isset($_POST[$post_key])) {
+                return get_option($option_key, $default);
+            }
 
-        $url = isset($_POST['twork_rewards_webhook_url']) ? esc_url_raw(wp_unslash($_POST['twork_rewards_webhook_url'])) : '';
+            $raw_value = trim((string) wp_unslash($_POST[$post_key]));
+            if ($raw_value === '') {
+                return get_option($option_key, $default);
+            }
+
+            return sanitize_text_field($raw_value);
+        };
+
+        $get_sanitized_url_or_existing = static function ($post_key, $option_key, $default = '') {
+            if (!isset($_POST[$post_key])) {
+                return get_option($option_key, $default);
+            }
+
+            $raw_value = trim((string) wp_unslash($_POST[$post_key]));
+            if ($raw_value === '') {
+                return get_option($option_key, $default);
+            }
+
+            return esc_url_raw($raw_value);
+        };
+
+        $url = $get_sanitized_url_or_existing('twork_rewards_webhook_url', 'twork_rewards_webhook_url', '');
         update_option('twork_rewards_webhook_url', $url);
 
         // Get old value before updating
@@ -3062,38 +3528,34 @@ class TWork_Rewards_System
         $vote_enabled = isset($_POST['twork_rewards_vote_enabled']) ? 1 : 0;
         update_option(self::OPTION_VOTE_ENABLED, $vote_enabled);
 
-        // Save Lucky Box banner content
-        $luckybox_banner = isset($_POST['twork_rewards_luckybox_banner']) ? wp_kses_post(wp_unslash($_POST['twork_rewards_luckybox_banner'])) : '';
+        // Save Lucky Box banner content (preserve existing when input is empty).
+        $existing_luckybox_banner = (string) get_option(self::OPTION_LUCKYBOX_BANNER, '');
+        $luckybox_banner_raw = isset($_POST['twork_rewards_luckybox_banner']) ? trim((string) wp_unslash($_POST['twork_rewards_luckybox_banner'])) : '';
+        $luckybox_banner = $luckybox_banner_raw === '' ? $existing_luckybox_banner : wp_kses_post($luckybox_banner_raw);
         update_option(self::OPTION_LUCKYBOX_BANNER, $luckybox_banner);
 
-        // Consolidated minimum exchange points save logic with safe fallback.
-        $raw_min_exchange_points = isset($_POST['twork_v2_min_exchange_points']) ? wp_unslash($_POST['twork_v2_min_exchange_points']) : '';
-        $existing_min_raw = get_option('twork_v2_min_exchange_points', 100);
-        $existing_min = self::normalize_min_exchange_points($existing_min_raw, 100);
-        $min_exchange_points = self::normalize_min_exchange_points($raw_min_exchange_points, $existing_min);
-        $min_exchange_points = max(1, min(TWORK_MAX_MIN_EXCHANGE, absint($min_exchange_points)));
-        die('3. Update Ready: ' . (isset($_POST['twork_v2_min_exchange_points']) ? wp_unslash($_POST['twork_v2_min_exchange_points']) : ''));
-        $update_result = update_option('twork_v2_min_exchange_points', $min_exchange_points);
-        error_log(
-            sprintf(
-                'T-Work Trace: update_option(twork_v2_min_exchange_points) result=%s value=%d',
-                $update_result ? 'true' : 'false',
-                (int) $min_exchange_points
-            )
-        );
+        // Update minimum exchange points only when setting payload is present.
+        if (isset($_POST['twork_v2_min_exchange_points'])) {
+            $raw_min_exchange_points = trim((string) wp_unslash($_POST['twork_v2_min_exchange_points']));
+            $existing_min_raw = get_option('twork_v2_min_exchange_points', 100);
+            $existing_min = self::normalize_min_exchange_points($existing_min_raw, 100);
+            $min_exchange_points = self::normalize_min_exchange_points($raw_min_exchange_points, $existing_min);
+            $min_exchange_points = max(1, min(TWORK_MAX_MIN_EXCHANGE, absint($min_exchange_points)));
+            update_option('twork_v2_min_exchange_points', (string) $min_exchange_points);
+        }
 
         // Save app update settings
         $app_update_enabled = isset($_POST['twork_rewards_app_update_enabled']) ? 1 : 0;
         update_option('twork_rewards_app_update_enabled', $app_update_enabled);
 
-        $app_update_link = isset($_POST['twork_rewards_app_update_link']) ? esc_url_raw(wp_unslash($_POST['twork_rewards_app_update_link'])) : '';
+        $app_update_link = $get_sanitized_url_or_existing('twork_rewards_app_update_link', 'twork_rewards_app_update_link', '');
         update_option('twork_rewards_app_update_link', $app_update_link);
 
-        $app_update_version = isset($_POST['twork_rewards_app_update_version']) ? sanitize_text_field(wp_unslash($_POST['twork_rewards_app_update_version'])) : '';
+        $app_update_version = $get_sanitized_text_or_existing('twork_rewards_app_update_version', 'twork_rewards_app_update_version', '');
         update_option('twork_rewards_app_update_version', $app_update_version);
 
         // Save timezone setting
-        $timezone = isset($_POST['twork_rewards_timezone']) ? sanitize_text_field(wp_unslash($_POST['twork_rewards_timezone'])) : 'Asia/Yangon';
+        $timezone = $get_sanitized_text_or_existing('twork_rewards_timezone', 'twork_rewards_timezone', 'Asia/Yangon');
         // Validate timezone
         if (empty($timezone) || !in_array($timezone, timezone_identifiers_list(), true)) {
             $timezone = 'Asia/Yangon';  // Default to Myanmar timezone if invalid
@@ -3112,18 +3574,8 @@ class TWork_Rewards_System
             ));
         }
 
-        // PROFESSIONAL FEATURE: Log vote setting change for audit purposes
-        if ($old_vote_enabled !== $vote_enabled) {
-            if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log(sprintf(
-                    'T-Work Rewards: Vote system %s globally by user %d',
-                    $vote_enabled ? 'enabled' : 'disabled',
-                    get_current_user_id()
-                ));
-            }
-        }
-
-        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-settings', 'updated' => 1), admin_url('admin.php')));
+        wp_cache_flush();
+        wp_redirect(admin_url('admin.php?page=twork-rewards-settings&settings-updated=true'));
         exit;
     }
 
@@ -5394,18 +5846,163 @@ class TWork_Rewards_System
                     $item_title,
                     $user_reward_points
                 );
-                $winner_txn_meta = array(
+                // OLD CODE:
+                // $winner_txn_meta = array(
+                //     'poll_id' => (int) $item_id,
+                //     'poll_title' => (string) $item_title,
+                //     'session_id' => (string) $session_id,
+                //     'result_status' => 'won',
+                //     'won_amount_pnp' => (int) $user_reward_points,
+                //     'total_bet_pnp' => 0,
+                // );
+                //
+                // New code: build winner meta from primary interaction snapshot, then
+                // overlay winner fields with null-safe merge and completeness guardrails.
+                $resolved_meta_decoded = json_decode($resolved_meta, true);
+                $winner_base_snapshot = is_array($resolved_meta_decoded) ? $resolved_meta_decoded : array();
+
+                // 100% completeness guardrails: ensure bet snapshot has selected_options + total_bet_pnp.
+                $has_selected_options = isset($winner_base_snapshot['selected_options']) && is_array($winner_base_snapshot['selected_options']) && !empty($winner_base_snapshot['selected_options']);
+                $has_total_bet = isset($winner_base_snapshot['total_bet_pnp']) && is_numeric($winner_base_snapshot['total_bet_pnp']) && (int) round((float) $winner_base_snapshot['total_bet_pnp']) > 0;
+
+                // Fallback #1: hydrate from stored interaction_meta on winning interaction row.
+                if ((!$has_selected_options || !$has_total_bet) && isset($row['interaction_meta']) && is_string($row['interaction_meta']) && trim($row['interaction_meta']) !== '') {
+                    $interaction_meta_decoded = json_decode($row['interaction_meta'], true);
+                    if (is_array($interaction_meta_decoded)) {
+                        if (
+                            !$has_selected_options &&
+                            isset($interaction_meta_decoded['selected_options']) &&
+                            is_array($interaction_meta_decoded['selected_options']) &&
+                            !empty($interaction_meta_decoded['selected_options'])
+                        ) {
+                            $winner_base_snapshot['selected_options'] = $interaction_meta_decoded['selected_options'];
+                            $has_selected_options = true;
+                        }
+                        if (
+                            !$has_total_bet &&
+                            isset($interaction_meta_decoded['total_bet_pnp']) &&
+                            is_numeric($interaction_meta_decoded['total_bet_pnp']) &&
+                            (int) round((float) $interaction_meta_decoded['total_bet_pnp']) > 0
+                        ) {
+                            $winner_base_snapshot['total_bet_pnp'] = (int) round((float) $interaction_meta_decoded['total_bet_pnp']);
+                            $has_total_bet = true;
+                        }
+                        if (!$has_total_bet && $has_selected_options) {
+                            $rehydrated_total = 0;
+                            foreach ($winner_base_snapshot['selected_options'] as $opt) {
+                                if (is_array($opt) && isset($opt['bet_pnp']) && is_numeric($opt['bet_pnp'])) {
+                                    $rehydrated_total += max(0, (int) round((float) $opt['bet_pnp']));
+                                }
+                            }
+                            if ($rehydrated_total > 0) {
+                                $winner_base_snapshot['total_bet_pnp'] = $rehydrated_total;
+                                $has_total_bet = true;
+                            }
+                        }
+                    }
+                }
+
+                // Fallback #2: hydrate from latest deduction transaction meta snapshot.
+                if (!$has_selected_options || !$has_total_bet) {
+                    $points_table = $wpdb->prefix . 'twork_point_transactions';
+                    $cost_like = 'engagement:poll_cost:' . (int) $item_id . ':%';
+                    $deduction_rows = $wpdb->get_results($wpdb->prepare(
+                        "SELECT meta_json, selected_option, bet_amount
+                         FROM $points_table
+                         WHERE user_id = %d AND order_id LIKE %s
+                         ORDER BY id DESC
+                         LIMIT 5",
+                        $user_id,
+                        $cost_like
+                    ), ARRAY_A);
+                    if (is_array($deduction_rows) && !empty($deduction_rows)) {
+                        foreach ($deduction_rows as $deduction_row) {
+                            if (!is_array($deduction_row)) {
+                                continue;
+                            }
+                            $deduction_meta = array();
+                            $deduction_meta_raw = isset($deduction_row['meta_json']) ? trim((string) $deduction_row['meta_json']) : '';
+                            if ($deduction_meta_raw !== '') {
+                                $decoded_deduction_meta = json_decode($deduction_meta_raw, true);
+                                if (is_array($decoded_deduction_meta)) {
+                                    $deduction_meta = $decoded_deduction_meta;
+                                }
+                            }
+                            if (
+                                !$has_selected_options &&
+                                isset($deduction_meta['selected_options']) &&
+                                is_array($deduction_meta['selected_options']) &&
+                                !empty($deduction_meta['selected_options'])
+                            ) {
+                                $winner_base_snapshot['selected_options'] = $deduction_meta['selected_options'];
+                                $has_selected_options = true;
+                            }
+                            if (
+                                !$has_total_bet &&
+                                isset($deduction_meta['total_bet_pnp']) &&
+                                is_numeric($deduction_meta['total_bet_pnp']) &&
+                                (int) round((float) $deduction_meta['total_bet_pnp']) > 0
+                            ) {
+                                $winner_base_snapshot['total_bet_pnp'] = (int) round((float) $deduction_meta['total_bet_pnp']);
+                                $has_total_bet = true;
+                            }
+                            if (
+                                !$has_total_bet &&
+                                isset($deduction_row['bet_amount']) &&
+                                is_numeric($deduction_row['bet_amount']) &&
+                                (int) round((float) $deduction_row['bet_amount']) > 0
+                            ) {
+                                $winner_base_snapshot['total_bet_pnp'] = (int) round((float) $deduction_row['bet_amount']);
+                                $has_total_bet = true;
+                            }
+                            if ($has_selected_options && $has_total_bet) {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                $winner_overlay = array(
                     'poll_id' => (int) $item_id,
                     'poll_title' => (string) $item_title,
                     'session_id' => (string) $session_id,
                     'result_status' => 'won',
                     'won_amount_pnp' => (int) $user_reward_points,
-                    'total_bet_pnp' => 0,
+                    'win_amount' => (int) $user_reward_points,
+                    'winning_option' => isset($winner_base_snapshot['winning_option']) && is_array($winner_base_snapshot['winning_option'])
+                        ? $winner_base_snapshot['winning_option']
+                        : null,
+                    'win_option' => isset($winner_base_snapshot['win_option']) && is_array($winner_base_snapshot['win_option'])
+                        ? $winner_base_snapshot['win_option']
+                        : null,
                 );
-                $resolved_meta_decoded = json_decode($resolved_meta, true);
-                if (is_array($resolved_meta_decoded)) {
-                    $winner_txn_meta = array_merge($resolved_meta_decoded, $winner_txn_meta);
+                if (!isset($winner_overlay['winning_option']) || !is_array($winner_overlay['winning_option'])) {
+                    $winner_overlay['winning_option'] = isset($winner_base_snapshot['win_option']) && is_array($winner_base_snapshot['win_option'])
+                        ? $winner_base_snapshot['win_option']
+                        : null;
                 }
+                if (!isset($winner_overlay['win_option']) || !is_array($winner_overlay['win_option'])) {
+                    $winner_overlay['win_option'] = isset($winner_base_snapshot['winning_option']) && is_array($winner_base_snapshot['winning_option'])
+                        ? $winner_base_snapshot['winning_option']
+                        : null;
+                }
+
+                // OLD CODE (kept for rollback safety):
+                // $winner_txn_meta = array_merge($resolved_meta_decoded, $winner_txn_meta_non_null);
+                //
+                // New code: null-safe overlay to protect base bet snapshot values.
+                $winner_overlay_non_null = array_filter(
+                    $winner_overlay,
+                    function ($value) {
+                        return $value !== null;
+                    }
+                );
+                $winner_txn_meta = array_merge($winner_base_snapshot, $winner_overlay_non_null);
+                if (!isset($winner_txn_meta['won_amount_pnp']) || (int) $winner_txn_meta['won_amount_pnp'] <= 0) {
+                    $winner_txn_meta['won_amount_pnp'] = (int) $user_reward_points;
+                }
+                $winner_txn_meta['win_amount'] = (int) $winner_txn_meta['won_amount_pnp'];
+                $winner_txn_meta['result_status'] = 'won';
                 $this->sync_user_points(
                     $user_id,
                     (float) $user_reward_points,
@@ -5443,6 +6040,140 @@ class TWork_Rewards_System
 
                 $awarded++;
                 $total_points += $user_reward_points;
+            }
+        }
+
+        // OLD CODE (kept for rollback safety):
+        // return array('awarded' => $awarded, 'total_points' => $total_points);
+        //
+        // New code: after awarding winners, resolve loser deduction snapshots
+        // so Admin/API can show actual result for non-winning bets.
+        $points_table = $wpdb->prefix . 'twork_point_transactions';
+        $cost_like = 'engagement:poll_cost:' . (int) $item_id . ':%';
+
+        $winner_user_ids = array();
+        foreach ($interactions as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if (!$this->user_answer_contains_correct_index($row['interaction_value'], $correct_index)) {
+                continue;
+            }
+            $winner_user_id = isset($row['user_id']) ? (int) $row['user_id'] : 0;
+            if ($winner_user_id > 0) {
+                $winner_user_ids[$winner_user_id] = true;
+            }
+        }
+
+        $candidate_cost_rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, user_id, meta_json, selected_option, bet_amount
+             FROM $points_table
+             WHERE order_id LIKE %s
+             ORDER BY id DESC",
+            $cost_like
+        ), ARRAY_A);
+
+        if (is_array($candidate_cost_rows) && !empty($candidate_cost_rows)) {
+            // OLD CODE (kept for rollback safety):
+            // $winning_option_payload = null;
+            // if (isset($quiz_data[$correct_index])) {
+            //     $winning_option_payload = array(
+            //         'index' => $correct_index,
+            //         'label' => (string) $quiz_data[$correct_index],
+            //     );
+            // } else {
+            //     $winning_option_payload = array(
+            //         'index' => $correct_index,
+            //         'label' => 'Option ' . ($correct_index + 1),
+            //     );
+            // }
+            //
+            // New code: canonical poll option lookup from quiz_data['options'] with text normalization.
+            $options = isset($quiz_data['options']) && is_array($quiz_data['options']) ? $quiz_data['options'] : array();
+            $target_option = isset($options[$correct_index]) ? $options[$correct_index] : null;
+            $label = 'Option ' . ($correct_index + 1);
+            if ($target_option !== null) {
+                if (is_array($target_option)) {
+                    $normalized_text = isset($target_option['text']) ? trim((string) $target_option['text']) : '';
+                    if ($normalized_text !== '') {
+                        $label = $normalized_text;
+                    }
+                } else {
+                    $normalized_text = trim((string) $target_option);
+                    if ($normalized_text !== '') {
+                        $label = $normalized_text;
+                    }
+                }
+            }
+            $winning_option_payload = array(
+                'index' => $correct_index,
+                'label' => (string) $label,
+            );
+
+            $seen_loser_users = array();
+            foreach ($candidate_cost_rows as $cost_row) {
+                if (!is_array($cost_row)) {
+                    continue;
+                }
+                $cost_row_id = isset($cost_row['id']) ? (int) $cost_row['id'] : 0;
+                $cost_user_id = isset($cost_row['user_id']) ? (int) $cost_row['user_id'] : 0;
+                if ($cost_row_id <= 0 || $cost_user_id <= 0) {
+                    continue;
+                }
+                if (isset($winner_user_ids[$cost_user_id])) {
+                    continue;
+                }
+                // Update only latest deduction row per loser for this poll/session scope.
+                if (isset($seen_loser_users[$cost_user_id])) {
+                    continue;
+                }
+                $seen_loser_users[$cost_user_id] = true;
+
+                $cost_meta_raw = isset($cost_row['meta_json']) ? trim((string) $cost_row['meta_json']) : '';
+                $cost_meta = array();
+                if ($cost_meta_raw !== '') {
+                    $decoded_cost_meta = json_decode($cost_meta_raw, true);
+                    if (is_array($decoded_cost_meta)) {
+                        $cost_meta = $decoded_cost_meta;
+                    }
+                }
+
+                if (
+                    (!isset($cost_meta['selected_option']) || trim((string) $cost_meta['selected_option']) === '') &&
+                    isset($cost_row['selected_option']) &&
+                    trim((string) $cost_row['selected_option']) !== ''
+                ) {
+                    $cost_meta['selected_option'] = trim((string) $cost_row['selected_option']);
+                }
+                if (
+                    (!isset($cost_meta['bet_amount']) || !is_numeric($cost_meta['bet_amount'])) &&
+                    isset($cost_row['bet_amount']) &&
+                    is_numeric($cost_row['bet_amount'])
+                ) {
+                    $cost_meta['bet_amount'] = (int) round((float) $cost_row['bet_amount']);
+                }
+
+                $loser_overlay = array(
+                    'poll_id' => (int) $item_id,
+                    'poll_title' => (string) $item_title,
+                    'session_id' => (string) $session_id,
+                    'result_status' => 'lost',
+                    'winning_option' => $winning_option_payload,
+                    'win_option' => $winning_option_payload,
+                    'won_amount_pnp' => 0,
+                    'win_amount' => 0,
+                );
+                $updated_cost_meta = array_merge($cost_meta, $loser_overlay);
+
+                $wpdb->update(
+                    $points_table,
+                    array(
+                        'meta_json' => wp_json_encode($updated_cost_meta),
+                    ),
+                    array('id' => $cost_row_id),
+                    array('%s'),
+                    array('%d')
+                );
             }
         }
 
@@ -6641,6 +7372,11 @@ class TWork_Rewards_System
             $is_correct = false;
             $message = 'Thanks for participating!';
             $poll_bet_amount_to_store = 1;
+            $poll_bet_amount_per_option_to_store = null;
+            // Snapshot values for ledger writes (poll only).
+            $selected_option_snapshot = null;
+            $bet_amount_snapshot = null;
+            $interaction_meta_payload = null;
 
             // Banner / Announcement: record view, optionally award points
             if ($item['type'] === 'banner' || $item['type'] === 'announcement') {
@@ -6711,6 +7447,13 @@ class TWork_Rewards_System
                         'success' => false,
                         'message' => 'Please select at least one option.',
                     ), 400);
+                }
+                // Sanitize selected options as comma-separated digits only.
+                $selected_option_snapshot = preg_replace('/[^0-9,\s\-]/', '', $answer);
+                $selected_option_snapshot = preg_replace('/\s+/', '', (string) $selected_option_snapshot);
+                $selected_option_snapshot = trim((string) $selected_option_snapshot, ',');
+                if ($selected_option_snapshot === '') {
+                    $selected_option_snapshot = null;
                 }
                 // Point deduction: Deduct from actual point balance before recording vote (must match Flutter _effectiveBaseCost)
                 $poll_base_cost = isset($quiz_data['poll_base_cost']) ? max(0, (int) $quiz_data['poll_base_cost']) : 0;
@@ -6857,6 +7600,59 @@ class TWork_Rewards_System
                     // New Code:
                     // Compare normalized integer values only.
                     $safe_total_cost = $normalize_point_value($total_cost);
+                    // Persist final resolved total spend in PNP on transaction rows.
+                    $bet_amount_snapshot = number_format((float) $safe_total_cost, 2, '.', '');
+                    $meta_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
+                    if ($meta_step <= 0 && isset($quiz_data['poll_base_cost'])) {
+                        $base = max(0, (int) $quiz_data['poll_base_cost']);
+                        $meta_step = $base > 0 ? ($base < 1000 ? $base * 1000 : $base) : 1000;
+                    }
+                    // Build payload before branch split so both deduction paths use the same snapshot.
+                    $interaction_meta_payload = $this->build_poll_interaction_meta_payload(
+                        $answer,
+                        $meta_step,
+                        max(1, (int) $poll_bet_amount_to_store),
+                        isset($poll_bet_amount_per_option_to_store) ? $poll_bet_amount_per_option_to_store : null,
+                        isset($quiz_data) && is_array($quiz_data) ? $quiz_data : array(),
+                        null,
+                        0,
+                        'pending'
+                    );
+                    $order_id = 'engagement:poll_cost:' . $item_id . ':' . time();
+                    $description = sprintf(
+                        'Poll entry cost: %s (-%d points)',
+                        isset($item['title']) ? $item['title'] : ('Poll #' . $item_id),
+                        $safe_total_cost
+                    );
+                    // OLD CODE:
+                    // $poll_txn_meta = array(
+                    //     'poll_id' => (int) $item_id,
+                    //     'poll_title' => isset($item['title']) ? (string) $item['title'] : '',
+                    //     'session_id' => (string) $check_session_id,
+                    //     'result_status' => 'lost',
+                    //     'won_amount_pnp' => 0,
+                    //     'total_bet_pnp' => (int) $safe_total_cost,
+                    // );
+                    //
+                    // New code: initial bet snapshot must remain pending until winner resolution.
+                    $poll_txn_meta = array(
+                        'poll_id' => (int) $item_id,
+                        'poll_title' => isset($item['title']) ? (string) $item['title'] : '',
+                        'session_id' => (string) $check_session_id,
+                        'result_status' => 'pending',
+                        'won_amount_pnp' => 0,
+                        'win_amount' => 0,
+                        'total_bet_pnp' => (int) $safe_total_cost,
+                        'winning_option' => null,
+                        'win_option' => null,
+                    );
+                    if (is_string($interaction_meta_payload) && $interaction_meta_payload !== '') {
+                        $decoded_interaction_meta = json_decode($interaction_meta_payload, true);
+                        if (is_array($decoded_interaction_meta)) {
+                            $poll_txn_meta = array_merge($decoded_interaction_meta, $poll_txn_meta);
+                        }
+                    }
+                    $poll_txn_meta_json = wp_json_encode($poll_txn_meta);
                     $safe_balance = $normalize_point_value($balance);
                     if ($safe_balance < $safe_total_cost) {
                         return new WP_REST_Response(array(
@@ -6871,8 +7667,30 @@ class TWork_Rewards_System
                     // Deduct from actual point balance
                     if ($use_points_system) {
                         // When T-Work Points System is active, delegate deduction there.
-                        $description = sprintf('Poll vote - item %d', $item_id);
-                        $new_balance = $pts->deduct_for_poll_vote($user_id, $safe_total_cost, $description);
+                        // Backward compatible: call expanded signature when available, fallback to legacy 3 args.
+                        $new_balance = false;
+                        $used_legacy_poll_deduct_fallback = false;
+                        try {
+                            $deduct_method = new ReflectionMethod($pts, 'deduct_for_poll_vote');
+                            $required_params = $deduct_method->getNumberOfRequiredParameters();
+                            $total_params = $deduct_method->getNumberOfParameters();
+                            if ($total_params >= 7) {
+                                $new_balance = $pts->deduct_for_poll_vote(
+                                    $user_id,
+                                    $safe_total_cost,
+                                    $description,
+                                    $order_id,
+                                    $poll_txn_meta_json,
+                                    $selected_option_snapshot,
+                                    $bet_amount_snapshot
+                                );
+                            } elseif ($required_params <= 3) {
+                                $used_legacy_poll_deduct_fallback = true;
+                                $new_balance = $pts->deduct_for_poll_vote($user_id, $safe_total_cost, $description);
+                            }
+                        } catch (Exception $e) {
+                            error_log('T-Work Rewards: deduct_for_poll_vote invocation failed: ' . $e->getMessage());
+                        }
                         if ($new_balance === false) {
                             return new WP_REST_Response(array(
                                 'success' => false,
@@ -6880,36 +7698,63 @@ class TWork_Rewards_System
                                 'code' => 'deduction_failed',
                             ), 500);
                         }
+                        // OLD CODE (kept for rollback safety):
+                        // Legacy deduct_for_poll_vote(3 args) could silently skip rich snapshot persistence.
+                        //
+                        // New code: immediate reconciliation for legacy fallback to self-heal
+                        // selected_options/total_bet_pnp on the exact deduction row.
+                        if ($used_legacy_poll_deduct_fallback && is_string($order_id) && $order_id !== '') {
+                            $points_table = $wpdb->prefix . 'twork_point_transactions';
+                            $deduct_row = $wpdb->get_row($wpdb->prepare(
+                                "SELECT id, meta_json
+                                 FROM $points_table
+                                 WHERE user_id = %d AND order_id = %s
+                                 ORDER BY id DESC
+                                 LIMIT 1",
+                                $user_id,
+                                $order_id
+                            ), ARRAY_A);
+                            if (is_array($deduct_row) && isset($deduct_row['id'])) {
+                                $current_meta = array();
+                                $current_meta_raw = isset($deduct_row['meta_json']) ? trim((string) $deduct_row['meta_json']) : '';
+                                if ($current_meta_raw !== '') {
+                                    $decoded_current_meta = json_decode($current_meta_raw, true);
+                                    if (is_array($decoded_current_meta)) {
+                                        $current_meta = $decoded_current_meta;
+                                    }
+                                }
+
+                                $reconciled_snapshot = array();
+                                if (is_string($poll_txn_meta_json) && trim($poll_txn_meta_json) !== '') {
+                                    $decoded_reconciled_snapshot = json_decode($poll_txn_meta_json, true);
+                                    if (is_array($decoded_reconciled_snapshot)) {
+                                        $reconciled_snapshot = $decoded_reconciled_snapshot;
+                                    }
+                                }
+                                if (!empty($reconciled_snapshot)) {
+                                    $reconciled_meta = array_merge($current_meta, $reconciled_snapshot);
+                                    $wpdb->update(
+                                        $points_table,
+                                        array('meta_json' => wp_json_encode($reconciled_meta)),
+                                        array('id' => (int) $deduct_row['id']),
+                                        array('%s'),
+                                        array('%d')
+                                    );
+                                }
+                            }
+                        }
                     } else {
                         // Rewards-only (no T-Work Points System): record poll entry cost as a transaction
                         // and let sync_user_points handle both transactions table and cache meta fields.
-                        $order_id = 'engagement:poll_cost:' . $item_id . ':' . time();
-                        $description = sprintf(
-                            'Poll entry cost: %s (-%d points)',
-                            isset($item['title']) ? $item['title'] : ('Poll #' . $item_id),
-                            $safe_total_cost
-                        );
-                        $poll_txn_meta = array(
-                            'poll_id' => (int) $item_id,
-                            'poll_title' => isset($item['title']) ? (string) $item['title'] : '',
-                            'session_id' => (string) $check_session_id,
-                            'result_status' => 'lost',
-                            'won_amount_pnp' => 0,
-                            'total_bet_pnp' => (int) $safe_total_cost,
-                        );
-                        if (is_string($interaction_meta_payload) && $interaction_meta_payload !== '') {
-                            $decoded_interaction_meta = json_decode($interaction_meta_payload, true);
-                            if (is_array($decoded_interaction_meta)) {
-                                $poll_txn_meta = array_merge($decoded_interaction_meta, $poll_txn_meta);
-                            }
-                        }
                         $this->sync_user_points(
                             $user_id,
                             -1 * (float) $safe_total_cost,
                             $order_id,
                             $description,
                             true,
-                            wp_json_encode($poll_txn_meta)
+                            $poll_txn_meta_json,
+                            $selected_option_snapshot,
+                            $bet_amount_snapshot
                         );
                     }
                 }
@@ -6925,23 +7770,24 @@ class TWork_Rewards_System
             // Record interaction (or update if poll vote changed)
             $interaction_id = 0;
             $is_vote_update = false;  // Initialize flag for vote updates
-            $interaction_meta_payload = null;
             if ($item['type'] === 'poll') {
-                $meta_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
-                if ($meta_step <= 0 && isset($quiz_data['poll_base_cost'])) {
-                    $base = max(0, (int) $quiz_data['poll_base_cost']);
-                    $meta_step = $base > 0 ? ($base < 1000 ? $base * 1000 : $base) : 1000;
+                if (!is_string($interaction_meta_payload) || $interaction_meta_payload === '') {
+                    $meta_step = isset($quiz_data['bet_amount_step']) ? max(1, (int) $quiz_data['bet_amount_step']) : 1000;
+                    if ($meta_step <= 0 && isset($quiz_data['poll_base_cost'])) {
+                        $base = max(0, (int) $quiz_data['poll_base_cost']);
+                        $meta_step = $base > 0 ? ($base < 1000 ? $base * 1000 : $base) : 1000;
+                    }
+                    $interaction_meta_payload = $this->build_poll_interaction_meta_payload(
+                        $answer,
+                        $meta_step,
+                        max(1, (int) $poll_bet_amount_to_store),
+                        isset($poll_bet_amount_per_option_to_store) ? $poll_bet_amount_per_option_to_store : null,
+                        isset($quiz_data) && is_array($quiz_data) ? $quiz_data : array(),
+                        null,
+                        0,
+                        'pending'
+                    );
                 }
-                $interaction_meta_payload = $this->build_poll_interaction_meta_payload(
-                    $answer,
-                    $meta_step,
-                    max(1, (int) $poll_bet_amount_to_store),
-                    isset($poll_bet_amount_per_option_to_store) ? $poll_bet_amount_per_option_to_store : null,
-                    isset($quiz_data) && is_array($quiz_data) ? $quiz_data : array(),
-                    null,
-                    0,
-                    'pending'
-                );
             }
             if ($existing && $item['type'] === 'poll') {
                 // Update existing poll vote
@@ -9676,11 +10522,14 @@ class TWork_Rewards_System
      * @param string $order_id         Order ID for transaction tracking.
      * @param string $description      Transaction description.
      * @param bool   $create_transaction Whether to create transaction records.
+     * @param string|null $meta_json   Optional transaction metadata JSON.
+     * @param string|null $selected_option Optional normalized selected option indices (e.g. "0,2").
+     * @param float|string|null $bet_amount Optional resolved bet amount in PNP.
      * @return bool Success status.
      *
      * @since 1.0.0
      */
-    private function sync_user_points($user_id, $delta, $order_id = '', $description = '', $create_transaction = true, $meta_json = null)
+    private function sync_user_points($user_id, $delta, $order_id = '', $description = '', $create_transaction = true, $meta_json = null, $selected_option = null, $bet_amount = null)
     {
         if (!$user_id || 0 == $delta) {
             return false;
@@ -9743,6 +10592,30 @@ class TWork_Rewards_System
             $points_table = $wpdb->prefix . 'twork_point_transactions';
             $transaction_type = $delta >= 0 ? 'earn' : 'redeem';
             $points_abs = round(abs((float) $delta));
+            // Optional ledger snapshots (non-breaking defaults).
+            $selected_option_sanitized = null;
+            if (is_string($selected_option)) {
+                $selected_option_trim = trim($selected_option);
+                if ($selected_option_trim !== '') {
+                    $selected_option_sanitized = preg_replace('/[^0-9,\s\-]/', '', $selected_option_trim);
+                    $selected_option_sanitized = preg_replace('/\s+/', '', (string) $selected_option_sanitized);
+                    if ($selected_option_sanitized === '') {
+                        $selected_option_sanitized = null;
+                    }
+                }
+            }
+            $bet_amount_sanitized = null;
+            if ($bet_amount !== null && $bet_amount !== '' && is_numeric($bet_amount)) {
+                $bet_amount_sanitized = number_format((float) $bet_amount, 2, '.', '');
+            }
+            // Runtime column checks allow safe deploys where code may run before migrations.
+            static $points_table_columns_cache = null;
+            if (!is_array($points_table_columns_cache)) {
+                $points_table_columns = $wpdb->get_col("DESCRIBE $points_table");
+                $points_table_columns_cache = array_map('strtolower', is_array($points_table_columns) ? $points_table_columns : array());
+            }
+            $has_selected_option_column = in_array('selected_option', $points_table_columns_cache, true);
+            $has_bet_amount_column = in_array('bet_amount', $points_table_columns_cache, true);
 
             // OLD CODE:
             // $result = $wpdb->insert(
@@ -9761,20 +10634,30 @@ class TWork_Rewards_System
             // );
             //
             // New Code: persist optional meta_json as part of transaction source-of-truth row.
+            $points_insert_data = array(
+                'user_id' => $user_id,
+                'type' => $transaction_type,
+                'points' => (string) $points_abs,
+                'description' => $description,
+                'order_id' => $order_id,
+                'expires_at' => null,
+                'created_at' => current_time('mysql'),
+                'status' => 'approved',
+                'meta_json' => is_string($meta_json) ? $meta_json : null,
+            );
+            $points_insert_format = array('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s');
+            if ($has_selected_option_column) {
+                $points_insert_data['selected_option'] = $selected_option_sanitized;
+                $points_insert_format[] = '%s';
+            }
+            if ($has_bet_amount_column) {
+                $points_insert_data['bet_amount'] = $bet_amount_sanitized;
+                $points_insert_format[] = '%s';
+            }
             $result = $wpdb->insert(
                 $points_table,
-                array(
-                    'user_id' => $user_id,
-                    'type' => $transaction_type,
-                    'points' => (string) $points_abs,
-                    'description' => $description,
-                    'order_id' => $order_id,
-                    'expires_at' => null,
-                    'created_at' => current_time('mysql'),
-                    'status' => 'approved',
-                    'meta_json' => is_string($meta_json) ? $meta_json : null,
-                ),
-                array('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')
+                $points_insert_data,
+                $points_insert_format
             );
 
             if (false === $result) {
@@ -10480,7 +11363,9 @@ class TWork_Rewards_System
                 isset($transaction->type) ? (string) $transaction->type : '',
                 $points_int,
                 isset($transaction->meta_json) ? (string) $transaction->meta_json : null,
-                isset($transaction->created_at) ? (string) $transaction->created_at : null
+                isset($transaction->created_at) ? (string) $transaction->created_at : null,
+                isset($transaction->selected_option) ? (string) $transaction->selected_option : null,
+                isset($transaction->bet_amount) ? (string) $transaction->bet_amount : null
             );
 
             $rows[] = array(
@@ -10545,7 +11430,9 @@ class TWork_Rewards_System
                 (string) $mapped_type,
                 $points_abs,
                 isset($transaction->meta_json) ? (string) $transaction->meta_json : null,
-                isset($transaction->created_at) ? (string) $transaction->created_at : null
+                isset($transaction->created_at) ? (string) $transaction->created_at : null,
+                isset($transaction->selected_option) ? (string) $transaction->selected_option : null,
+                isset($transaction->bet_amount) ? (string) $transaction->bet_amount : null
             );
 
             $rows[] = array(
@@ -10882,9 +11769,11 @@ class TWork_Rewards_System
      * @param string|null $transaction_meta_json Persisted JSON from point/reward transaction row.
      * @param string|null $created_at            Transaction created_at (MySQL datetime). When set, the interaction
      *                                           snapshot uses the latest interaction row with created_at <= this time.
+     * @param string|null $transaction_selected_option Optional selected option snapshot column value.
+     * @param string|null $transaction_bet_amount      Optional resolved bet amount (PNP) column value.
      * @return array|null
      */
-    private function build_poll_transaction_details($user_id, $order_id, $txn_type, $points, $transaction_meta_json = null, $created_at = null)
+    private function build_poll_transaction_details($user_id, $order_id, $txn_type, $points, $transaction_meta_json = null, $created_at = null, $transaction_selected_option = null, $transaction_bet_amount = null)
     {
         if (!is_string($order_id) || $order_id === '') {
             return null;
@@ -10901,35 +11790,123 @@ class TWork_Rewards_System
             return null;
         }
 
-        // OLD CODE: always reconstruct details from interactions table at read time.
-        // New Code: if transaction row already has persisted meta_json, use it directly.
-        if (is_string($transaction_meta_json) && trim($transaction_meta_json) !== '') {
-            $decoded_txn_meta = json_decode($transaction_meta_json, true);
-            if (is_array($decoded_txn_meta)) {
-                $selected_options = isset($decoded_txn_meta['selected_options']) && is_array($decoded_txn_meta['selected_options'])
-                    ? $decoded_txn_meta['selected_options']
-                    : array();
-                $winning_option = isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])
-                    ? $decoded_txn_meta['winning_option']
-                    : null;
-                $total_bet = isset($decoded_txn_meta['total_bet_pnp']) ? (int) $decoded_txn_meta['total_bet_pnp'] : 0;
-                $won = isset($decoded_txn_meta['won_amount_pnp']) ? (int) $decoded_txn_meta['won_amount_pnp'] : 0;
-                $status = isset($decoded_txn_meta['result_status']) ? (string) $decoded_txn_meta['result_status'] : 'pending';
-                $session = isset($decoded_txn_meta['session_id']) ? (string) $decoded_txn_meta['session_id'] : '';
-                $title = isset($decoded_txn_meta['poll_title']) ? (string) $decoded_txn_meta['poll_title'] : '';
-                return array(
-                    'poll_id' => $poll_id,
-                    'poll_title' => $title,
-                    'session_id' => $session,
-                    'result_status' => $status,
-                    'total_bet_pnp' => max(0, $total_bet),
-                    'won_amount_pnp' => max(0, $won),
-                    'net_amount_pnp' => (int) ($won - max(0, $total_bet)),
-                    'winning_option' => $winning_option,
-                    'selected_options' => $selected_options,
+        // OLD CODE:
+        // Column-first early-return could skip rich meta_json parsing and force
+        // multi-option bet_pnp to 0, which made Flutter display "Free".
+        //
+        // New Code:
+        // Resolve poll details by strict precedence without early return:
+        // 1) transaction meta_json selected_options[*].bet_pnp
+        // 2) interaction snapshot (interaction_meta -> per_option -> computed)
+        // 3) legacy columns (selected_option, bet_amount) as last fallback
+        $selected_option_raw = is_string($transaction_selected_option) ? trim($transaction_selected_option) : '';
+        $bet_amount_from_column = ($transaction_bet_amount !== null && $transaction_bet_amount !== '' && is_numeric($transaction_bet_amount))
+            ? max(0, (int) round((float) $transaction_bet_amount))
+            : null;
+
+        $normalize_non_negative_int = function ($value) {
+            if (is_numeric($value)) {
+                return max(0, (int) round((float) $value));
+            }
+            if (is_string($value)) {
+                $clean = preg_replace('/[^0-9\.\-]/', '', trim($value));
+                if ($clean !== '' && $clean !== '-' && is_numeric($clean)) {
+                    return max(0, (int) round((float) $clean));
+                }
+            }
+            return 0;
+        };
+
+        $normalize_selected_options = function ($raw_options, $fallback_labels = array()) use ($normalize_non_negative_int) {
+            $normalized = array();
+            if (!is_array($raw_options)) {
+                return $normalized;
+            }
+            foreach ($raw_options as $opt) {
+                if (!is_array($opt)) {
+                    continue;
+                }
+                $idx = isset($opt['index']) && is_numeric($opt['index']) ? (int) $opt['index'] : 0;
+                $label = isset($opt['label']) ? trim((string) $opt['label']) : '';
+                if ($label === '' && isset($fallback_labels[$idx])) {
+                    $label = (string) $fallback_labels[$idx];
+                }
+                if ($label === '') {
+                    $label = 'Option ' . ($idx + 1);
+                }
+                $bet_units = isset($opt['bet_units']) ? $normalize_non_negative_int($opt['bet_units']) : 0;
+                $bet_pnp = isset($opt['bet_pnp']) ? $normalize_non_negative_int($opt['bet_pnp']) : 0;
+                $normalized[] = array(
+                    'index' => $idx,
+                    'label' => $label,
+                    'bet_units' => $bet_units,
+                    'bet_pnp' => $bet_pnp,
                 );
             }
-        }
+            return $normalized;
+        };
+
+        $sum_selected_bet_pnp = function ($selected_options) use ($normalize_non_negative_int) {
+            $sum = 0;
+            if (!is_array($selected_options)) {
+                return 0;
+            }
+            foreach ($selected_options as $opt) {
+                if (!is_array($opt)) {
+                    continue;
+                }
+                $sum += $normalize_non_negative_int(isset($opt['bet_pnp']) ? $opt['bet_pnp'] : 0);
+            }
+            return max(0, (int) $sum);
+        };
+
+        $extract_indices = function ($raw_selected) {
+            $indices = array();
+            if (!is_string($raw_selected) || trim($raw_selected) === '') {
+                return $indices;
+            }
+            foreach (array_map('trim', explode(',', $raw_selected)) as $part) {
+                if ($part !== '' && is_numeric($part)) {
+                    $indices[] = (int) $part;
+                }
+            }
+            return array_values(array_unique($indices));
+        };
+
+        $build_legacy_selected_options = function ($selected_indices, $total_bet, $labels = array()) use ($normalize_non_negative_int) {
+            $rows = array();
+            $selected_indices = array_values(array_unique(array_map('intval', is_array($selected_indices) ? $selected_indices : array())));
+            $count = count($selected_indices);
+            if ($count <= 0) {
+                return $rows;
+            }
+            $safe_total = $normalize_non_negative_int($total_bet);
+            $base = $count > 0 ? (int) floor($safe_total / $count) : 0;
+            $remainder = $count > 0 ? ($safe_total % $count) : 0;
+
+            foreach ($selected_indices as $i => $idx) {
+                $label = isset($labels[$idx]) ? trim((string) $labels[$idx]) : '';
+                if ($label === '') {
+                    $label = 'Option ' . ($idx + 1);
+                }
+                $bet_pnp = $base + (($i === $count - 1) ? $remainder : 0);
+                $rows[] = array(
+                    'index' => (int) $idx,
+                    'label' => $label,
+                    'bet_units' => 0,
+                    'bet_pnp' => max(0, (int) $bet_pnp),
+                );
+            }
+            return $rows;
+        };
+
+        $resolved_selected_options = array();
+        $resolved_winning_option = null;
+        $resolved_total_bet = 0;
+        $resolved_won = 0;
+        $resolved_status = 'pending';
+        $resolved_session = '';
+        $resolved_title = '';
 
         global $wpdb;
         $table_items = $wpdb->prefix . 'twork_engagement_items';
@@ -10946,6 +11923,52 @@ class TWork_Rewards_System
         $quiz_data = json_decode($item['quiz_data'] ?? '', true);
         if (!is_array($quiz_data)) {
             $quiz_data = array();
+        }
+        $resolved_title = isset($item['title']) ? (string) $item['title'] : '';
+
+        // Priority 1: persisted transaction meta_json (authoritative per-option bet_pnp).
+        if (is_string($transaction_meta_json) && trim($transaction_meta_json) !== '') {
+            $decoded_txn_meta = json_decode($transaction_meta_json, true);
+            if (is_array($decoded_txn_meta)) {
+                $meta_selected = isset($decoded_txn_meta['selected_options']) ? $decoded_txn_meta['selected_options'] : array();
+                $resolved_selected_options = $normalize_selected_options($meta_selected);
+                if (!empty($resolved_selected_options)) {
+                    $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
+                    // OLD CODE:
+                    // $resolved_winning_option = isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])
+                    //     ? array(
+                    //         'index' => isset($decoded_txn_meta['winning_option']['index']) ? (int) $decoded_txn_meta['winning_option']['index'] : -1,
+                    //         'label' => isset($decoded_txn_meta['winning_option']['label']) ? (string) $decoded_txn_meta['winning_option']['label'] : '',
+                    //     )
+                    //     : null;
+                    // $resolved_won = isset($decoded_txn_meta['won_amount_pnp']) ? $normalize_non_negative_int($decoded_txn_meta['won_amount_pnp']) : 0;
+                    //
+                    // New code: prefer explicit win_option/win_amount (if present), then fallback
+                    // to existing winning_option/won_amount_pnp keys for compatibility.
+                    $txn_winning_source = null;
+                    if (isset($decoded_txn_meta['win_option']) && is_array($decoded_txn_meta['win_option'])) {
+                        $txn_winning_source = $decoded_txn_meta['win_option'];
+                    } elseif (isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])) {
+                        $txn_winning_source = $decoded_txn_meta['winning_option'];
+                    }
+                    $resolved_winning_option = is_array($txn_winning_source)
+                        ? array(
+                            'index' => isset($txn_winning_source['index']) ? (int) $txn_winning_source['index'] : -1,
+                            'label' => isset($txn_winning_source['label']) ? (string) $txn_winning_source['label'] : '',
+                        )
+                        : null;
+                    if (isset($decoded_txn_meta['win_amount'])) {
+                        $resolved_won = $normalize_non_negative_int($decoded_txn_meta['win_amount']);
+                    } else {
+                        $resolved_won = isset($decoded_txn_meta['won_amount_pnp']) ? $normalize_non_negative_int($decoded_txn_meta['won_amount_pnp']) : 0;
+                    }
+                    $resolved_status = isset($decoded_txn_meta['result_status']) ? (string) $decoded_txn_meta['result_status'] : 'pending';
+                    $resolved_session = isset($decoded_txn_meta['session_id']) ? (string) $decoded_txn_meta['session_id'] : '';
+                    if (isset($decoded_txn_meta['poll_title']) && trim((string) $decoded_txn_meta['poll_title']) !== '') {
+                        $resolved_title = (string) $decoded_txn_meta['poll_title'];
+                    }
+                }
+            }
         }
 
         // Interaction row that matches this transaction in time: latest vote snapshot at or before txn created_at.
@@ -10980,7 +12003,43 @@ class TWork_Rewards_System
             ), ARRAY_A);
         }
         if (!$interaction || !is_array($interaction)) {
-            return null;
+            // No interaction row, fallback to legacy columns if needed.
+            if (empty($resolved_selected_options)) {
+                $fallback_indices = $extract_indices($selected_option_raw);
+                if (!empty($fallback_indices)) {
+                    $resolved_selected_options = $build_legacy_selected_options(
+                        $fallback_indices,
+                        $bet_amount_from_column ?? 0
+                    );
+                    $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
+                }
+            }
+            if (empty($resolved_selected_options)) {
+                return null;
+            }
+            $normalized_type = strtolower((string) $txn_type);
+            $is_win = ($normalized_type === 'earn') && stripos($order_id, 'engagement:poll:') === 0 && $points > 0;
+            $is_cost = stripos($order_id, 'engagement:poll_cost:') === 0;
+            if ($is_win) {
+                $resolved_status = 'won';
+            } elseif ($is_cost && $resolved_status === 'pending') {
+                $resolved_status = 'lost';
+            }
+            if ($resolved_won <= 0) {
+                $resolved_won = $is_win ? max(0, (int) $points) : 0;
+            }
+            $net_amount = (int) ($resolved_won - $resolved_total_bet);
+            return array(
+                'poll_id' => $poll_id,
+                'poll_title' => $resolved_title,
+                'session_id' => $resolved_session,
+                'result_status' => $resolved_status,
+                'total_bet_pnp' => (int) $resolved_total_bet,
+                'won_amount_pnp' => (int) $resolved_won,
+                'net_amount_pnp' => $net_amount,
+                'winning_option' => $resolved_winning_option,
+                'selected_options' => $resolved_selected_options,
+            );
         }
 
         $options = isset($quiz_data['options']) && is_array($quiz_data['options'])
@@ -11039,8 +12098,8 @@ class TWork_Rewards_System
             $selected_options[] = array(
                 'index' => $idx,
                 'label' => $label,
-                'bet_units' => $units,
-                'bet_pnp' => $bet_pnp,
+                'bet_units' => max(0, (int) $units),
+                'bet_pnp' => max(0, (int) $bet_pnp),
             );
         }
 
@@ -11060,34 +12119,31 @@ class TWork_Rewards_System
         $result_status = 'pending';
 
         $meta_json = isset($interaction['interaction_meta']) ? (string) $interaction['interaction_meta'] : '';
-        if ($meta_json !== '') {
+        if ($meta_json !== '' && empty($resolved_selected_options)) {
             $decoded_meta = json_decode($meta_json, true);
             if (is_array($decoded_meta)) {
-                if (isset($decoded_meta['selected_options']) && is_array($decoded_meta['selected_options'])) {
-                    $selected_options = array();
-                    $total_bet_pnp = 0;
-                    foreach ($decoded_meta['selected_options'] as $opt) {
-                        if (!is_array($opt)) {
-                            continue;
-                        }
-                        $bet_pnp = isset($opt['bet_pnp']) ? (int) $opt['bet_pnp'] : 0;
-                        $total_bet_pnp += max(0, $bet_pnp);
-                        $selected_options[] = array(
-                            'index' => isset($opt['index']) ? (int) $opt['index'] : 0,
-                            'label' => isset($opt['label']) ? (string) $opt['label'] : '',
-                            'bet_units' => isset($opt['bet_units']) ? (int) $opt['bet_units'] : 0,
-                            'bet_pnp' => max(0, $bet_pnp),
-                        );
-                    }
+                $meta_selected_options = isset($decoded_meta['selected_options']) ? $decoded_meta['selected_options'] : array();
+                $normalized_meta_selected = $normalize_selected_options($meta_selected, $options);
+                if (!empty($normalized_meta_selected)) {
+                    $selected_options = $normalized_meta_selected;
+                    $total_bet_pnp = $sum_selected_bet_pnp($selected_options);
                 }
-                if (isset($decoded_meta['winning_option']) && is_array($decoded_meta['winning_option'])) {
+                $interaction_winning = null;
+                if (isset($decoded_meta['win_option']) && is_array($decoded_meta['win_option'])) {
+                    $interaction_winning = $decoded_meta['win_option'];
+                } elseif (isset($decoded_meta['winning_option']) && is_array($decoded_meta['winning_option'])) {
+                    $interaction_winning = $decoded_meta['winning_option'];
+                }
+                if (is_array($interaction_winning)) {
                     $winning_option = array(
-                        'index' => isset($decoded_meta['winning_option']['index']) ? (int) $decoded_meta['winning_option']['index'] : -1,
-                        'label' => isset($decoded_meta['winning_option']['label']) ? (string) $decoded_meta['winning_option']['label'] : '',
+                        'index' => isset($interaction_winning['index']) ? (int) $interaction_winning['index'] : -1,
+                        'label' => isset($interaction_winning['label']) ? (string) $interaction_winning['label'] : '',
                     );
                 }
-                if (isset($decoded_meta['won_amount_pnp'])) {
-                    $won_amount = max(0, (int) $decoded_meta['won_amount_pnp']);
+                if (isset($decoded_meta['win_amount'])) {
+                    $won_amount = $normalize_non_negative_int($decoded_meta['win_amount']);
+                } elseif (isset($decoded_meta['won_amount_pnp'])) {
+                    $won_amount = $normalize_non_negative_int($decoded_meta['won_amount_pnp']);
                 }
                 if (isset($decoded_meta['result_status'])) {
                     $result_status = (string) $decoded_meta['result_status'];
@@ -11095,29 +12151,59 @@ class TWork_Rewards_System
             }
         }
 
+        // Priority 2: interaction-derived values (interaction_meta/per-option).
+        if (empty($resolved_selected_options) && !empty($selected_options)) {
+            $resolved_selected_options = $normalize_selected_options($selected_options, $options);
+            $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
+            $resolved_winning_option = $winning_option;
+            $resolved_won = $normalize_non_negative_int($won_amount);
+            $resolved_status = (string) $result_status;
+            $resolved_session = isset($interaction['session_id']) ? (string) $interaction['session_id'] : '';
+        }
+
+        // Fallback: legacy transaction columns only (last priority).
+        if (empty($resolved_selected_options)) {
+            $fallback_indices = $extract_indices($selected_option_raw !== '' ? $selected_option_raw : $raw_answer);
+            if (!empty($fallback_indices)) {
+                $resolved_selected_options = $build_legacy_selected_options(
+                    $fallback_indices,
+                    $bet_amount_from_column ?? $total_bet_pnp,
+                    $options
+                );
+                $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
+                $resolved_winning_option = $winning_option;
+                $resolved_won = $normalize_non_negative_int($won_amount);
+                $resolved_status = (string) $result_status;
+                $resolved_session = isset($interaction['session_id']) ? (string) $interaction['session_id'] : '';
+            }
+        }
+
         $normalized_type = strtolower((string) $txn_type);
         $is_win = ($normalized_type === 'earn') && stripos($order_id, 'engagement:poll:') === 0 && $points > 0;
         $is_cost = stripos($order_id, 'engagement:poll_cost:') === 0;
         if ($is_win) {
-            $result_status = 'won';
-        } elseif ($is_cost) {
-            $result_status = 'lost';
+            $resolved_status = 'won';
+        } elseif ($is_cost && $resolved_status === 'pending') {
+            $resolved_status = 'lost';
         }
-        if ($won_amount <= 0) {
-            $won_amount = $is_win ? max(0, (int) $points) : 0;
+        if ($resolved_won <= 0) {
+            $resolved_won = $is_win ? max(0, (int) $points) : 0;
         }
-        $net_amount = $won_amount - max(0, (int) $total_bet_pnp);
+        if ($resolved_total_bet <= 0) {
+            $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
+        }
+        $net_amount = (int) ($resolved_won - $resolved_total_bet);
 
         return array(
             'poll_id' => $poll_id,
-            'poll_title' => isset($item['title']) ? (string) $item['title'] : '',
-            'session_id' => isset($interaction['session_id']) ? (string) $interaction['session_id'] : '',
-            'result_status' => $result_status,
-            'total_bet_pnp' => (int) $total_bet_pnp,
-            'won_amount_pnp' => (int) $won_amount,
+            'poll_title' => $resolved_title,
+            'session_id' => $resolved_session,
+            'result_status' => $resolved_status,
+            'total_bet_pnp' => (int) max(0, $resolved_total_bet),
+            'won_amount_pnp' => (int) max(0, $resolved_won),
             'net_amount_pnp' => (int) $net_amount,
-            'winning_option' => $winning_option,
-            'selected_options' => $selected_options,
+            'winning_option' => $resolved_winning_option,
+            'selected_options' => $resolved_selected_options,
         );
     }
 
@@ -11188,6 +12274,11 @@ class TWork_Rewards_System
             );
         }
 
+        $normalized_status = strtolower(trim((string) $result_status));
+        if (!in_array($normalized_status, array('pending', 'won', 'lost'), true)) {
+            $normalized_status = 'pending';
+        }
+
         return wp_json_encode(array(
             'selected_option' => implode(',', $selected_indices),
             'selected_options' => $selected_options,
@@ -11195,8 +12286,10 @@ class TWork_Rewards_System
             'bet_amount_step' => max(1, (int) $bet_step),
             'total_bet_pnp' => (int) $total_bet,
             'winning_option' => $winning_option,
+            'win_option' => $winning_option,
             'won_amount_pnp' => max(0, (int) $won_amount_pnp),
-            'result_status' => (string) $result_status,
+            'win_amount' => max(0, (int) $won_amount_pnp),
+            'result_status' => $normalized_status,
         ));
     }
 
@@ -12134,7 +13227,69 @@ class TWork_Rewards_System
                 </div>
             </div>
 
-            <table class="wp-list-table widefat fixed striped">
+            <style>
+                /* OLD CODE (kept for rollback safety):
+                 * No dedicated admin table styling for Bet/Win columns.
+                 */
+                /* OLD CODE (kept for rollback safety):
+                 * .twork-point-transactions-table {
+                 *     table-layout: fixed;
+                 *     width: 100%;
+                 * }
+                 */
+                .twork-point-transactions-table {
+                    table-layout: auto;
+                    width: 100%;
+                }
+                /* OLD CODE (kept for rollback safety):
+                 * .twork-point-transactions-table .twork-col-bet-option,
+                 * .twork-point-transactions-table .twork-col-win-option {
+                 *     width: 10%;
+                 *     white-space: normal;
+                 *     word-wrap: break-word;
+                 *     overflow-wrap: anywhere;
+                 * }
+                 * .twork-point-transactions-table .twork-col-bet-amount,
+                 * .twork-point-transactions-table .twork-col-win-amount {
+                 *     width: 8%;
+                 *     text-align: right;
+                 *     white-space: nowrap;
+                 * }
+                 */
+                .twork-point-transactions-table .twork-col-bet-details {
+                    width: 10%;
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: anywhere;
+                }
+                /* OLD CODE (kept for rollback safety):
+                 * .twork-point-transactions-table .twork-col-win-amount {
+                 *     width: 8%;
+                 *     text-align: right;
+                 *     white-space: nowrap;
+                 * }
+                 */
+                .twork-point-transactions-table .twork-col-win-details {
+                    width: 15%;
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: anywhere;
+                }
+                .twork-point-transactions-table .twork-col-user {
+                    width: 12%;
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: anywhere;
+                }
+                .twork-point-transactions-table .twork-col-description {
+                    width: 16%;
+                    white-space: normal;
+                    word-wrap: break-word;
+                    overflow-wrap: anywhere;
+                }
+            </style>
+
+            <table class="wp-list-table widefat fixed striped twork-point-transactions-table">
                 <thead>
                     <tr>
                         <?php
@@ -12144,14 +13299,65 @@ class TWork_Rewards_System
                          */
                         ?>
 
-                        <th style="width:150px;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
-                        <th style="width:90px;"><?php esc_html_e('User ID', 'twork-rewards'); ?></th>
-                        <th style="width:170px;"><?php esc_html_e('User Name', 'twork-rewards'); ?></th>
-                        <th style="width:130px;"><?php esc_html_e('Original Balance', 'twork-rewards'); ?></th>
-                        <th style="width:120px;"><?php esc_html_e('Amount Added (+)', 'twork-rewards'); ?></th>
-                        <th style="width:130px;"><?php esc_html_e('Amount Deducted (-)', 'twork-rewards'); ?></th>
-                        <th style="width:130px;"><?php esc_html_e('Current Balance', 'twork-rewards'); ?></th>
-                        <th><?php esc_html_e('Note / Description', 'twork-rewards'); ?></th>
+                        <?php
+                        /*
+                         * OLD CODE (kept for rollback safety):
+                         * <th style="width:150px;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
+                         * <th style="width:90px;"><?php esc_html_e('User ID', 'twork-rewards'); ?></th>
+                         * <th style="width:170px;"><?php esc_html_e('User Name', 'twork-rewards'); ?></th>
+                         * <th style="width:130px;"><?php esc_html_e('Original Balance', 'twork-rewards'); ?></th>
+                         * <th style="width:120px;"><?php esc_html_e('Amount Added (+)', 'twork-rewards'); ?></th>
+                         * <th style="width:130px;"><?php esc_html_e('Amount Deducted (-)', 'twork-rewards'); ?></th>
+                         * <th style="width:130px;"><?php esc_html_e('Current Balance', 'twork-rewards'); ?></th>
+                         */
+                        ?>
+                        <?php
+                        /*
+                         * OLD CODE (kept for rollback safety):
+                         * <th style="width:10%;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
+                         * <th style="width:6%;"><?php esc_html_e('User ID', 'twork-rewards'); ?></th>
+                         * <th style="width:10%;"><?php esc_html_e('User Name', 'twork-rewards'); ?></th>
+                         */
+                        ?>
+                        <th style="width:10%;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
+                        <th class="twork-col-user" style="width:12%;"><?php esc_html_e('User', 'twork-rewards'); ?></th>
+                        <th style="width:8%;"><?php esc_html_e('Original Balance', 'twork-rewards'); ?></th>
+                        <th style="width:7%;"><?php esc_html_e('Amount Added (+)', 'twork-rewards'); ?></th>
+                        <th style="width:8%;"><?php esc_html_e('Amount Deducted (-)', 'twork-rewards'); ?></th>
+                        <th style="width:8%;"><?php esc_html_e('Current Balance', 'twork-rewards'); ?></th>
+                        <?php
+                        /*
+                         * OLD CODE (kept for rollback safety):
+                         * <th><?php esc_html_e('Note / Description', 'twork-rewards'); ?></th>
+                         */
+                        ?>
+                        <?php
+                        /*
+                         * OLD CODE (kept for rollback safety):
+                         * <th style="width:150px;"><?php esc_html_e('Bet Option', 'twork-rewards'); ?></th>
+                         * <th style="width:120px;"><?php esc_html_e('Bet Amount', 'twork-rewards'); ?></th>
+                         * <th style="width:150px;"><?php esc_html_e('Win Option', 'twork-rewards'); ?></th>
+                         * <th style="width:120px;"><?php esc_html_e('Win Amount', 'twork-rewards'); ?></th>
+                         * <th><?php esc_html_e('Note / Description', 'twork-rewards'); ?></th>
+                         */
+                        ?>
+                        <?php
+                        /*
+                         * OLD CODE (kept for rollback safety):
+                         * <th class="twork-col-bet-option" style="width:10%;"><?php esc_html_e('Bet Option', 'twork-rewards'); ?></th>
+                         * <th class="twork-col-bet-amount" style="width:8%; text-align:right;"><?php esc_html_e('Bet Amount', 'twork-rewards'); ?></th>
+                         */
+                        ?>
+                        <th class="twork-col-bet-details" style="width:18%;"><?php esc_html_e('Bet Details', 'twork-rewards'); ?></th>
+                        <?php
+                        /*
+                         * OLD CODE (kept for rollback safety):
+                         * <th class="twork-col-win-option" style="width:10%;"><?php esc_html_e('Win Option', 'twork-rewards'); ?></th>
+                         * <th class="twork-col-win-amount" style="width:8%; text-align:right;"><?php esc_html_e('Win Amount', 'twork-rewards'); ?></th>
+                         */
+                        ?>
+                        <th class="twork-col-win-details" style="width:15%;"><?php esc_html_e('Win Details', 'twork-rewards'); ?></th>
+                        <th class="twork-col-description" style="width:17%;"><?php esc_html_e('Note / Description', 'twork-rewards'); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -12220,7 +13426,189 @@ class TWork_Rewards_System
                         if ($row_user_name === '') {
                             $row_user_name = __('Unknown User', 'twork-rewards');
                         }
+                        // OLD CODE (kept for rollback safety):
+                        // $row_user_html = '<strong>' . esc_html($row_user_name) . '</strong><br><small style="color: #666;">(ID: ' . esc_html((string) absint($txn->user_id)) . ')</small>';
+                        //
+                        // New code: link user name to plugin's custom user detail page.
+                        $row_user_id = absint($txn->user_id);
+                        $row_user_detail_url = admin_url('admin.php?page=twork-rewards-user-detail&user_id=' . $row_user_id);
+                        $row_user_html = '<strong><a href="' . esc_url($row_user_detail_url) . '">' . esc_html($row_user_name) . '</a></strong><br><small style="color: #666;">(ID: ' . esc_html((string) $row_user_id) . ')</small>';
                         $formatted_date = $this->format_myanmar_time($txn->created_at);
+
+                        // OLD CODE (kept for rollback safety):
+                        // No poll-meta columns in admin table rows.
+                        //
+                        // New code: decode point transaction meta_json and show Bet/Win snapshots.
+                        $meta_json_raw = isset($txn->meta_json) ? trim((string) $txn->meta_json) : '';
+                        $meta_payload = array();
+                        if ($meta_json_raw !== '') {
+                            $decoded_meta_payload = json_decode($meta_json_raw, true);
+                            if (is_array($decoded_meta_payload)) {
+                                $meta_payload = $decoded_meta_payload;
+                            }
+                        }
+
+                        $display_bet_option = '-';
+                        $display_bet_amount = '-';
+                        $display_bet_details_html = '-';
+                        $display_win_option = '-';
+                        $display_win_amount = '-';
+                        $display_win_details_html = '-';
+                        $meta_result_status = isset($meta_payload['result_status']) ? strtolower(trim((string) $meta_payload['result_status'])) : '';
+
+                        // Bet option: selected_options[].label -> fallback selected_option (meta -> column).
+                        $bet_option_labels = array();
+                        if (isset($meta_payload['selected_options']) && is_array($meta_payload['selected_options'])) {
+                            foreach ($meta_payload['selected_options'] as $selected_opt) {
+                                if (!is_array($selected_opt)) {
+                                    continue;
+                                }
+                                $opt_label = isset($selected_opt['label']) ? trim((string) $selected_opt['label']) : '';
+                                if ($opt_label === '' && isset($selected_opt['index']) && is_numeric($selected_opt['index'])) {
+                                    // OLD CODE (kept for rollback safety):
+                                    // $opt_label = 'Option ' . (((int) $selected_opt['index']) + 1);
+                                    //
+                                    // New code: include amount context for legacy rows missing labels.
+                                    $legacy_option_suffix = '';
+                                    if (isset($selected_opt['bet_pnp']) && is_numeric($selected_opt['bet_pnp'])) {
+                                        $legacy_option_suffix = ' (' . number_format_i18n((int) round((float) $selected_opt['bet_pnp'])) . ' PNP)';
+                                    } elseif (isset($selected_opt['bet_amount']) && is_numeric($selected_opt['bet_amount'])) {
+                                        $legacy_option_suffix = ' (' . number_format_i18n((int) round((float) $selected_opt['bet_amount'])) . ' PNP)';
+                                    }
+                                    $opt_label = 'Option ' . (((int) $selected_opt['index']) + 1) . $legacy_option_suffix;
+                                }
+                                if ($opt_label !== '') {
+                                    $bet_option_labels[] = $opt_label;
+                                }
+                            }
+                        }
+                        if (!empty($bet_option_labels)) {
+                            $display_bet_option = implode(', ', $bet_option_labels);
+                        } else {
+                            $legacy_selected_option = '';
+                            if (isset($meta_payload['selected_option'])) {
+                                $legacy_selected_option = trim((string) $meta_payload['selected_option']);
+                            } elseif (isset($txn->selected_option)) {
+                                $legacy_selected_option = trim((string) $txn->selected_option);
+                            }
+                            if ($legacy_selected_option !== '') {
+                                $display_bet_option = $legacy_selected_option;
+                            }
+                        }
+
+                        // Bet amount: total_bet_pnp -> fallback bet_amount (meta -> column).
+                        if (isset($meta_payload['total_bet_pnp']) && is_numeric($meta_payload['total_bet_pnp'])) {
+                            $display_bet_amount = number_format_i18n((int) round((float) $meta_payload['total_bet_pnp']));
+                        } elseif (isset($meta_payload['bet_amount']) && is_numeric($meta_payload['bet_amount'])) {
+                            $display_bet_amount = number_format_i18n((int) round((float) $meta_payload['bet_amount']));
+                        } elseif (isset($txn->bet_amount) && is_numeric($txn->bet_amount)) {
+                            $display_bet_amount = number_format_i18n((int) round((float) $txn->bet_amount));
+                        }
+
+                        // OLD CODE (kept for rollback safety):
+                        // Bet Option and Bet Amount were rendered as separate columns.
+                        //
+                        // New code: merge both into Bet Details with per-option breakdown.
+                        $bet_detail_lines = array();
+                        if (isset($meta_payload['selected_options']) && is_array($meta_payload['selected_options'])) {
+                            foreach ($meta_payload['selected_options'] as $selected_opt) {
+                                if (!is_array($selected_opt)) {
+                                    continue;
+                                }
+                                $detail_label = isset($selected_opt['label']) ? trim((string) $selected_opt['label']) : '';
+                                if ($detail_label === '' && isset($selected_opt['index']) && is_numeric($selected_opt['index'])) {
+                                    // OLD CODE (kept for rollback safety):
+                                    // $detail_label = 'Option ' . (((int) $selected_opt['index']) + 1);
+                                    //
+                                    // New code: include amount context for unlabeled legacy payloads.
+                                    $legacy_detail_suffix = '';
+                                    if (isset($selected_opt['bet_pnp']) && is_numeric($selected_opt['bet_pnp'])) {
+                                        $legacy_detail_suffix = ' (' . number_format_i18n((int) round((float) $selected_opt['bet_pnp'])) . ' PNP)';
+                                    } elseif (isset($selected_opt['bet_amount']) && is_numeric($selected_opt['bet_amount'])) {
+                                        $legacy_detail_suffix = ' (' . number_format_i18n((int) round((float) $selected_opt['bet_amount'])) . ' PNP)';
+                                    }
+                                    $detail_label = 'Option ' . (((int) $selected_opt['index']) + 1) . $legacy_detail_suffix;
+                                }
+                                $detail_amount = null;
+                                if (isset($selected_opt['bet_pnp']) && is_numeric($selected_opt['bet_pnp'])) {
+                                    $detail_amount = (int) round((float) $selected_opt['bet_pnp']);
+                                } elseif (isset($selected_opt['bet_amount']) && is_numeric($selected_opt['bet_amount'])) {
+                                    $detail_amount = (int) round((float) $selected_opt['bet_amount']);
+                                }
+                                if ($detail_label !== '' && $detail_amount !== null) {
+                                    $bet_detail_lines[] = esc_html($detail_label) . ' : ' . esc_html(number_format_i18n($detail_amount)) . ' PNP';
+                                }
+                            }
+                        }
+                        if (!empty($bet_detail_lines)) {
+                            $display_bet_details_html = implode('<br>', $bet_detail_lines);
+                        } else {
+                            $legacy_label = ($display_bet_option !== '' && $display_bet_option !== '-') ? $display_bet_option : '-';
+                            $legacy_amount = ($display_bet_amount !== '' && $display_bet_amount !== '-') ? $display_bet_amount : '-';
+                            if ($legacy_label !== '-' || $legacy_amount !== '-') {
+                                $display_bet_details_html = esc_html($legacy_label) . ' : ' . esc_html($legacy_amount) . ' PNP';
+                            } else {
+                                $display_bet_details_html = '-';
+                            }
+                        }
+
+                        // OLD CODE (kept for rollback safety):
+                        // Win option/amount were extracted inside won-only block.
+                        //
+                        // New code: precompute win extraction outside render branches
+                        // so won/lost/pending matrix can reliably render.
+                        $resolved_win_option = null;
+                        if (isset($meta_payload['win_option']) && is_array($meta_payload['win_option'])) {
+                            $resolved_win_option = $meta_payload['win_option'];
+                        } elseif (isset($meta_payload['winning_option']) && is_array($meta_payload['winning_option'])) {
+                            $resolved_win_option = $meta_payload['winning_option'];
+                        }
+
+                        if (is_array($resolved_win_option)) {
+                            $win_label = isset($resolved_win_option['label']) ? trim((string) $resolved_win_option['label']) : '';
+                            if ($win_label === '' && isset($resolved_win_option['index']) && is_numeric($resolved_win_option['index'])) {
+                                // OLD CODE (kept for rollback safety):
+                                // $win_label = 'Option ' . (((int) $resolved_win_option['index']) + 1);
+                                //
+                                // New code: add payout context when win label is missing.
+                                $legacy_win_suffix = '';
+                                if (isset($meta_payload['win_amount']) && is_numeric($meta_payload['win_amount'])) {
+                                    $legacy_win_suffix = ' (' . number_format_i18n(max(0, (int) round((float) $meta_payload['win_amount']))) . ' PNP)';
+                                } elseif (isset($meta_payload['won_amount_pnp']) && is_numeric($meta_payload['won_amount_pnp'])) {
+                                    $legacy_win_suffix = ' (' . number_format_i18n(max(0, (int) round((float) $meta_payload['won_amount_pnp']))) . ' PNP)';
+                                }
+                                $win_label = 'Option ' . (((int) $resolved_win_option['index']) + 1) . $legacy_win_suffix;
+                            }
+                            if ($win_label !== '') {
+                                $display_win_option = $win_label;
+                            }
+                        }
+
+                        $resolved_win_amount_int = 0;
+                        if (isset($meta_payload['win_amount']) && is_numeric($meta_payload['win_amount'])) {
+                            $resolved_win_amount_int = max(0, (int) round((float) $meta_payload['win_amount']));
+                        } elseif (isset($meta_payload['won_amount_pnp']) && is_numeric($meta_payload['won_amount_pnp'])) {
+                            $resolved_win_amount_int = max(0, (int) round((float) $meta_payload['won_amount_pnp']));
+                        }
+                        if ($resolved_win_amount_int > 0) {
+                            $display_win_amount = number_format_i18n($resolved_win_amount_int);
+                        }
+
+                        // OLD CODE (kept for rollback safety):
+                        // Win Option and Win Amount were rendered as separate columns.
+                        //
+                        // New code: strict render matrix.
+                        if (
+                            $meta_result_status === 'won' &&
+                            $display_win_option !== '-' &&
+                            $resolved_win_amount_int > 0
+                        ) {
+                            $display_win_details_html = '<strong>🏆 ' . esc_html($display_win_option) . '</strong><br><span style="color: #28a745;">✨ ' . esc_html($display_win_amount) . ' PNP</span>';
+                        } elseif ($display_win_option !== '-' && $meta_result_status !== 'won') {
+                            $display_win_details_html = '<strong>Actual Result:</strong><br><span style="color: #dc3232;">' . esc_html($display_win_option) . '</span>';
+                        } else {
+                            $display_win_details_html = '-';
+                        }
                         ?>
                         <tr>
                             <?php
@@ -12238,22 +13626,47 @@ class TWork_Rewards_System
                             ?>
 
                             <td><?php echo esc_html($formatted_date ?: $txn->created_at); ?></td>
-                            <td>
-                                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-user-detail', 'user_id' => absint($txn->user_id)), admin_url('admin.php'))); ?>">
-                                    <?php echo esc_html($txn->user_id); ?>
-                                </a>
-                            </td>
-                            <td><?php echo esc_html($row_user_name); ?></td>
+                            <?php
+                            /*
+                             * OLD CODE (kept for rollback safety):
+                             * <td>
+                             *     <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-user-detail', 'user_id' => absint($txn->user_id)), admin_url('admin.php'))); ?>">
+                             *         <?php echo esc_html($txn->user_id); ?>
+                             *     </a>
+                             * </td>
+                             * <td><?php echo esc_html($row_user_name); ?></td>
+                             */
+                            ?>
+                            <td class="twork-col-user"><?php echo wp_kses_post($row_user_html); ?></td>
                             <td><?php echo esc_html(number_format_i18n($row_original_balance)); ?></td>
                             <td style="font-weight:600; color:#15803d;">+<?php echo esc_html(number_format_i18n($row_added)); ?></td>
                             <td style="font-weight:600; color:#b91c1c;">-<?php echo esc_html(number_format_i18n($row_deducted)); ?></td>
                             <td><?php echo esc_html(number_format_i18n($row_current_balance)); ?></td>
-                            <td><?php echo esc_html(!empty($txn->description) ? $txn->description : '—'); ?></td>
+                            <?php
+                            /*
+                             * OLD CODE (kept for rollback safety):
+                             * <td><?php echo esc_html($display_bet_option); ?></td>
+                             * <td><?php echo esc_html($display_bet_amount); ?></td>
+                             * <td><?php echo esc_html($display_win_option); ?></td>
+                             * <td><?php echo esc_html($display_win_amount); ?></td>
+                             * <td><?php echo esc_html(!empty($txn->description) ? $txn->description : '—'); ?></td>
+                             */
+                            ?>
+                            <td class="twork-col-bet-details" style="white-space:normal; word-wrap:break-word;"><?php echo $display_bet_details_html === '-' ? '-' : wp_kses_post($display_bet_details_html); ?></td>
+                            <?php
+                            /*
+                             * OLD CODE (kept for rollback safety):
+                             * <td class="twork-col-win-option" style="white-space:normal; word-wrap:break-word;"><?php echo esc_html($display_win_option); ?></td>
+                             * <td class="twork-col-win-amount" style="text-align:right;"><?php echo esc_html($display_win_amount); ?></td>
+                             */
+                            ?>
+                            <td class="twork-col-win-details" style="white-space:normal; word-wrap:break-word;"><?php echo $display_win_details_html === '-' ? '-' : wp_kses_post($display_win_details_html); ?></td>
+                            <td class="twork-col-description" style="white-space:normal; word-wrap:break-word;"><?php echo esc_html(!empty($txn->description) ? $txn->description : '—'); ?></td>
                         </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
                     <tr>
-                        <td colspan="8"><?php esc_html_e('No point transactions found for selected filters.', 'twork-rewards'); ?></td>
+                        <td colspan="9"><?php esc_html_e('No point transactions found for selected filters.', 'twork-rewards'); ?></td>
                     </tr>
                 <?php endif; ?>
                 </tbody>
@@ -12709,7 +14122,9 @@ class TWork_Rewards_System
                                     $txn_type_for_poll,
                                     $points_value_for_poll,
                                     $txn_meta_json_for_poll,
-                                    $txn_created_at_for_poll
+                                    $txn_created_at_for_poll,
+                                    isset($txn['selected_option']) ? (string) $txn['selected_option'] : null,
+                                    isset($txn['bet_amount']) ? (string) $txn['bet_amount'] : null
                                 );
 
                                 if (!empty($txn['poll_details'])) {
@@ -24968,6 +26383,317 @@ class TWork_Rewards_System
             'table_created' => '1',
         ), admin_url('admin.php')));
         exit;
+    }
+
+    /**
+     * Register WP-CLI commands for maintenance operations.
+     */
+    public function register_wp_cli_commands()
+    {
+        if (!defined('WP_CLI') || !WP_CLI) {
+            return;
+        }
+
+        static $registered = false;
+        if ($registered) {
+            return;
+        }
+
+        $registered = true;
+        \WP_CLI::add_command('twork-rewards fix-legacy-labels', array($this, 'cli_fix_legacy_labels'));
+    }
+
+    /**
+     * WP-CLI: Fix legacy Option N labels inside point transaction meta_json.
+     *
+     * ## OPTIONS
+     *
+     * [--dry-run]
+     * : Preview changes only, do not update DB.
+     *
+     * [--batch-size=<size>]
+     * : Maximum rows to process per run.
+     * ---
+     * default: 50
+     * ---
+     *
+     * @param array $args
+     * @param array $assoc_args
+     * @return void
+     */
+    public function cli_fix_legacy_labels($args, $assoc_args)
+    {
+        if (!defined('WP_CLI') || !WP_CLI) {
+            return;
+        }
+
+        global $wpdb;
+
+        $dry_run = isset($assoc_args['dry-run']);
+        $batch_size = isset($assoc_args['batch-size']) ? absint($assoc_args['batch-size']) : 50;
+        $batch_size = max(1, min(1000, $batch_size));
+
+        $points_table = $wpdb->prefix . 'twork_point_transactions';
+        $items_table = $wpdb->prefix . 'twork_engagement_items';
+
+        // OLD CODE (kept for rollback safety):
+        // ad-hoc LIKE-only candidate scanning without tiering.
+        //
+        // New code: JSON-path targeted candidates to reduce false positives.
+        $candidate_sql = $wpdb->prepare(
+            "SELECT id, order_id, meta_json
+             FROM $points_table
+             WHERE (
+                JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.winning_option.label')) REGEXP %s
+                OR JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.win_option.label')) REGEXP %s
+             )
+             ORDER BY id ASC
+             LIMIT %d",
+            '^Option [0-9]+$',
+            '^Option [0-9]+$',
+            $batch_size
+        );
+        $candidates = $wpdb->get_results($candidate_sql, ARRAY_A);
+
+        if (!is_array($candidates) || empty($candidates)) {
+            \WP_CLI::success('No legacy Option N labels found for the given batch.');
+            return;
+        }
+
+        $tier_counts = array(
+            'recoverable' => 0,
+            'suspected' => 0,
+            'unrecoverable' => 0,
+            'updated' => 0,
+        );
+        $audit_rows = array();
+        $poll_cache = array();
+
+        foreach ($candidates as $row) {
+            try {
+                $txn_id = isset($row['id']) ? (int) $row['id'] : 0;
+                $order_id = isset($row['order_id']) ? (string) $row['order_id'] : '';
+                $meta_raw = isset($row['meta_json']) ? trim((string) $row['meta_json']) : '';
+                if ($txn_id <= 0 || $meta_raw === '') {
+                    $tier_counts['unrecoverable']++;
+                    continue;
+                }
+
+                $meta = json_decode($meta_raw, true);
+                if (!is_array($meta)) {
+                    $tier_counts['unrecoverable']++;
+                    continue;
+                }
+
+                $winning_path = null;
+                if (isset($meta['winning_option']) && is_array($meta['winning_option'])) {
+                    $winning_path = 'winning_option';
+                } elseif (isset($meta['win_option']) && is_array($meta['win_option'])) {
+                    $winning_path = 'win_option';
+                }
+                if ($winning_path === null) {
+                    $tier_counts['unrecoverable']++;
+                    continue;
+                }
+
+                $winning_node = $meta[$winning_path];
+                $old_label = isset($winning_node['label']) ? trim((string) $winning_node['label']) : '';
+                $winning_index = isset($winning_node['index']) && is_numeric($winning_node['index']) ? (int) $winning_node['index'] : null;
+                if ($winning_index === null) {
+                    $tier_counts['suspected']++;
+                    $audit_rows[] = array(
+                        'txn_id' => $txn_id,
+                        'tier' => 'suspected',
+                        'poll_id' => '',
+                        'index' => '',
+                        'old_label' => $old_label,
+                        'new_label' => '',
+                        'note' => 'missing_index',
+                    );
+                    continue;
+                }
+
+                $poll_id = 0;
+                if (isset($meta['poll_id']) && is_numeric($meta['poll_id'])) {
+                    $poll_id = (int) $meta['poll_id'];
+                }
+                // Canonical pattern aligns with transaction parser around build_poll_transaction_details.
+                if ($poll_id <= 0 && preg_match('/^engagement:(poll|poll_cost):(\d+):/i', $order_id, $m)) {
+                    $poll_id = isset($m[2]) ? (int) $m[2] : 0;
+                }
+                if ($poll_id <= 0) {
+                    $tier_counts['unrecoverable']++;
+                    $audit_rows[] = array(
+                        'txn_id' => $txn_id,
+                        'tier' => 'unrecoverable',
+                        'poll_id' => '',
+                        'index' => (string) $winning_index,
+                        'old_label' => $old_label,
+                        'new_label' => '',
+                        'note' => 'poll_id_not_found',
+                    );
+                    continue;
+                }
+
+                if (!array_key_exists($poll_id, $poll_cache)) {
+                    $item_sql = $wpdb->prepare(
+                        "SELECT quiz_data FROM $items_table WHERE id = %d LIMIT 1",
+                        $poll_id
+                    );
+                    $item_row = $wpdb->get_row($item_sql, ARRAY_A);
+                    if (!is_array($item_row) || !isset($item_row['quiz_data'])) {
+                        $poll_cache[$poll_id] = null;
+                    } else {
+                        $quiz_data = json_decode((string) $item_row['quiz_data'], true);
+                        $poll_cache[$poll_id] = is_array($quiz_data) ? $quiz_data : null;
+                    }
+                }
+
+                $quiz_data = $poll_cache[$poll_id];
+                if (!is_array($quiz_data)) {
+                    $tier_counts['unrecoverable']++;
+                    $audit_rows[] = array(
+                        'txn_id' => $txn_id,
+                        'tier' => 'unrecoverable',
+                        'poll_id' => (string) $poll_id,
+                        'index' => (string) $winning_index,
+                        'old_label' => $old_label,
+                        'new_label' => '',
+                        'note' => 'poll_missing_or_invalid_quiz_data',
+                    );
+                    continue;
+                }
+
+                $options = isset($quiz_data['options']) && is_array($quiz_data['options']) ? $quiz_data['options'] : array();
+                $options_len = count($options);
+                if ($winning_index < 0 || $winning_index >= $options_len) {
+                    $tier_counts['suspected']++;
+                    $audit_rows[] = array(
+                        'txn_id' => $txn_id,
+                        'tier' => 'suspected',
+                        'poll_id' => (string) $poll_id,
+                        'index' => (string) $winning_index,
+                        'old_label' => $old_label,
+                        'new_label' => '',
+                        'note' => 'index_out_of_bounds',
+                    );
+                    continue;
+                }
+
+                $target_option = $options[$winning_index];
+                $new_label = '';
+                if (is_array($target_option)) {
+                    $new_label = isset($target_option['text']) ? trim((string) $target_option['text']) : '';
+                } else {
+                    $new_label = trim((string) $target_option);
+                }
+
+                if ($new_label === '') {
+                    $tier_counts['suspected']++;
+                    $audit_rows[] = array(
+                        'txn_id' => $txn_id,
+                        'tier' => 'suspected',
+                        'poll_id' => (string) $poll_id,
+                        'index' => (string) $winning_index,
+                        'old_label' => $old_label,
+                        'new_label' => '',
+                        'note' => 'empty_target_label',
+                    );
+                    continue;
+                }
+
+                $tier_counts['recoverable']++;
+
+                if (isset($meta['winning_option']) && is_array($meta['winning_option'])) {
+                    $meta['winning_option']['index'] = $winning_index;
+                    $meta['winning_option']['label'] = $new_label;
+                }
+                if (isset($meta['win_option']) && is_array($meta['win_option'])) {
+                    $meta['win_option']['index'] = $winning_index;
+                    $meta['win_option']['label'] = $new_label;
+                }
+
+                $updated_meta_json = wp_json_encode($meta);
+                if (!is_string($updated_meta_json) || $updated_meta_json === '') {
+                    $tier_counts['suspected']++;
+                    $audit_rows[] = array(
+                        'txn_id' => $txn_id,
+                        'tier' => 'suspected',
+                        'poll_id' => (string) $poll_id,
+                        'index' => (string) $winning_index,
+                        'old_label' => $old_label,
+                        'new_label' => $new_label,
+                        'note' => 'json_encode_failed',
+                    );
+                    continue;
+                }
+
+                $audit_rows[] = array(
+                    'txn_id' => $txn_id,
+                    'tier' => 'recoverable',
+                    'poll_id' => (string) $poll_id,
+                    'index' => (string) $winning_index,
+                    'old_label' => $old_label,
+                    'new_label' => $new_label,
+                    'note' => $dry_run ? 'dry_run' : 'updated',
+                );
+
+                if (!$dry_run) {
+                    $update_result = $wpdb->update(
+                        $points_table,
+                        array('meta_json' => $updated_meta_json),
+                        array('id' => $txn_id),
+                        array('%s'),
+                        array('%d')
+                    );
+                    if ($update_result !== false) {
+                        $tier_counts['updated']++;
+                    }
+                }
+            } catch (Exception $e) {
+                $tier_counts['suspected']++;
+                $audit_rows[] = array(
+                    'txn_id' => isset($row['id']) ? (int) $row['id'] : 0,
+                    'tier' => 'suspected',
+                    'poll_id' => '',
+                    'index' => '',
+                    'old_label' => '',
+                    'new_label' => '',
+                    'note' => 'exception:' . $e->getMessage(),
+                );
+                continue;
+            }
+        }
+
+        \WP_CLI::line('');
+        \WP_CLI::line('Tier Summary');
+        \WP_CLI::line(sprintf('- Recoverable: %d', (int) $tier_counts['recoverable']));
+        \WP_CLI::line(sprintf('- Suspected: %d', (int) $tier_counts['suspected']));
+        \WP_CLI::line(sprintf('- Unrecoverable: %d', (int) $tier_counts['unrecoverable']));
+        if (!$dry_run) {
+            \WP_CLI::line(sprintf('- Updated: %d', (int) $tier_counts['updated']));
+        }
+
+        if (!empty($audit_rows)) {
+            \WP_CLI::line('');
+            \WP_CLI::line('Audit Trail');
+            \WP_CLI\Utils\format_items('table', $audit_rows, array(
+                'txn_id',
+                'tier',
+                'poll_id',
+                'index',
+                'old_label',
+                'new_label',
+                'note',
+            ));
+        }
+
+        if ($dry_run) {
+            \WP_CLI::success('Dry-run complete. No rows were updated.');
+            return;
+        }
+
+        \WP_CLI::success('Legacy label migration completed.');
     }
 }
 

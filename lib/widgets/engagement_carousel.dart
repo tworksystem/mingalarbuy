@@ -39,6 +39,50 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   int? _lastUserId; // Track last user ID to detect user changes
   int? _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
   String _lastWinnerScanSignature = '';
+  final Set<String> _forcedOverlaySessionKeys = <String>{};
+  final Map<String, DateTime> _handoverTriggeredAt = <String, DateTime>{};
+
+  String _pollSessionKey(EngagementItem item) {
+    final schedule = item.pollVotingSchedule;
+    final dynamic rawSessionId = schedule?['current_session_id'];
+    final dynamic rawStartedAt = schedule?['poll_actual_start_at'];
+    final dynamic rawVotingStatus = schedule?['voting_status'];
+    final sessionId = (rawSessionId == null || rawSessionId.toString().isEmpty)
+        ? 'nosession'
+        : rawSessionId.toString();
+    final startedAt = (rawStartedAt == null || rawStartedAt.toString().isEmpty)
+        ? 'nostart'
+        : rawStartedAt.toString();
+    final votingStatus = (rawVotingStatus == null || rawVotingStatus.toString().isEmpty)
+        ? 'unknown'
+        : rawVotingStatus.toString().toLowerCase();
+    return '${item.id}_${sessionId}_${startedAt}_${votingStatus}';
+  }
+
+  bool _isInHandoverBuffer(String key) {
+    final triggeredAt = _handoverTriggeredAt[key];
+    if (triggeredAt == null) return false;
+    const buffer = Duration(seconds: 2);
+    return DateTime.now().difference(triggeredAt) <= buffer;
+  }
+
+  void _pruneForcedOverlaySessionKeys(List<EngagementItem> items) {
+    final validKeys = <String>{};
+    for (final item in items) {
+      if (item.type != EngagementType.poll) continue;
+      final schedule = item.pollVotingSchedule;
+      final seconds = schedule != null && schedule['seconds_until_close'] is int
+          ? (schedule['seconds_until_close'] as int)
+          : (schedule != null && schedule['seconds_until_close'] is num
+              ? (schedule['seconds_until_close'] as num).toInt()
+              : 0);
+      if (seconds > 0 && seconds <= 10) {
+        validKeys.add(_pollSessionKey(item));
+      }
+    }
+    _forcedOverlaySessionKeys.removeWhere((key) => !validKeys.contains(key));
+    _handoverTriggeredAt.removeWhere((key, _) => !validKeys.contains(key));
+  }
 
   @override
   void initState() {
@@ -94,6 +138,10 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     // This ensures Engagement HUB shows for new user even if widget was already built
     final userChanged = _lastUserId != null && _lastUserId != currentUserId;
     _lastUserId = currentUserId;
+    if (userChanged) {
+      _forcedOverlaySessionKeys.clear();
+      _handoverTriggeredAt.clear();
+    }
 
     app_logger.Logger.info(
         'Loading engagement feed for user: $currentUserId (userChanged: $userChanged)',
@@ -111,6 +159,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       if (!mounted) return;
 
       if (engagementProvider.hasItems) {
+        _pruneForcedOverlaySessionKeys(engagementProvider.items);
         app_logger.Logger.info(
             'Engagement feed loaded: ${engagementProvider.items.length} items',
             tag: 'EngagementCarousel');
@@ -125,6 +174,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
           _startAutoScroll();
         }
       } else {
+        _forcedOverlaySessionKeys.clear();
+        _handoverTriggeredAt.clear();
         app_logger.Logger.warning(
             'Engagement feed is empty. Error: ${engagementProvider.error}',
             tag: 'EngagementCarousel');
@@ -1185,12 +1236,37 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         ((r['total_votes'] ?? 0) > 0 || hasWinning);
 
     if (showResult) {
+      /*
+      Old Code:
       return _PollResultWinnerPopupHost(item: item);
+      */
+      // New Code:
+      // Smooth/stable transition between voting and result states.
+      return AnimatedSwitcher(
+        duration: const Duration(milliseconds: 250),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        child: KeyedSubtree(
+          key: ValueKey<String>(
+            'poll_result_${item.id}_${schedule == null ? '' : schedule['current_session_id'] ?? ''}_${r['winning_index'] ?? ''}',
+          ),
+          child: _PollResultWinnerPopupHost(item: item),
+        ),
+      );
     }
 
     final hasInteracted = item.hasInteracted;
     final hasImage = item.mediaUrl != null && item.mediaUrl!.isNotEmpty;
     final bool isPollActive = item.quizData?.isActive ?? true;
+    final sessionKey = _pollSessionKey(item);
+    if (secondsUntilClose > 11 && !_isInHandoverBuffer(sessionKey)) {
+      _forcedOverlaySessionKeys.remove(sessionKey);
+      _handoverTriggeredAt.remove(sessionKey);
+    }
+    final isForcedOverlay = _forcedOverlaySessionKeys.contains(sessionKey);
+    final showOverlay =
+        isForcedOverlay || (secondsUntilClose >= 1 && secondsUntilClose <= 10);
+    final showPermanentTimer = !showOverlay && secondsUntilClose > 10;
 
     Widget cardContent;
 
@@ -1648,13 +1724,80 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     );
     }
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        cardContent,
-        if (secondsUntilClose >= 1 && secondsUntilClose <= 10)
-          _PollCountdownOverlay(initialSeconds: secondsUntilClose),
-      ],
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      child: KeyedSubtree(
+        key: ValueKey<String>(
+          'poll_vote_${item.id}_${votingStatus}_${item.hasInteracted ? 1 : 0}',
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            cardContent,
+            Positioned(
+              top: 10,
+              left: 10,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 500),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                layoutBuilder: (currentChild, previousChildren) {
+                  return Stack(
+                    alignment: Alignment.topLeft,
+                    children: [
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  );
+                },
+                transitionBuilder: (Widget child, Animation<double> animation) {
+                  final slideAnimation = Tween<Offset>(
+                    begin: const Offset(0, -0.08),
+                    end: Offset.zero,
+                  ).animate(animation);
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: slideAnimation,
+                      child: child,
+                    ),
+                  );
+                },
+                child: showPermanentTimer
+                    ? IgnorePointer(
+                        key: ValueKey<String>('badge_$sessionKey'),
+                        child: _PermanentPollTimer(
+                          key: ValueKey<String>(
+                            'timer_${item.id}_${votingStatus}_$sessionKey',
+                          ),
+                          initialSeconds: secondsUntilClose,
+                          onReachedHandover: () {
+                            if (!mounted) return;
+                            if (_forcedOverlaySessionKeys.contains(sessionKey)) {
+                              return;
+                            }
+                            setState(() {
+                              _forcedOverlaySessionKeys.add(sessionKey);
+                              _handoverTriggeredAt[sessionKey] = DateTime.now();
+                            });
+                          },
+                        ),
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey<String>('poll_timer_none'),
+                      ),
+              ),
+            ),
+            if (showOverlay)
+              _PollCountdownOverlay(
+                key: ValueKey<String>('overlay_$sessionKey'),
+                initialSeconds: secondsUntilClose,
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2208,11 +2351,143 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   }
 }
 
+/// Always-visible compact timer badge for poll duration.
+/// Separate from [_PollCountdownOverlay], which remains last-10-seconds only.
+class _PermanentPollTimer extends StatefulWidget {
+  final int initialSeconds;
+  final VoidCallback? onReachedHandover;
+
+  const _PermanentPollTimer({
+    super.key,
+    required this.initialSeconds,
+    this.onReachedHandover,
+  });
+
+  @override
+  State<_PermanentPollTimer> createState() => _PermanentPollTimerState();
+}
+
+class _PermanentPollTimerState extends State<_PermanentPollTimer> {
+  late int _secondsLeft;
+  Timer? _timer;
+  bool _didNotifyHandover = false;
+
+  int _clampSeconds(int value) => value < 0 ? 0 : value;
+
+  void _startOrRefreshTimer() {
+    _timer?.cancel();
+    _didNotifyHandover = false;
+    if (_secondsLeft <= 0) return;
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      if (_secondsLeft <= 0) {
+        _timer?.cancel();
+        return;
+      }
+      setState(() {
+        _secondsLeft = _clampSeconds(_secondsLeft - 1);
+      });
+      if (_secondsLeft <= 10) {
+        if (!_didNotifyHandover) {
+          _didNotifyHandover = true;
+          widget.onReachedHandover?.call();
+        }
+        _timer?.cancel();
+      }
+    });
+  }
+
+  String _formatMmSs(int seconds) {
+    final mm = (seconds ~/ 60).toString().padLeft(2, '0');
+    final ss = (seconds % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _secondsLeft = _clampSeconds(widget.initialSeconds);
+    _startOrRefreshTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _PermanentPollTimer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final next = _clampSeconds(widget.initialSeconds);
+    final prev = _clampSeconds(oldWidget.initialSeconds);
+    if (next <= 10) {
+      _secondsLeft = next;
+      _timer?.cancel();
+      return;
+    }
+    if (next != prev) {
+      // Guard against delayed parent refresh spikes (e.g. 10 -> 100) within same session widget.
+      final looksLikeSpike = next > _secondsLeft && _secondsLeft <= 12;
+      if (looksLikeSpike) return;
+      _secondsLeft = next;
+      _startOrRefreshTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_secondsLeft <= 10) {
+      return const SizedBox.shrink();
+    }
+    return Align(
+      alignment: Alignment.topLeft,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.35),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.28),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.timer_outlined,
+                  size: 14,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _formatMmSs(_secondsLeft),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Countdown overlay for Auto Run poll (last 10 seconds before close)
 class _PollCountdownOverlay extends StatefulWidget {
   final int initialSeconds;
 
-  const _PollCountdownOverlay({required this.initialSeconds});
+  const _PollCountdownOverlay({super.key, required this.initialSeconds});
 
   @override
   State<_PollCountdownOverlay> createState() => _PollCountdownOverlayState();
@@ -2296,30 +2571,39 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: Container(
-        color: Colors.black54,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '$_secondsLeft',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 72,
-                  fontWeight: FontWeight.bold,
-                ),
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: AbsorbPointer(
+        absorbing: false,
+        child: IgnorePointer(
+          child: Container(
+            color: Colors.black54,
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$_secondsLeft',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 72,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Closing in...',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 16,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                'Closing in...',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
-                  fontSize: 16,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

@@ -1428,8 +1428,13 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final isManualReward = orderIdStr.startsWith('manual_reward:');
     final isCodeRedemption = orderIdStr.startsWith('code:');
     final pollDetails = transaction.pollDetails;
-    final hasPollDetails =
-        pollDetails != null && pollDetails.selectedOptions.isNotEmpty;
+    // Old Code:
+    // final hasPollDetails =
+    //     pollDetails != null && pollDetails.selectedOptions.isNotEmpty;
+    //
+    // New Code: render poll card when either selected options OR spent summary exists.
+    final hasPollDetails = pollDetails != null &&
+        (pollDetails.selectedOptions.isNotEmpty || pollDetails.totalBetPnp > 0);
     final amountColor =
         transaction.amountDeducted > 0 ? Colors.red : Colors.green;
     final amountText = transaction.amountDeducted > 0
@@ -1785,24 +1790,74 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final Color statusColor;
     final IconData statusIcon;
     final String statusLabel;
+    final bool looksLikePendingBet =
+        details.wonAmountPnp <= 0 && details.totalBetPnp > 0;
 
     if (status == 'won') {
       statusColor = Colors.green;
       statusIcon = Icons.emoji_events;
       statusLabel = 'Win';
     } else if (status == 'lost') {
-      statusColor = Colors.red;
-      statusIcon = Icons.cancel_outlined;
-      statusLabel = 'Loss';
+      // OLD CODE:
+      // statusColor = Colors.red;
+      // statusIcon = Icons.cancel_outlined;
+      // statusLabel = 'Loss';
+      //
+      // New Code: For poll deductions that still represent a placed bet,
+      // show a pending-style label instead of a hard loss state.
+      if (looksLikePendingBet) {
+        // OLD CODE:
+        // statusColor = Colors.blue;
+        //
+        // New Code: use pending/warning amber tone for theme consistency.
+        statusColor = Colors.amber[800]!;
+        statusIcon = Icons.sports_esports_outlined;
+        statusLabel = 'Bet Placed';
+      } else {
+        statusColor = Colors.red;
+        statusIcon = Icons.cancel_outlined;
+        statusLabel = 'Loss';
+      }
     } else {
-      statusColor = Colors.orange;
-      statusIcon = Icons.hourglass_top;
-      statusLabel = 'Pending';
+      // OLD CODE:
+      // statusColor = Colors.orange;
+      // statusIcon = Icons.hourglass_top;
+      // statusLabel = 'Pending';
+      //
+      // New Code: Use clearer wording for pending poll cost state.
+      if (looksLikePendingBet) {
+        // OLD CODE:
+        // statusColor = Colors.blue;
+        //
+        // New Code: use pending/warning amber tone for theme consistency.
+        statusColor = Colors.amber[800]!;
+        statusIcon = Icons.sports_esports_outlined;
+        statusLabel = 'Bet Placed';
+      } else {
+        statusColor = Colors.orange;
+        statusIcon = Icons.hourglass_top;
+        statusLabel = 'Pending';
+      }
     }
 
-    final selectedText = details.selectedOptions
-        .map((option) => '${option.label} (${option.betPnp} PNP)')
-        .join(', ');
+    // Old Code: single compressed Text lines (votedSingleText / votedMultiText).
+    // New Code: per-option chip-style rows with "[Label]: [Value] PNP" and ellipsis label.
+    final List<PollOptionSnapshot> selectedOptions = details.selectedOptions;
+    final int safeTotalSpentFromOptions = selectedOptions.fold<int>(
+      0,
+      (sum, o) => sum + (o.betPnp > 0 ? o.betPnp : 0),
+    );
+    // Prefer server/model aggregate when present & consistent; else derive from rows.
+    final int safeTotalSpent = details.totalBetPnp > 0
+        ? details.totalBetPnp
+        : safeTotalSpentFromOptions;
+    final bool hasOptionRows = selectedOptions.isNotEmpty;
+    final bool showFallbackSpendLine =
+        !hasOptionRows && safeTotalSpent > 0;
+    final bool showMultiSummary =
+        hasOptionRows && selectedOptions.length > 1;
+    final bool showFreePollSummary =
+        hasOptionRows && selectedOptions.length > 1 && safeTotalSpent <= 0;
 
     return Container(
       width: double.infinity,
@@ -1828,14 +1883,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                 ),
               ),
               const Spacer(),
-              Text(
-                'Bet ${details.totalBetPnp} PNP',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Colors.grey.shade700,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
             ],
           ),
           if ((details.pollTitle ?? '').isNotEmpty) ...[
@@ -1850,13 +1897,94 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
             ),
           ],
           const SizedBox(height: 4),
-          Text(
-            'Your Option: $selectedText',
-            style: TextStyle(
-              fontSize: 11,
-              color: Colors.grey.shade700,
+          if (hasOptionRows) ...[
+            ...selectedOptions.map((PollOptionSnapshot option) {
+              final String displayLabel = option.label.trim().isEmpty
+                  ? 'Option ${option.index + 1}'
+                  : option.label.trim();
+              final int betPnp = option.betPnp > 0 ? option.betPnp : 0;
+              final bool isFreeOption = betPnp <= 0;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          displayLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey.shade800,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        ': ',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                      Text(
+                        // Old Code:
+                        // '$betPnp PNP'
+                        // with mediumYellow style for all values.
+                        //
+                        // New Code: graceful legacy fallback for zero-value options.
+                        isFreeOption ? 'Free' : '$betPnp PNP',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isFreeOption ? Colors.grey : mediumYellow,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ] else if (showFallbackSpendLine)
+            Text(
+              'Spent $safeTotalSpent PNP on Poll',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade700,
+              ),
             ),
-          ),
+          // Old Code: always showed "Total Spent: X PNP" for multi-option rows.
+          // New Code: show "Free Poll" when total is zero.
+          if (showMultiSummary && !showFreePollSummary) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Total Spent: $safeTotalSpent PNP',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+          if (showFreePollSummary) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Free Poll',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
           if (details.winningOption != null) ...[
             const SizedBox(height: 2),
             Text(

@@ -60,7 +60,8 @@ class PointService {
   }
 
   // Broadcast stream for context-free sync (FCM helpers, isolates, future callers).
-  static final StreamController<PointSyncBroadcast> _pointSyncBroadcastController =
+  static final StreamController<PointSyncBroadcast>
+  _pointSyncBroadcastController =
       StreamController<PointSyncBroadcast>.broadcast();
 
   /// Listen from [PointProvider] (or tests) to apply cache/server-aligned balance globally.
@@ -117,19 +118,19 @@ class PointService {
   // - Point sync retry is now owned by PointService only.
   static const _PointSyncRetryProfile _blockingSyncProfile =
       _PointSyncRetryProfile(
-    maxAttempts: 2,
-    perAttemptTimeout: Duration(seconds: 10),
-    initialBackoff: Duration(seconds: 1),
-    backoffMultiplier: 1.0,
-  );
+        maxAttempts: 2,
+        perAttemptTimeout: Duration(seconds: 10),
+        initialBackoff: Duration(seconds: 1),
+        backoffMultiplier: 1.0,
+      );
 
   static const _PointSyncRetryProfile _backgroundSyncProfile =
       _PointSyncRetryProfile(
-    maxAttempts: 4,
-    perAttemptTimeout: Duration(seconds: 30),
-    initialBackoff: Duration(seconds: 2),
-    backoffMultiplier: 2.0,
-  );
+        maxAttempts: 4,
+        perAttemptTimeout: Duration(seconds: 30),
+        initialBackoff: Duration(seconds: 2),
+        backoffMultiplier: 2.0,
+      );
 
   static Map<String, dynamic> _requestHeaders() {
     return const <String, dynamic>{
@@ -168,14 +169,21 @@ class PointService {
   }) async {
     try {
       // Use custom WordPress REST endpoint
-      final uri = Uri.parse(
-        AppConfig.tworkEndpoint('${AppConfig.tworkPointsBalancePath}/$userId'),
-      ).replace(queryParameters: {
-        ..._getWooCommerceAuthQueryParams(),
-        // Use explicit `t` nonce to bypass intermediary cache layers.
-        't': (cacheBypassTimestampMs ?? DateTime.now().millisecondsSinceEpoch)
-            .toString(),
-      });
+      final uri =
+          Uri.parse(
+            AppConfig.tworkEndpoint(
+              '${AppConfig.tworkPointsBalancePath}/$userId',
+            ),
+          ).replace(
+            queryParameters: {
+              ..._getWooCommerceAuthQueryParams(),
+              // Use explicit `t` nonce to bypass intermediary cache layers.
+              't':
+                  (cacheBypassTimestampMs ??
+                          DateTime.now().millisecondsSinceEpoch)
+                      .toString(),
+            },
+          );
       final requestUrl = uri.toString();
       final hasTimestampBypass = uri.queryParameters.containsKey('t');
       Logger.info(
@@ -200,7 +208,9 @@ class PointService {
       );
 
       if (NetworkUtils.isValidDioResponse(response)) {
-        final Map<String, dynamic>? raw = ApiService.responseAsJsonMap(response);
+        final Map<String, dynamic>? raw = ApiService.responseAsJsonMap(
+          response,
+        );
         if (raw == null) {
           final body = ApiService.responseBodyString(response);
           Logger.error(
@@ -242,8 +252,9 @@ class PointService {
         await _saveBalanceToStorage(balance);
 
         Logger.info(
-            'Point balance loaded from API: ${balance.currentBalance} points',
-            tag: 'PointService');
+          'Point balance loaded from API: ${balance.currentBalance} points',
+          tag: 'PointService',
+        );
         _clearPointBalanceFailure();
         return balance;
       }
@@ -263,11 +274,17 @@ class PointService {
 
       return null;
     } catch (e, stackTrace) {
-      Logger.error('Error getting point balance: $e',
-          tag: 'PointService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error getting point balance: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       _recordPointBalanceFailure(
         statusCode: null,
-        url: AppConfig.tworkEndpoint('${AppConfig.tworkPointsBalancePath}/$userId'),
+        url: AppConfig.tworkEndpoint(
+          '${AppConfig.tworkPointsBalancePath}/$userId',
+        ),
         reason: 'Exception during point balance fetch: $e',
       );
       // Server is source of truth for explicit refresh; do not mask failures with cache.
@@ -278,7 +295,8 @@ class PointService {
   /// Get ALL point transactions from API by loading all pages
   /// This is useful for getting all unique transaction types for filter chips
   static Future<List<PointTransaction>> getAllPointTransactions(
-      String userId) async {
+    String userId,
+  ) async {
     try {
       final allTransactions = <PointTransaction>[];
       int? totalPages;
@@ -286,8 +304,9 @@ class PointService {
 
       // First, load page 1 to get total_pages info
       Logger.info(
-          'Loading first page to get total pages count for user $userId',
-          tag: 'PointService');
+        'Loading first page to get total pages count for user $userId',
+        tag: 'PointService',
+      );
 
       // Make direct API call to get pagination info
       // CRITICAL FIX: Request transactions sorted by date (newest first)
@@ -300,18 +319,21 @@ class PointService {
       };
 
       final uri = Uri.parse(
-              AppConfig.tworkEndpoint('${AppConfig.tworkPointsTransactionsPath}/$userId'))
-          .replace(queryParameters: queryParams);
-
-      final Response<dynamic>? firstResponse = await ApiService.executeWithRetry(
-        () => ApiService.get(
-          uri.path,
-          queryParameters: uri.queryParameters,
-          skipAuth: false,
-          headers: _requestHeaders(),
+        AppConfig.tworkEndpoint(
+          '${AppConfig.tworkPointsTransactionsPath}/$userId',
         ),
-        context: 'getAllPointTransactions',
-      );
+      ).replace(queryParameters: queryParams);
+
+      final Response<dynamic>? firstResponse =
+          await ApiService.executeWithRetry(
+            () => ApiService.get(
+              uri.path,
+              queryParameters: uri.queryParameters,
+              skipAuth: false,
+              headers: _requestHeaders(),
+            ),
+            context: 'getAllPointTransactions',
+          );
 
       Map<String, dynamic>? firstData;
       if (NetworkUtils.isValidDioResponse(firstResponse)) {
@@ -332,15 +354,17 @@ class PointService {
         allTransactions.addAll(firstTransactions);
 
         Logger.info(
-            'Page 1: Loaded ${firstTransactions.length} transactions. Total pages: $totalPages',
-            tag: 'PointService');
+          'Page 1: Loaded ${firstTransactions.length} transactions. Total pages: $totalPages',
+          tag: 'PointService',
+        );
 
         // If we have more pages, load them
         if (totalPages > 1) {
           for (int page = 2; page <= totalPages; page++) {
             Logger.info(
-                'Loading transactions page $page of $totalPages for user $userId',
-                tag: 'PointService');
+              'Loading transactions page $page of $totalPages for user $userId',
+              tag: 'PointService',
+            );
 
             // CRITICAL: getPointTransactions already includes orderby/order params
             // But we need to ensure it's called with the same parameters
@@ -356,8 +380,10 @@ class PointService {
             pageTransactions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
             if (pageTransactions.isEmpty) {
-              Logger.warning('Page $page returned empty, stopping load',
-                  tag: 'PointService');
+              Logger.warning(
+                'Page $page returned empty, stopping load',
+                tag: 'PointService',
+              );
               break;
             }
 
@@ -366,8 +392,9 @@ class PointService {
             // Safety limit to prevent infinite loops
             if (page > 100) {
               Logger.warning(
-                  'Reached safety limit of 100 pages, stopping transaction load',
-                  tag: 'PointService');
+                'Reached safety limit of 100 pages, stopping transaction load',
+                tag: 'PointService',
+              );
               break;
             }
           }
@@ -375,8 +402,9 @@ class PointService {
       } else {
         // Fallback: use getPointTransactions which handles errors
         Logger.warning(
-            'Failed to get pagination info, loading single page as fallback',
-            tag: 'PointService');
+          'Failed to get pagination info, loading single page as fallback',
+          tag: 'PointService',
+        );
         final fallbackResult = await getPointTransactions(
           userId,
           page: 1,
@@ -390,40 +418,54 @@ class PointService {
       allTransactions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       Logger.info(
-          'Loaded ${allTransactions.length} total transactions across all pages',
-          tag: 'PointService');
+        'Loaded ${allTransactions.length} total transactions across all pages',
+        tag: 'PointService',
+      );
 
       // Log date range for debugging
       if (allTransactions.isNotEmpty) {
         final newest = allTransactions.first;
         final oldest = allTransactions.last;
         Logger.info(
-            'All transactions date range: Newest: ${newest.createdAt.toString()} (ID: ${newest.id}), Oldest: ${oldest.createdAt.toString()} (ID: ${oldest.id})',
-            tag: 'PointService');
+          'All transactions date range: Newest: ${newest.createdAt.toString()} (ID: ${newest.id}), Oldest: ${oldest.createdAt.toString()} (ID: ${oldest.id})',
+          tag: 'PointService',
+        );
         final now = DateTime.now();
         final newestDiff = newest.createdAt.difference(now).inDays;
         Logger.info(
-            'Newest transaction is $newestDiff days ${newestDiff > 0 ? "in the future" : newestDiff < 0 ? "ago" : "today"}',
-            tag: 'PointService');
+          'Newest transaction is $newestDiff days ${newestDiff > 0
+              ? "in the future"
+              : newestDiff < 0
+              ? "ago"
+              : "today"}',
+          tag: 'PointService',
+        );
       }
 
       // Get unique types for logging
       final uniqueTypes = allTransactions.map((t) => t.type).toSet();
       Logger.info(
-          'Found ${uniqueTypes.length} unique transaction types: ${uniqueTypes.map((t) => t.toValue()).join(", ")}',
-          tag: 'PointService');
+        'Found ${uniqueTypes.length} unique transaction types: ${uniqueTypes.map((t) => t.toValue()).join(", ")}',
+        tag: 'PointService',
+      );
 
       // Log count per type
       for (final type in uniqueTypes) {
         final count = allTransactions.where((t) => t.type == type).length;
-        Logger.info('  - ${type.toValue()}: $count transactions',
-            tag: 'PointService');
+        Logger.info(
+          '  - ${type.toValue()}: $count transactions',
+          tag: 'PointService',
+        );
       }
 
       return allTransactions;
     } catch (e, stackTrace) {
-      Logger.error('Error getting all point transactions: $e',
-          tag: 'PointService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error getting all point transactions: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       // Fallback to cached transactions
       return await getCachedTransactions(userId);
     }
@@ -454,16 +496,20 @@ class PointService {
       };
 
       final uri = Uri.parse(
-              AppConfig.tworkEndpoint('${AppConfig.tworkPointsTransactionsPath}/$userId'))
-          .replace(queryParameters: queryParams);
+        AppConfig.tworkEndpoint(
+          '${AppConfig.tworkPointsTransactionsPath}/$userId',
+        ),
+      ).replace(queryParameters: queryParams);
 
       Logger.info(
-          'Requesting transactions with orderby=created_at, order=DESC (newest first)',
-          tag: 'PointService');
+        'Requesting transactions with orderby=created_at, order=DESC (newest first)',
+        tag: 'PointService',
+      );
 
       Logger.info(
-          'Fetching transactions for user $userId (page: $page, perPage: $perPage)',
-          tag: 'PointService');
+        'Fetching transactions for user $userId (page: $page, perPage: $perPage)',
+        tag: 'PointService',
+      );
       Logger.info('API URL: $uri', tag: 'PointService');
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
@@ -479,13 +525,15 @@ class PointService {
       final String bodyStr = ApiService.responseBodyString(response);
       // DEBUG: Log response status and body BEFORE validation
       Logger.info(
-          'API Response Status: ${response?.statusCode}, Body length: ${bodyStr.length}',
-          tag: 'PointService');
+        'API Response Status: ${response?.statusCode}, Body length: ${bodyStr.length}',
+        tag: 'PointService',
+      );
 
       if (response != null && bodyStr.isNotEmpty) {
         Logger.info(
-            'Raw API response (first 500 chars): ${bodyStr.substring(0, bodyStr.length > 500 ? 500 : bodyStr.length)}',
-            tag: 'PointService');
+          'Raw API response (first 500 chars): ${bodyStr.substring(0, bodyStr.length > 500 ? 500 : bodyStr.length)}',
+          tag: 'PointService',
+        );
       }
 
       if (NetworkUtils.isValidDioResponse(response)) {
@@ -495,14 +543,20 @@ class PointService {
               : json.decode(bodyStr);
 
           // DEBUG: Log parsed data structure
-          Logger.info('Parsed data type: ${data.runtimeType}',
-              tag: 'PointService');
+          Logger.info(
+            'Parsed data type: ${data.runtimeType}',
+            tag: 'PointService',
+          );
           if (data is Map) {
-            Logger.info('Parsed data keys: ${data.keys.toList()}',
-                tag: 'PointService');
+            Logger.info(
+              'Parsed data keys: ${data.keys.toList()}',
+              tag: 'PointService',
+            );
           } else if (data is List) {
-            Logger.info('Parsed data list length: ${data.length}',
-                tag: 'PointService');
+            Logger.info(
+              'Parsed data list length: ${data.length}',
+              tag: 'PointService',
+            );
           }
 
           // CRITICAL FIX: Handle different response formats
@@ -512,8 +566,9 @@ class PointService {
             // Response is directly a list of transactions
             transactionsData = data;
             Logger.info(
-                'Response is a direct list of ${transactionsData.length} transactions',
-                tag: 'PointService');
+              'Response is a direct list of ${transactionsData.length} transactions',
+              tag: 'PointService',
+            );
           } else if (data is Map<String, dynamic>) {
             // Response is an object - check for 'transactions' key first
             if (data.containsKey('transactions')) {
@@ -534,8 +589,10 @@ class PointService {
               transactionsData = [];
             }
           } else {
-            Logger.warning('Unexpected response format: ${data.runtimeType}',
-                tag: 'PointService');
+            Logger.warning(
+              'Unexpected response format: ${data.runtimeType}',
+              tag: 'PointService',
+            );
             transactionsData = [];
           }
 
@@ -547,13 +604,15 @@ class PointService {
               : 1;
 
           Logger.info(
-              'Transactions data count: ${transactionsData.length}, Total: $total, Total Pages: $totalPages',
-              tag: 'PointService');
+            'Transactions data count: ${transactionsData.length}, Total: $total, Total Pages: $totalPages',
+            tag: 'PointService',
+          );
 
           if (transactionsData.isEmpty) {
             Logger.warning(
-                'API returned empty transactions list for user $userId',
-                tag: 'PointService');
+              'API returned empty transactions list for user $userId',
+              tag: 'PointService',
+            );
             // SAFETY:
             // Only cache "empty" when the API explicitly indicates there are zero transactions.
             // This prevents wiping a previously-good cache due to a transient backend issue.
@@ -585,16 +644,22 @@ class PointService {
                 final txn = PointTransaction.fromJson(item);
                 transactions.add(txn);
                 Logger.debug(
-                    'Parsed transaction: ${txn.id}, type: ${txn.type}, points: ${txn.points}, status: ${txn.status}, orderId: ${txn.orderId}',
-                    tag: 'PointService');
+                  'Parsed transaction: ${txn.id}, type: ${txn.type}, points: ${txn.points}, status: ${txn.status}, orderId: ${txn.orderId}',
+                  tag: 'PointService',
+                );
               } else {
                 Logger.warning(
-                    'Skipping invalid transaction item (not a Map): ${item.runtimeType}',
-                    tag: 'PointService');
+                  'Skipping invalid transaction item (not a Map): ${item.runtimeType}',
+                  tag: 'PointService',
+                );
               }
             } catch (e, stackTrace) {
-              Logger.error('Error parsing transaction: $e, data: $item',
-                  tag: 'PointService', error: e, stackTrace: stackTrace);
+              Logger.error(
+                'Error parsing transaction: $e, data: $item',
+                tag: 'PointService',
+                error: e,
+                stackTrace: stackTrace,
+              );
               // Continue parsing other transactions instead of failing completely
             }
           }
@@ -618,15 +683,16 @@ class PointService {
           // Merge API payload with cached details before caching to prevent
           // null poll_details from overwriting previously-enriched rows.
           final cachedBeforeWrite = await getCachedTransactions(userId);
-          final mergedForCache = _mergeTransactionsPreservingPollDetails(
+          final mergedForCache = mergeTransactionsPreservingPollDetails(
             existing: cachedBeforeWrite,
             incoming: transactions,
           );
           await _cacheTransactions(userId, mergedForCache);
 
           Logger.info(
-              'Successfully loaded ${transactions.length} point transactions from API (${transactionsData.length} raw items, ${transactionsData.length - transactions.length} failed to parse)',
-              tag: 'PointService');
+            'Successfully loaded ${transactions.length} point transactions from API (${transactionsData.length} raw items, ${transactionsData.length - transactions.length} failed to parse)',
+            tag: 'PointService',
+          );
           return PointTransactionHistoryResult(
             transactions: mergedForCache,
             total: total,
@@ -635,13 +701,16 @@ class PointService {
             totalPages: totalPages,
           );
         } catch (parseError, parseStackTrace) {
-          Logger.error('Error parsing API response: $parseError',
-              tag: 'PointService',
-              error: parseError,
-              stackTrace: parseStackTrace);
           Logger.error(
-              'Response body: ${ApiService.responseBodyString(response)}',
-              tag: 'PointService');
+            'Error parsing API response: $parseError',
+            tag: 'PointService',
+            error: parseError,
+            stackTrace: parseStackTrace,
+          );
+          Logger.error(
+            'Response body: ${ApiService.responseBodyString(response)}',
+            tag: 'PointService',
+          );
           // Fall through to return cached transactions
         }
       }
@@ -675,11 +744,12 @@ class PointService {
         if (errBody.isNotEmpty) {
           final decoded = json.decode(errBody);
           if (decoded is Map) {
-            backendMessage = (decoded['message']?.toString() ??
-                    decoded['error']?.toString() ??
-                    decoded['msg']?.toString() ??
-                    '')
-                .trim();
+            backendMessage =
+                (decoded['message']?.toString() ??
+                        decoded['error']?.toString() ??
+                        decoded['msg']?.toString() ??
+                        '')
+                    .trim();
           }
         }
       } catch (_) {
@@ -689,8 +759,12 @@ class PointService {
       final details = backendMessage.isNotEmpty ? ' - $backendMessage' : '';
       throw Exception('Failed to load transactions ($statusMessage)$details');
     } catch (e, stackTrace) {
-      Logger.error('Error getting point transactions: $e',
-          tag: 'PointService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error getting point transactions: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       final cached = await getCachedTransactions(userId);
       return PointTransactionHistoryResult(
         transactions: cached,
@@ -747,12 +821,14 @@ class PointService {
           if (waitForSync) {
             skipLocalPersist = true;
             Logger.info(
-                'Local duplicate for $orderId — retrying backend sync only (no local double credit)',
-                tag: 'PointService');
+              'Local duplicate for $orderId — retrying backend sync only (no local double credit)',
+              tag: 'PointService',
+            );
           } else {
             Logger.warning(
-                'Duplicate point earning prevented for order: $orderId',
-                tag: 'PointService');
+              'Duplicate point earning prevented for order: $orderId',
+              tag: 'PointService',
+            );
             return false;
           }
         }
@@ -804,8 +880,9 @@ class PointService {
           syncSuccess = await _syncPointsToBackendSync(userId, transaction);
           if (!syncSuccess) {
             Logger.warning(
-                'Backend sync failed for point earning, queuing for retry',
-                tag: 'PointService');
+              'Backend sync failed for point earning, queuing for retry',
+              tag: 'PointService',
+            );
             await _enqueuePointAdjustment(userId, transaction);
             PointSyncTelemetry.emitUserMessage(
               transaction: transaction,
@@ -814,8 +891,11 @@ class PointService {
             );
           }
         } catch (e) {
-          Logger.error('Error syncing points to backend (blocking): $e',
-              tag: 'PointService', error: e);
+          Logger.error(
+            'Error syncing points to backend (blocking): $e',
+            tag: 'PointService',
+            error: e,
+          );
           await _enqueuePointAdjustment(userId, transaction);
           PointSyncTelemetry.emitUserMessage(
             transaction: transaction,
@@ -825,15 +905,19 @@ class PointService {
         }
       } else {
         _syncPointsToBackend(userId, transaction).catchError((e) {
-          Logger.error('Error syncing points to backend: $e',
-              tag: 'PointService', error: e);
+          Logger.error(
+            'Error syncing points to backend: $e',
+            tag: 'PointService',
+            error: e,
+          );
         });
         syncSuccess = true; // Non-blocking: assume will succeed
       }
 
       Logger.info(
-          'Points earned: $points points (backend: ${syncSuccess ? "ok" : "queued"})',
-          tag: 'PointService');
+        'Points earned: $points points (backend: ${syncSuccess ? "ok" : "queued"})',
+        tag: 'PointService',
+      );
 
       // Notify global listeners (PointProvider) so My PNP updates without context.
       if (type == PointTransactionType.earn) {
@@ -858,8 +942,12 @@ class PointService {
 
       return waitForSync ? syncSuccess : true;
     } catch (e, stackTrace) {
-      Logger.error('Error earning points: $e',
-          tag: 'PointService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error earning points: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -878,8 +966,9 @@ class PointService {
       final currentBalance = await getCachedBalance(userId);
       if (currentBalance == null || currentBalance.currentBalance < points) {
         Logger.warning(
-            'Insufficient points for redemption. Current: ${currentBalance?.currentBalance ?? 0}, Required: $points',
-            tag: 'PointService');
+          'Insufficient points for redemption. Current: ${currentBalance?.currentBalance ?? 0}, Required: $points',
+          tag: 'PointService',
+        );
         return false;
       }
 
@@ -903,12 +992,15 @@ class PointService {
           message: 'Syncing points...',
         );
         try {
-          final syncSuccess =
-              await _syncPointsToBackendSync(userId, transaction);
+          final syncSuccess = await _syncPointsToBackendSync(
+            userId,
+            transaction,
+          );
           if (!syncSuccess) {
             Logger.warning(
-                'Backend sync failed for point redemption, but continuing with local update',
-                tag: 'PointService');
+              'Backend sync failed for point redemption, but continuing with local update',
+              tag: 'PointService',
+            );
             await _enqueuePointAdjustment(userId, transaction);
             PointSyncTelemetry.emitUserMessage(
               transaction: transaction,
@@ -918,8 +1010,11 @@ class PointService {
             // Continue with local update even if sync fails
           }
         } catch (e) {
-          Logger.error('Error syncing points to backend (blocking): $e',
-              tag: 'PointService', error: e);
+          Logger.error(
+            'Error syncing points to backend (blocking): $e',
+            tag: 'PointService',
+            error: e,
+          );
           await _enqueuePointAdjustment(userId, transaction);
           PointSyncTelemetry.emitUserMessage(
             transaction: transaction,
@@ -947,18 +1042,26 @@ class PointService {
       // Sync with backend (non-blocking if not already synced)
       if (!(orderId != null && waitForSync)) {
         _syncPointsToBackend(userId, transaction).catchError((e) {
-          Logger.error('Error syncing points to backend: $e',
-              tag: 'PointService', error: e);
+          Logger.error(
+            'Error syncing points to backend: $e',
+            tag: 'PointService',
+            error: e,
+          );
         });
       }
 
       Logger.info(
-          'Points redeemed: $points points (Order: ${orderId ?? "N/A"})',
-          tag: 'PointService');
+        'Points redeemed: $points points (Order: ${orderId ?? "N/A"})',
+        tag: 'PointService',
+      );
       return true;
     } catch (e, stackTrace) {
-      Logger.error('Error redeeming points: $e',
-          tag: 'PointService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error redeeming points: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -1007,9 +1110,7 @@ class PointService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
           data: bodyMap,
         ),
         context: 'createClaimRequest',
@@ -1048,23 +1149,22 @@ class PointService {
           return true;
         }
 
-        final Map<String, dynamic>? asMap = ApiService.responseAsJsonMap(response);
+        final Map<String, dynamic>? asMap = ApiService.responseAsJsonMap(
+          response,
+        );
         final Object? decodedRaw = asMap ?? json.decode(respStr);
         final Map<String, dynamic>? decoded = decodedRaw is Map<String, dynamic>
             ? decodedRaw
             : decodedRaw is Map
-                ? Map<String, dynamic>.from(decodedRaw)
-                : null;
+            ? Map<String, dynamic>.from(decodedRaw)
+            : null;
 
         if (decoded == null) {
           Logger.error(
             'Exchange request response is not a JSON object. Type: ${decodedRaw.runtimeType}',
             tag: 'PointService',
           );
-          Logger.error(
-            'Response body: $respStr',
-            tag: 'PointService',
-          );
+          Logger.error('Response body: $respStr', tag: 'PointService');
           if (NetworkUtils.isValidDioResponse(response)) {
             Logger.warning(
               'Exchange request: Invalid JSON but status code ${response.statusCode} is valid. Treating as success.',
@@ -1101,10 +1201,7 @@ class PointService {
           error: e,
           stackTrace: stackTrace,
         );
-        Logger.error(
-          'Response body (raw): $respStr',
-          tag: 'PointService',
-        );
+        Logger.error('Response body (raw): $respStr', tag: 'PointService');
         return false;
       }
 
@@ -1112,7 +1209,8 @@ class PointService {
       // Backend returns: { "success": true, "message": "...", ... }
       // Be more strict about success check to avoid false positives
       final successValue = data['success'];
-      final success = successValue == true ||
+      final success =
+          successValue == true ||
           successValue == 'true' ||
           (successValue is int && successValue == 1);
 
@@ -1140,10 +1238,7 @@ class PointService {
           'Exchange request API responded with success=false. Message: $errorMessage',
           tag: 'PointService',
         );
-        Logger.warning(
-          'Full response data: $data',
-          tag: 'PointService',
-        );
+        Logger.warning('Full response data: $data', tag: 'PointService');
         Logger.warning(
           'Success value type: ${successValue.runtimeType}, value: $successValue',
           tag: 'PointService',
@@ -1164,7 +1259,9 @@ class PointService {
   /// Sync points to backend synchronously (blocks until complete)
   /// Returns true if sync was successful
   static Future<bool> _syncPointsToBackendSync(
-      String userId, PointTransaction transaction) async {
+    String userId,
+    PointTransaction transaction,
+  ) async {
     return _syncPointsWithRetry(
       userId: userId,
       transaction: transaction,
@@ -1188,19 +1285,200 @@ class PointService {
 
   /// Save transaction locally only (without balance update)
   static Future<void> saveTransactionLocally(
-      PointTransaction transaction) async {
+    PointTransaction transaction,
+  ) async {
     await _saveTransactionToStorage(transaction);
+  }
+
+  /// Record a poll vote deduction transaction locally with rich poll details.
+  /// This is UI enrichment for history rendering and does not alter server truth.
+  static Future<void> recordPollTransaction({
+    required String userId,
+    required int pollId,
+    required List<Map<String, dynamic>> selectedOptions,
+    required int totalBetPnp,
+    required int newBalance,
+    String? sessionId,
+    String? pollTitle,
+    String? orderId,
+    String? description,
+  }) async {
+    try {
+      if (userId.trim().isEmpty || pollId <= 0) return;
+      if (selectedOptions.isEmpty || totalBetPnp <= 0) return;
+
+      final normalizedSelected = <PollOptionSnapshot>[];
+      int parseIntLoose(dynamic value) {
+        if (value == null) return 0;
+        if (value is int) return value;
+        if (value is num) return value.toInt();
+        return int.tryParse(value.toString().trim()) ??
+            (double.tryParse(value.toString().trim())?.toInt() ?? 0);
+      }
+
+      // Old Code: fallbackPerOptionFromTotal via ~/ (averaging) when betPnp missing.
+      // New Code: trust UI-supplied betPnp / parse only — no synthetic split.
+
+      for (final option in selectedOptions) {
+        final idx = option['index'];
+        final labelRaw = option['label'];
+        final betPnpRaw =
+            option['betPnp'] ?? option['bet_pnp'] ?? option['amount'];
+        final betUnitsRaw = option['betUnits'];
+        final parsedIndex = idx is int ? idx : int.tryParse('$idx');
+        // Old Code:
+        // final parsedBetPnp = betPnpRaw is int
+        //     ? betPnpRaw
+        //     : int.tryParse('${betPnpRaw ?? ''}') ?? 0;
+        // final parsedBetUnits = betUnitsRaw is int
+        //     ? betUnitsRaw
+        //     : int.tryParse('${betUnitsRaw ?? ''}') ?? 0;
+        //
+        // New Code: robust numeric parsing; map exact values into PollOptionSnapshot.
+        final parsedBetPnp = parseIntLoose(betPnpRaw);
+        final parsedBetUnits = parseIntLoose(betUnitsRaw);
+        if (parsedIndex == null || parsedIndex < 0) continue;
+        normalizedSelected.add(
+          PollOptionSnapshot(
+            index: parsedIndex,
+            label: (labelRaw?.toString() ?? '').trim(),
+            betUnits: parsedBetUnits > 0 ? parsedBetUnits : 1,
+            betPnp: parsedBetPnp,
+          ),
+        );
+      }
+      if (normalizedSelected.isEmpty) return;
+
+      final normalizedSelectedSorted = List<PollOptionSnapshot>.from(
+        normalizedSelected,
+      )..sort((a, b) => a.index.compareTo(b.index));
+      final optionSignature = normalizedSelectedSorted
+          .map((o) => '${o.index}:${o.betUnits}:${o.betPnp}')
+          .join('|');
+      final normalizedSession =
+          (sessionId != null && sessionId.trim().isNotEmpty)
+          ? sessionId.trim()
+          : 'default';
+
+      // Old Code: fallback orderId used timestamp, which weakens retry dedupe.
+      // New Code: deterministic id from poll/user/session/options/spent for idempotent local records.
+      final deterministicOrderId =
+          'engagement:poll:$pollId:$userId:$normalizedSession:$totalBetPnp:$optionSignature';
+      // Old Code:
+      // final canonicalOrderId = (orderId != null && orderId.trim().isNotEmpty)
+      //     ? orderId.trim()
+      //     : deterministicOrderId;
+      //
+      // New Code: always prefer deterministic id for robust retry dedupe.
+      final canonicalOrderId = deterministicOrderId;
+
+      // Prevent accidental duplicate local inserts for same poll session/order.
+      final cached = await getCachedTransactions(userId);
+      final duplicateExists = cached.any((t) {
+        if (t.orderId != canonicalOrderId) return false;
+        if (t.type != PointTransactionType.redeem) return false;
+        final createdDiff = DateTime.now().difference(t.createdAt).inMinutes;
+        return createdDiff <= 5;
+      });
+      if (duplicateExists) {
+        Logger.info(
+          'Skipped duplicate poll transaction local record for orderId=$canonicalOrderId',
+          tag: 'PointService',
+        );
+        return;
+      }
+
+      final safeDeducted = totalBetPnp < 0 ? 0 : totalBetPnp;
+
+      // Old Code:
+      // final safeNewBalance = newBalance < 0 ? 0 : newBalance;
+      // final originalBalance = safeNewBalance + safeDeducted;
+      //
+      // New Code: balance resolution chain with telemetry.
+      final cachedBalance = await getCachedBalance(userId);
+      final canonicalCachedBalance = cachedBalance?.currentBalance;
+      int safeNewBalance;
+      int originalBalance;
+      String balanceSource;
+
+      if (newBalance >= 0) {
+        safeNewBalance = newBalance;
+        originalBalance = safeNewBalance + safeDeducted;
+        balanceSource = 'server_new_balance';
+      } else if (canonicalCachedBalance != null &&
+          canonicalCachedBalance >= 0) {
+        // Fallback A: canonical balance snapshot from local persisted state.
+        safeNewBalance = canonicalCachedBalance;
+        originalBalance = safeNewBalance + safeDeducted;
+        balanceSource = 'canonical_cached_balance';
+      } else {
+        // Fallback B: previousBalance - spent (clamp >= 0).
+        final previousBalance = (canonicalCachedBalance ?? 0).clamp(0, 1 << 30);
+        final computed = (previousBalance - safeDeducted)
+            .clamp(0, 1 << 30)
+            .toInt();
+        safeNewBalance = computed;
+        originalBalance = previousBalance.toInt();
+        balanceSource = 'computed_previous_minus_spent';
+      }
+      Logger.info(
+        'recordPollTransaction balance source=$balanceSource userId=$userId pollId=$pollId '
+        'resolvedNew=$safeNewBalance totalBet=$safeDeducted',
+        tag: 'PointService',
+      );
+
+      final transaction = PointTransaction(
+        id: '${DateTime.now().millisecondsSinceEpoch}',
+        userId: userId,
+        type: PointTransactionType.redeem,
+        points: safeDeducted,
+        originalBalance: originalBalance,
+        amountAdded: 0,
+        amountDeducted: safeDeducted,
+        currentBalance: safeNewBalance,
+        description: (description != null && description.trim().isNotEmpty)
+            ? description.trim()
+            : 'Poll vote submitted',
+        orderId: canonicalOrderId,
+        pollDetails: PollTransactionDetails(
+          pollId: pollId,
+          pollTitle: (pollTitle != null && pollTitle.trim().isNotEmpty)
+              ? pollTitle.trim()
+              : null,
+          sessionId: (sessionId != null && sessionId.trim().isNotEmpty)
+              ? sessionId.trim()
+              : null,
+          resultStatus: 'pending',
+          totalBetPnp: safeDeducted,
+          selectedOptions: normalizedSelectedSorted,
+        ),
+        createdAt: DateTime.now(),
+        status: PointTransactionStatus.approved,
+      );
+      await _saveTransactionToStorage(transaction);
+    } catch (e, stackTrace) {
+      Logger.warning(
+        'Failed to record local poll transaction: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
   }
 
   /// Enqueue transaction for later sync
   static Future<void> enqueueTransactionForSync(
-      String userId, PointTransaction transaction) async {
+    String userId,
+    PointTransaction transaction,
+  ) async {
     await _enqueuePointAdjustment(userId, transaction);
   }
 
   /// Calculate points earned from order total ([multiplier] for promotions/campaigns).
-  static int calculatePointsFromOrder(double orderTotal,
-      {double multiplier = 1.0}) {
+  static int calculatePointsFromOrder(
+    double orderTotal, {
+    double multiplier = 1.0,
+  }) {
     return ((orderTotal * pointsPerDollar) * multiplier).round();
   }
 
@@ -1217,7 +1495,10 @@ class PointService {
 
   /// Validate redemption amount
   static bool isValidRedemptionAmount(
-      int points, double orderTotal, int currentBalance) {
+    int points,
+    double orderTotal,
+    int currentBalance,
+  ) {
     if (points < minRedemptionPoints) return false;
     if (points > currentBalance) return false;
     final maxPoints = calculateMaxRedeemablePoints(orderTotal);
@@ -1251,8 +1532,10 @@ class PointService {
       }
 
       // Calculate total expired points
-      totalExpiredPoints =
-          expiredTransactions.fold(0, (sum, t) => sum + t.points);
+      totalExpiredPoints = expiredTransactions.fold(
+        0,
+        (sum, t) => sum + t.points,
+      );
 
       if (totalExpiredPoints > 0) {
         // Create expire transaction (points will be subtracted in redeemPoints logic)
@@ -1286,8 +1569,11 @@ class PointService {
 
         // Try to sync with backend
         _syncPointsToBackend(userId, expireTransaction).catchError((e) {
-          Logger.error('Error syncing expired points to backend: $e',
-              tag: 'PointService', error: e);
+          Logger.error(
+            'Error syncing expired points to backend: $e',
+            tag: 'PointService',
+            error: e,
+          );
         });
 
         expiredCount = expiredTransactions.length;
@@ -1295,15 +1581,19 @@ class PointService {
 
       return expiredCount;
     } catch (e) {
-      Logger.error('Error checking expired points: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error checking expired points: $e',
+        tag: 'PointService',
+        error: e,
+      );
       return 0;
     }
   }
 
   /// Get points expiring soon
   static Future<List<PointTransaction>> getPointsExpiringSoon(
-      String userId) async {
+    String userId,
+  ) async {
     try {
       final transactions = await getCachedTransactions(userId);
       final now = DateTime.now();
@@ -1318,8 +1608,11 @@ class PointService {
             transaction.expiresAt!.isAfter(now);
       }).toList();
     } catch (e) {
-      Logger.error('Error getting expiring points: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error getting expiring points: $e',
+        tag: 'PointService',
+        error: e,
+      );
       return [];
     }
   }
@@ -1349,8 +1642,10 @@ class PointService {
     });
 
     if (alreadyAwarded) {
-      Logger.warning('Birthday bonus already awarded this year',
-          tag: 'PointService');
+      Logger.warning(
+        'Birthday bonus already awarded this year',
+        tag: 'PointService',
+      );
       return false;
     }
 
@@ -1415,15 +1710,19 @@ class PointService {
 
       return null;
     } catch (e) {
-      Logger.error('Error getting cached balance: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error getting cached balance: $e',
+        tag: 'PointService',
+        error: e,
+      );
       return null;
     }
   }
 
   /// Get cached transactions from local storage
   static Future<List<PointTransaction>> getCachedTransactions(
-      String userId) async {
+    String userId,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final storedValue = prefs.getString('$_transactionsKey$userId');
@@ -1433,8 +1732,9 @@ class PointService {
             await _securePrefs.maybeDecrypt(storedValue) ?? storedValue;
         final transactionsData = json.decode(decrypted) as List<dynamic>;
         final transactions = transactionsData
-            .map((item) =>
-                PointTransaction.fromJson(item as Map<String, dynamic>))
+            .map(
+              (item) => PointTransaction.fromJson(item as Map<String, dynamic>),
+            )
             .toList();
 
         // CRITICAL FIX: Always sort by date (newest first) when loading from cache
@@ -1444,8 +1744,9 @@ class PointService {
         // Log date range for debugging
         if (transactions.isNotEmpty) {
           Logger.info(
-              'Cached transactions date range: Newest: ${transactions.first.createdAt.toString()}, Oldest: ${transactions.last.createdAt.toString()}',
-              tag: 'PointService');
+            'Cached transactions date range: Newest: ${transactions.first.createdAt.toString()}, Oldest: ${transactions.last.createdAt.toString()}',
+            tag: 'PointService',
+          );
         }
 
         return transactions;
@@ -1453,8 +1754,11 @@ class PointService {
 
       return [];
     } catch (e) {
-      Logger.error('Error getting cached transactions: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error getting cached transactions: $e',
+        tag: 'PointService',
+        error: e,
+      );
       return [];
     }
   }
@@ -1463,15 +1767,47 @@ class PointService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('$_transactionsKey$userId');
-      Logger.info('Cleared point transaction cache for user $userId',
-          tag: 'PointService');
+      Logger.info(
+        'Cleared point transaction cache for user $userId',
+        tag: 'PointService',
+      );
     } catch (e) {
-      Logger.error('Error clearing transactions cache: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error clearing transactions cache: $e',
+        tag: 'PointService',
+        error: e,
+      );
     }
   }
 
-  static List<PointTransaction> _mergeTransactionsPreservingPollDetails({
+  /// True when [pollDetails] carries a concrete spend (total or per-option).
+  static bool _pollDetailsHasMeaningfulBetData(PollTransactionDetails? p) {
+    if (p == null) return false;
+    if (p.totalBetPnp > 0) return true;
+    for (final o in p.selectedOptions) {
+      if (o.betPnp > 0) return true;
+    }
+    return false;
+  }
+
+  /// Prefer local rows that still have per-option [betPnp] when API strips them.
+  static bool _pollDetailsHasPerOptionBetPnp(PollTransactionDetails? p) {
+    if (p == null) return false;
+    for (final o in p.selectedOptions) {
+      if (o.betPnp > 0) return true;
+    }
+    return false;
+  }
+
+  /// Merges API transactions with disk cache so enriched local [pollDetails]
+  /// (exact option bets) are not overwritten by API rows missing that data.
+  ///
+  /// Old Code: matched by [PointTransaction.id] only; incoming row with non-null
+  /// pollDetails always replaced cache even when poorer than local.
+  ///
+  /// New Code: also match by [orderId]; if local has meaningful bet data and
+  /// incoming does not (or lacks per-option bets), preserve local pollDetails.
+  static List<PointTransaction> mergeTransactionsPreservingPollDetails({
     required List<PointTransaction> existing,
     required List<PointTransaction> incoming,
   }) {
@@ -1479,9 +1815,43 @@ class PointService {
       for (final tx in existing) tx.id: tx,
     };
 
+    final existingByOrderId = <String, PointTransaction>{};
+    for (final tx in existing) {
+      final oid = tx.orderId?.trim();
+      if (oid == null || oid.isEmpty) continue;
+      final prev = existingByOrderId[oid];
+      if (prev == null) {
+        existingByOrderId[oid] = tx;
+      } else if (_pollDetailsHasPerOptionBetPnp(prev.pollDetails) &&
+          !_pollDetailsHasPerOptionBetPnp(tx.pollDetails)) {
+        existingByOrderId[oid] = prev;
+      } else if (!_pollDetailsHasPerOptionBetPnp(prev.pollDetails) &&
+          _pollDetailsHasPerOptionBetPnp(tx.pollDetails)) {
+        existingByOrderId[oid] = tx;
+      } else {
+        existingByOrderId[oid] = tx;
+      }
+    }
+
     return incoming.map((tx) {
-      final old = existingById[tx.id];
+      PointTransaction? old = existingById[tx.id];
+      final oid = tx.orderId?.trim();
+      if (old == null &&
+          oid != null &&
+          oid.isNotEmpty &&
+          existingByOrderId.containsKey(oid)) {
+        old = existingByOrderId[oid];
+      }
       if (old == null) return tx;
+
+      if (_pollDetailsHasPerOptionBetPnp(old.pollDetails) &&
+          !_pollDetailsHasPerOptionBetPnp(tx.pollDetails)) {
+        return tx.copyWith(pollDetails: old.pollDetails);
+      }
+      if (_pollDetailsHasMeaningfulBetData(old.pollDetails) &&
+          !_pollDetailsHasMeaningfulBetData(tx.pollDetails)) {
+        return tx.copyWith(pollDetails: old.pollDetails);
+      }
       if (tx.pollDetails != null) return tx;
       if (old.pollDetails == null) return tx;
       return tx.copyWith(pollDetails: old.pollDetails);
@@ -1527,14 +1897,18 @@ class PointService {
       final encrypted = await _securePrefs.encrypt(balanceJson);
       await prefs.setString('$_balanceKey${balance.userId}', encrypted);
     } catch (e) {
-      Logger.error('Error saving balance to storage: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error saving balance to storage: $e',
+        tag: 'PointService',
+        error: e,
+      );
     }
   }
 
   /// Save transaction to local storage
   static Future<void> _saveTransactionToStorage(
-      PointTransaction transaction) async {
+    PointTransaction transaction,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final transactions = await getCachedTransactions(transaction.userId);
@@ -1545,20 +1919,28 @@ class PointService {
       // Keep only last 100 transactions
       final limitedTransactions = transactions.take(100).toList();
 
-      final transactionsJson =
-          json.encode(limitedTransactions.map((t) => t.toJson()).toList());
+      final transactionsJson = json.encode(
+        limitedTransactions.map((t) => t.toJson()).toList(),
+      );
       final encrypted = await _securePrefs.encrypt(transactionsJson);
       await prefs.setString(
-          '$_transactionsKey${transaction.userId}', encrypted);
+        '$_transactionsKey${transaction.userId}',
+        encrypted,
+      );
     } catch (e) {
-      Logger.error('Error saving transaction to storage: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error saving transaction to storage: $e',
+        tag: 'PointService',
+        error: e,
+      );
     }
   }
 
   /// Sync points to backend (non-blocking)
   static Future<void> _syncPointsToBackend(
-      String userId, PointTransaction transaction) async {
+    String userId,
+    PointTransaction transaction,
+  ) async {
     final success = await _syncPointsWithRetry(
       userId: userId,
       transaction: transaction,
@@ -1574,7 +1956,9 @@ class PointService {
   /// CRITICAL FIX: Always sort transactions by date (newest first) before caching
   /// This ensures cache is always in correct order
   static Future<void> _cacheTransactions(
-      String userId, List<PointTransaction> transactions) async {
+    String userId,
+    List<PointTransaction> transactions,
+  ) async {
     try {
       // CRITICAL: Sort by date (newest first) before caching
       // Create a copy to avoid modifying the original list
@@ -1582,17 +1966,22 @@ class PointService {
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       final prefs = await SharedPreferences.getInstance();
-      final transactionsJson =
-          json.encode(sortedTransactions.map((t) => t.toJson()).toList());
+      final transactionsJson = json.encode(
+        sortedTransactions.map((t) => t.toJson()).toList(),
+      );
       final encrypted = await _securePrefs.encrypt(transactionsJson);
       await prefs.setString('$_transactionsKey$userId', encrypted);
 
       Logger.info(
-          'Cached ${sortedTransactions.length} transactions (newest: ${sortedTransactions.isNotEmpty ? sortedTransactions.first.createdAt.toString() : "N/A"})',
-          tag: 'PointService');
+        'Cached ${sortedTransactions.length} transactions (newest: ${sortedTransactions.isNotEmpty ? sortedTransactions.first.createdAt.toString() : "N/A"})',
+        tag: 'PointService',
+      );
     } catch (e) {
-      Logger.error('Error caching transactions: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error caching transactions: $e',
+        tag: 'PointService',
+        error: e,
+      );
     }
   }
 
@@ -1606,12 +1995,16 @@ class PointService {
       }
 
       // Get existing transactions from backend to avoid duplicates
-      final existingTransactionsResult =
-          await getPointTransactions(userId, page: 1, perPage: 100);
+      final existingTransactionsResult = await getPointTransactions(
+        userId,
+        page: 1,
+        perPage: 100,
+      );
       final existingTransactions = existingTransactionsResult.transactions;
       final existingOrderIds = existingTransactions
           .where(
-              (t) => t.orderId != null && t.type == PointTransactionType.earn)
+            (t) => t.orderId != null && t.type == PointTransactionType.earn,
+          )
           .map((t) => t.orderId!)
           .toSet();
 
@@ -1622,8 +2015,9 @@ class PointService {
             localT.type == PointTransactionType.earn) {
           if (existingOrderIds.contains(localT.orderId)) {
             Logger.info(
-                'Skipping duplicate transaction for order: ${localT.orderId}',
-                tag: 'PointService');
+              'Skipping duplicate transaction for order: ${localT.orderId}',
+              tag: 'PointService',
+            );
             return false;
           }
         }
@@ -1657,8 +2051,11 @@ class PointService {
       );
       return syncedCount == transactionsToSync.length;
     } catch (e) {
-      Logger.error('Error syncing all transactions: $e',
-          tag: 'PointService', error: e);
+      Logger.error(
+        'Error syncing all transactions: $e',
+        tag: 'PointService',
+        error: e,
+      );
       return false;
     }
   }
@@ -1725,8 +2122,9 @@ class PointService {
         ? AppConfig.tworkPointsRedeemEndpoint
         : AppConfig.tworkPointsEarnEndpoint;
     final endpoint = AppConfig.tworkEndpoint(endpointPath);
-    final uri = Uri.parse(endpoint)
-        .replace(queryParameters: _getWooCommerceAuthQueryParams());
+    final uri = Uri.parse(
+      endpoint,
+    ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
     // Phase 1: Avoid nested retry stacks by issuing a single HTTP attempt here.
     // Retry policy is owned by `_syncPointsWithRetry` above.
@@ -1734,9 +2132,7 @@ class PointService {
       uri.path,
       queryParameters: uri.queryParameters,
       skipAuth: false,
-      headers: const <String, dynamic>{
-        'Content-Type': 'application/json',
-      },
+      headers: const <String, dynamic>{'Content-Type': 'application/json'},
       data: <String, dynamic>{
         'user_id': userId,
         'points': transaction.points,
@@ -1830,16 +2226,20 @@ class PointService {
   }
 
   static Future<bool> _processQueuedPointAdjustment(
-      Map<String, dynamic> payload) async {
+    Map<String, dynamic> payload,
+  ) async {
     try {
       if (!payload.containsKey('transaction')) {
-        Logger.warning('Queued point adjustment missing payload',
-            tag: 'PointService');
+        Logger.warning(
+          'Queued point adjustment missing payload',
+          tag: 'PointService',
+        );
         return false;
       }
 
-      final transactionJson =
-          Map<String, dynamic>.from(payload['transaction'] as Map);
+      final transactionJson = Map<String, dynamic>.from(
+        payload['transaction'] as Map,
+      );
       final transaction = PointTransaction.fromJson(transactionJson);
       final userId = (payload['user_id']?.toString().trim().isNotEmpty ?? false)
           ? payload['user_id'].toString()
@@ -1853,8 +2253,12 @@ class PointService {
 
       return await syncQueuedPointTransaction(userId, transaction);
     } catch (e, stackTrace) {
-      Logger.error('Failed to process queued point adjustment: $e',
-          tag: 'PointService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to process queued point adjustment: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
