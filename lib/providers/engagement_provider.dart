@@ -65,8 +65,8 @@ bool _scheduleEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   return jsonEncode(a) == jsonEncode(b);
   */
   // New Code:
-  // Field-aware compare: intentionally ignore volatile ticking fields
-  // (seconds_until_close, remaining_*, server_time, now, etc.).
+  // Field-aware compare: allow short-window timer ticks to propagate so
+  // countdown widgets can re-sync with server state deterministically.
   final votingStatusA = a['voting_status']?.toString();
   final votingStatusB = b['voting_status']?.toString();
   if (votingStatusA != votingStatusB) {
@@ -114,6 +114,50 @@ bool _scheduleEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
     );
     return false;
   }
+
+  /*
+  Old Code:
+  // (seconds_until_close, remaining_*, server_time, now, etc.) were ignored.
+  */
+  // New Code:
+  // Detect ticking changes when either side is within short-window (< 60s).
+  int _toInt(dynamic raw, {int fallback = 999999}) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '') ?? fallback;
+  }
+
+  final secondsUntilCloseA = _toInt(a['seconds_until_close']);
+  final secondsUntilCloseB = _toInt(b['seconds_until_close']);
+  final remainingSecondsA = _toInt(a['remaining_seconds']);
+  final remainingSecondsB = _toInt(b['remaining_seconds']);
+  final shortestWindow = <int>[
+    secondsUntilCloseA,
+    secondsUntilCloseB,
+    remainingSecondsA,
+    remainingSecondsB,
+  ].reduce((x, y) => x < y ? x : y);
+  final isShortWindow = shortestWindow >= 0 && shortestWindow < 60;
+  if (isShortWindow) {
+    if (secondsUntilCloseA != secondsUntilCloseB) {
+      _debugFieldChangeLog(
+        scope: 'poll_voting_schedule',
+        field: 'seconds_until_close',
+        oldValue: secondsUntilCloseA,
+        newValue: secondsUntilCloseB,
+      );
+      return false;
+    }
+    if (remainingSecondsA != remainingSecondsB) {
+      _debugFieldChangeLog(
+        scope: 'poll_voting_schedule',
+        field: 'remaining_seconds',
+        oldValue: remainingSecondsA,
+        newValue: remainingSecondsB,
+      );
+      return false;
+    }
+  }
   return true;
 }
 
@@ -149,7 +193,7 @@ class EngagementProvider with ChangeNotifier {
   Timer? _debounceTimer;
   Timer? _pollingTimer; // Timer for automatic data refresh
   Duration?
-      _activePollingInterval; // Track current timer interval for smart polling
+  _activePollingInterval; // Track current timer interval for smart polling
   String? _lastSmartPollingReason;
   bool _hasLoggedKeptInterval = false;
   int? _currentUserId; // Track which user the data belongs to
@@ -185,8 +229,9 @@ class EngagementProvider with ChangeNotifier {
 
   String _cacheKeyForUser(int userId) => '$_feedCacheKeyPrefix$userId';
   String pollUserLocalUnitStorageKey(
-          int engagementItemId, String optionUniqueId) =>
-      '$engagementItemId|$optionUniqueId';
+    int engagementItemId,
+    String optionUniqueId,
+  ) => '$engagementItemId|$optionUniqueId';
   String pollReceiptCacheKey(int pollId, String sessionId) =>
       '${pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
 
@@ -227,8 +272,9 @@ class EngagementProvider with ChangeNotifier {
       // PROFESSIONAL FIX: If user changed, immediately clear old data and reset flags
       if (_currentUserId != null && _currentUserId != userId) {
         app_logger.Logger.info(
-            'User account changed from $_currentUserId to $userId, clearing engagement cache',
-            tag: 'EngagementProvider');
+          'User account changed from $_currentUserId to $userId, clearing engagement cache',
+          tag: 'EngagementProvider',
+        );
         // Stop polling for old user
         _stopPolling();
         // Clear old user's data immediately
@@ -242,8 +288,9 @@ class EngagementProvider with ChangeNotifier {
       if (_currentUserId != userId || !_hasLoadedForCurrentUser) {
         _currentUserId = userId;
         app_logger.Logger.info(
-            'User authenticated, loading engagement feed for user: $userId',
-            tag: 'EngagementProvider');
+          'User authenticated, loading engagement feed for user: $userId',
+          tag: 'EngagementProvider',
+        );
         // PROFESSIONAL FIX: Force refresh when user changes to ensure fresh data
         await loadFeed(
           userId: userId,
@@ -253,8 +300,9 @@ class EngagementProvider with ChangeNotifier {
         _hasLoadedForCurrentUser = true;
       } else {
         app_logger.Logger.info(
-            'Engagement feed already loaded for user $userId, skipping reload',
-            tag: 'EngagementProvider');
+          'Engagement feed already loaded for user $userId, skipping reload',
+          tag: 'EngagementProvider',
+        );
       }
     } else {
       // User logged out - clear state and stop polling
@@ -266,8 +314,9 @@ class EngagementProvider with ChangeNotifier {
       _error = null;
       notifyListeners();
       app_logger.Logger.info(
-          'User logged out (previous user: $previousUserId), cleared engagement data',
-          tag: 'EngagementProvider');
+        'User logged out (previous user: $previousUserId), cleared engagement data',
+        tag: 'EngagementProvider',
+      );
     }
   }
 
@@ -281,8 +330,10 @@ class EngagementProvider with ChangeNotifier {
     await ensureInteractionCacheHydrated();
     // If forcing refresh, always reload even if loading
     if (_isLoading && !forceRefresh) {
-      app_logger.Logger.info('Engagement feed already loading, skipping',
-          tag: 'EngagementProvider');
+      app_logger.Logger.info(
+        'Engagement feed already loading, skipping',
+        tag: 'EngagementProvider',
+      );
       return;
     }
 
@@ -292,15 +343,17 @@ class EngagementProvider with ChangeNotifier {
     if (_items.isNotEmpty && !forceRefresh) {
       if (_currentUserId == userId) {
         app_logger.Logger.info(
-            'Engagement feed already loaded for user $userId, skipping',
-            tag: 'EngagementProvider');
+          'Engagement feed already loaded for user $userId, skipping',
+          tag: 'EngagementProvider',
+        );
         return;
       } else {
         // User ID mismatch - this should not happen if handleAuthStateChange is called correctly
         // But handle it gracefully by clearing and reloading
         app_logger.Logger.warning(
-            'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
-            tag: 'EngagementProvider');
+          'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
+          tag: 'EngagementProvider',
+        );
         _items = [];
         _error = null;
         _hasLoadedForCurrentUser = false;
@@ -310,8 +363,9 @@ class EngagementProvider with ChangeNotifier {
     // If userId changed, clear old data first (defensive check)
     if (_currentUserId != null && _currentUserId != userId) {
       app_logger.Logger.info(
-          'User changed from $_currentUserId to $userId, clearing old engagement data',
-          tag: 'EngagementProvider');
+        'User changed from $_currentUserId to $userId, clearing old engagement data',
+        tag: 'EngagementProvider',
+      );
       _items = [];
       _error = null;
       _hasLoadedForCurrentUser = false;
@@ -331,8 +385,10 @@ class EngagementProvider with ChangeNotifier {
     final previousItems = List<EngagementItem>.from(_items);
 
     try {
-      app_logger.Logger.info('Loading engagement feed for user: $userId',
-          tag: 'EngagementProvider');
+      app_logger.Logger.info(
+        'Loading engagement feed for user: $userId',
+        tag: 'EngagementProvider',
+      );
 
       final fetchedItems = await EngagementService.getFeed(
         userId: userId,
@@ -344,9 +400,11 @@ class EngagementProvider with ChangeNotifier {
       //
       // New Code:
       // Keep old-good items when refresh is degraded or network result is empty with an error.
-      final hasErrorFromService = EngagementService.lastError != null &&
+      final hasErrorFromService =
+          EngagementService.lastError != null &&
           EngagementService.lastError!.trim().isNotEmpty;
-      final shouldKeepPreviousOnError = hasErrorFromService &&
+      final shouldKeepPreviousOnError =
+          hasErrorFromService &&
           fetchedItems.isEmpty &&
           previousItems.isNotEmpty;
 
@@ -374,16 +432,19 @@ class EngagementProvider with ChangeNotifier {
 
       if (_error != null) {
         app_logger.Logger.error(
-            'Failed to load engagement feed: $_error, items count: ${_items.length}',
-            tag: 'EngagementProvider');
+          'Failed to load engagement feed: $_error, items count: ${_items.length}',
+          tag: 'EngagementProvider',
+        );
       } else if (_items.isEmpty) {
         app_logger.Logger.warning(
-            'Engagement feed loaded successfully but no items returned. This could mean: 1) No active items in database, 2) All items are outside date range, 3) All items are inactive.',
-            tag: 'EngagementProvider');
+          'Engagement feed loaded successfully but no items returned. This could mean: 1) No active items in database, 2) All items are outside date range, 3) All items are inactive.',
+          tag: 'EngagementProvider',
+        );
       } else {
         app_logger.Logger.info(
-            'Successfully loaded ${_items.length} engagement items',
-            tag: 'EngagementProvider');
+          'Successfully loaded ${_items.length} engagement items',
+          tag: 'EngagementProvider',
+        );
       }
 
       await _persistFeedSnapshotForUser(
@@ -400,8 +461,11 @@ class EngagementProvider with ChangeNotifier {
       //
       // New Code:
       _error = _toUserFriendlyError('Network error: ${e.toString()}');
-      app_logger.Logger.error('Engagement feed exception',
-          tag: 'EngagementProvider', error: e);
+      app_logger.Logger.error(
+        'Engagement feed exception',
+        tag: 'EngagementProvider',
+        error: e,
+      );
       // Old Code:
       // if (_items.isEmpty) {
       //   // Keep UI deterministic if both network and cache are unavailable.
@@ -447,8 +511,9 @@ class EngagementProvider with ChangeNotifier {
                 parsedMap[optionLabel.toString()] = null;
                 return;
               }
-              final parsed =
-                  value is num ? value.toInt() : int.tryParse(value.toString());
+              final parsed = value is num
+                  ? value.toInt()
+                  : int.tryParse(value.toString());
               if (parsed != null && parsed > 0) {
                 parsedMap[optionLabel.toString()] = parsed;
               }
@@ -473,8 +538,9 @@ class EngagementProvider with ChangeNotifier {
                 parsedMap[optionLabel.toString()] = null;
                 return;
               }
-              final parsed =
-                  value is num ? value.toInt() : int.tryParse(value.toString());
+              final parsed = value is num
+                  ? value.toInt()
+                  : int.tryParse(value.toString());
               if (parsed != null && parsed > 0) {
                 parsedMap[optionLabel.toString()] = parsed;
               }
@@ -518,8 +584,11 @@ class EngagementProvider with ChangeNotifier {
     int engagementItemId,
     String optionUniqueId,
   ) {
-    final raw = _pollUserLocalUnitOverlay[
-        pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)];
+    final raw =
+        _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(
+          engagementItemId,
+          optionUniqueId,
+        )];
     if (raw != null && raw > 0) {
       _touchPollInteraction(engagementItemId);
     }
@@ -533,17 +602,17 @@ class EngagementProvider with ChangeNotifier {
   ) async {
     if (units <= 0) return;
     await ensureInteractionCacheHydrated();
-    _pollUserLocalUnitOverlay[
-        pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)] = units;
+    _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(
+          engagementItemId,
+          optionUniqueId,
+        )] =
+        units;
     _touchPollInteraction(engagementItemId);
     unawaited(_persistInteractionCaches());
     notifyListeners();
   }
 
-  Map<String, int?>? getPollSessionReceiptCache(
-    int pollId,
-    String sessionId,
-  ) {
+  Map<String, int?>? getPollSessionReceiptCache(int pollId, String sessionId) {
     final key = pollReceiptCacheKey(pollId, sessionId);
     final cached = _pollSessionReceiptCache[key];
     if (cached != null && cached.isNotEmpty) {
@@ -587,18 +656,21 @@ class EngagementProvider with ChangeNotifier {
   }
 
   bool hasPersistentInteractionRecordForItem(int itemId) {
-    final hasLastVote = _pollLastVoteDetailedBets.containsKey(itemId) &&
+    final hasLastVote =
+        _pollLastVoteDetailedBets.containsKey(itemId) &&
         (_pollLastVoteDetailedBets[itemId]?.isNotEmpty ?? false);
     if (hasLastVote) return true;
 
     final prefixByItemId = '$itemId|';
-    final hasLocalUnitOverlay =
-        _pollUserLocalUnitOverlay.keys.any((k) => k.startsWith(prefixByItemId));
+    final hasLocalUnitOverlay = _pollUserLocalUnitOverlay.keys.any(
+      (k) => k.startsWith(prefixByItemId),
+    );
     if (hasLocalUnitOverlay) return true;
 
     final prefixByPollSession = '${itemId}_';
-    final hasSessionReceipt = _pollSessionReceiptCache.keys
-        .any((k) => k.startsWith(prefixByPollSession));
+    final hasSessionReceipt = _pollSessionReceiptCache.keys.any(
+      (k) => k.startsWith(prefixByPollSession),
+    );
     return hasSessionReceipt;
   }
 
@@ -686,17 +758,19 @@ class EngagementProvider with ChangeNotifier {
 
       final hasPersistentLocalRecordForItem =
           hasPersistentInteractionRecordForItem(fresh.id);
-      final previousSessionId =
-          source.pollVotingSchedule?['current_session_id']?.toString();
-      final freshSessionId =
-          fresh.pollVotingSchedule?['current_session_id']?.toString();
-      final sessionBoundaryChanged = previousSessionId != null &&
+      final previousSessionId = source.pollVotingSchedule?['current_session_id']
+          ?.toString();
+      final freshSessionId = fresh.pollVotingSchedule?['current_session_id']
+          ?.toString();
+      final sessionBoundaryChanged =
+          previousSessionId != null &&
           previousSessionId.isNotEmpty &&
           freshSessionId != null &&
           freshSessionId.isNotEmpty &&
           previousSessionId != freshSessionId;
 
-      final shouldRecoverFromLocal = lostInteractionFlag ||
+      final shouldRecoverFromLocal =
+          lostInteractionFlag ||
           lostUserAnswer ||
           (hasPersistentLocalRecordForItem &&
               (!fresh.hasInteracted ||
@@ -768,10 +842,12 @@ class EngagementProvider with ChangeNotifier {
     void removePoll(int pollId) {
       _pollLastVoteDetailedBets.remove(pollId);
       _pollInteractionTouchedAtMs.remove(pollId);
-      _pollSessionReceiptCache
-          .removeWhere((sessionKey, _) => sessionKey.startsWith('${pollId}_'));
-      _pollUserLocalUnitOverlay
-          .removeWhere((overlayKey, _) => overlayKey.startsWith('$pollId|'));
+      _pollSessionReceiptCache.removeWhere(
+        (sessionKey, _) => sessionKey.startsWith('${pollId}_'),
+      );
+      _pollUserLocalUnitOverlay.removeWhere(
+        (overlayKey, _) => overlayKey.startsWith('$pollId|'),
+      );
     }
 
     for (final pollId in expiredPollIds) {
@@ -783,8 +859,11 @@ class EngagementProvider with ChangeNotifier {
       return;
     }
 
-    retainedPollIds.sort((a, b) => (_pollInteractionTouchedAtMs[a] ?? 0)
-        .compareTo(_pollInteractionTouchedAtMs[b] ?? 0));
+    retainedPollIds.sort(
+      (a, b) => (_pollInteractionTouchedAtMs[a] ?? 0).compareTo(
+        _pollInteractionTouchedAtMs[b] ?? 0,
+      ),
+    );
     final overflowCount =
         retainedPollIds.length - _maxRetainedPollInteractionEntries;
     for (var i = 0; i < overflowCount; i++) {
@@ -793,7 +872,8 @@ class EngagementProvider with ChangeNotifier {
   }
 
   Future<Map<int, EngagementItem>> _buildPersistentInteractionSnapshotByItemId(
-      int userId) async {
+    int userId,
+  ) async {
     final map = <int, EngagementItem>{};
 
     for (final item in _items) {
@@ -847,23 +927,22 @@ class EngagementProvider with ChangeNotifier {
     _error = null;
     notifyListeners();
     await _loadCachedFeedForUser(userId, notify: true);
-    unawaited(
-      loadFeed(
-        userId: userId,
-        token: token,
-        forceRefresh: true,
-      ),
-    );
+    unawaited(loadFeed(userId: userId, token: token, forceRefresh: true));
   }
 
   /// Apply interaction update locally (fallback when backend does not return updated_item).
-  void _applyLocalInteractionUpdate(int itemId, String answer,
-      {int? betAmount, Map<int, int>? betAmountPerOption}) {
+  void _applyLocalInteractionUpdate(
+    int itemId,
+    String answer, {
+    int? betAmount,
+    Map<int, int>? betAmountPerOption,
+  }) {
     final index = _items.indexWhere((item) => item.id == itemId);
     if (index == -1) {
       app_logger.Logger.warning(
-          'Item $itemId not found in local items list after successful submission',
-          tag: 'EngagementProvider');
+        'Item $itemId not found in local items list after successful submission',
+        tag: 'EngagementProvider',
+      );
       return;
     }
     final existing = _items[index];
@@ -891,8 +970,9 @@ class EngagementProvider with ChangeNotifier {
       unawaited(_saveFeedToCache(userId, _items));
     }
     app_logger.Logger.info(
-        'Updated item $itemId interaction status locally (hasInteracted=true)',
-        tag: 'EngagementProvider');
+      'Updated item $itemId interaction status locally (hasInteracted=true)',
+      tag: 'EngagementProvider',
+    );
   }
 
   /// Submit interaction (quiz answer, poll vote)
@@ -908,14 +988,15 @@ class EngagementProvider with ChangeNotifier {
     List<int>? selectedOptionIds, // Optional - for multi-select polls
     int? betAmount, // Optional - for polls: single amount for all options
     Map<int, int>?
-        betAmountPerOption, // Optional - for polls: per-option amounts
+    betAmountPerOption, // Optional - for polls: per-option amounts
   }) async {
     // PROFESSIONAL FIX: Validate that userId matches current user
     // This prevents submitting interactions for wrong user after account switch
     if (_currentUserId != null && _currentUserId != userId) {
       app_logger.Logger.error(
-          'User ID mismatch in submitInteraction: current=$_currentUserId, requested=$userId. This should not happen.',
-          tag: 'EngagementProvider');
+        'User ID mismatch in submitInteraction: current=$_currentUserId, requested=$userId. This should not happen.',
+        tag: 'EngagementProvider',
+      );
       return {
         'success': false,
         'message': 'User account mismatch. Please refresh the page.',
@@ -924,8 +1005,9 @@ class EngagementProvider with ChangeNotifier {
 
     try {
       app_logger.Logger.info(
-          'Submitting interaction: userId=$userId, itemId=$itemId, answer=$answer',
-          tag: 'EngagementProvider');
+        'Submitting interaction: userId=$userId, itemId=$itemId, answer=$answer',
+        tag: 'EngagementProvider',
+      );
 
       final result = await EngagementService.submitInteraction(
         userId: userId,
@@ -954,38 +1036,51 @@ class EngagementProvider with ChangeNotifier {
               notifyListeners();
               unawaited(_saveFeedToCache(userId, _items));
               app_logger.Logger.info(
-                  'Auto-updated item ${parsed.id} from backend updated_item (no refresh needed)',
-                  tag: 'EngagementProvider');
+                'Auto-updated item ${parsed.id} from backend updated_item (no refresh needed)',
+                tag: 'EngagementProvider',
+              );
             } else {
               _items.add(parsed);
               notifyListeners();
               unawaited(_saveFeedToCache(userId, _items));
               app_logger.Logger.info(
-                  'Added new item ${parsed.id} from backend updated_item',
-                  tag: 'EngagementProvider');
+                'Added new item ${parsed.id} from backend updated_item',
+                tag: 'EngagementProvider',
+              );
             }
           } catch (e, st) {
             app_logger.Logger.warning(
-                'Failed to parse updated_item, falling back to local update: $e',
-                tag: 'EngagementProvider',
-                error: e,
-                stackTrace: st);
-            _applyLocalInteractionUpdate(itemId, answer,
-                betAmount: betAmount, betAmountPerOption: betAmountPerOption);
+              'Failed to parse updated_item, falling back to local update: $e',
+              tag: 'EngagementProvider',
+              error: e,
+              stackTrace: st,
+            );
+            _applyLocalInteractionUpdate(
+              itemId,
+              answer,
+              betAmount: betAmount,
+              betAmountPerOption: betAmountPerOption,
+            );
           }
         } else {
-          _applyLocalInteractionUpdate(itemId, answer,
-              betAmount: betAmount, betAmountPerOption: betAmountPerOption);
+          _applyLocalInteractionUpdate(
+            itemId,
+            answer,
+            betAmount: betAmount,
+            betAmountPerOption: betAmountPerOption,
+          );
         }
       } else {
         final message = result['message']?.toString() ?? '';
         app_logger.Logger.warning(
-            'Interaction submission returned success=false: $message',
-            tag: 'EngagementProvider');
+          'Interaction submission returned success=false: $message',
+          tag: 'EngagementProvider',
+        );
 
         // PROFESSIONAL FIX: If backend reports a duplicate (already voted),
         // sync local state to the server's existing interaction (do NOT overwrite with attempted answer).
-        final isDuplicate = result['is_duplicate'] == true ||
+        final isDuplicate =
+            result['is_duplicate'] == true ||
             (result['code']?.toString().toLowerCase() == 'already_voted');
         final index = _items.indexWhere((item) => item.id == itemId);
         if (index != -1 && isDuplicate) {
@@ -995,10 +1090,10 @@ class EngagementProvider with ChangeNotifier {
           final serverBetAmount = data?['user_bet_amount'];
           final int? parsedBetAmount =
               (serverBetAmount is int && serverBetAmount > 0)
-                  ? serverBetAmount
-                  : (serverBetAmount is num
-                      ? (serverBetAmount).toInt()
-                      : int.tryParse(serverBetAmount?.toString() ?? ''));
+              ? serverBetAmount
+              : (serverBetAmount is num
+                    ? (serverBetAmount).toInt()
+                    : int.tryParse(serverBetAmount?.toString() ?? ''));
           final updatedItem = EngagementItem(
             id: _items[index].id,
             type: _items[index].type,
@@ -1026,12 +1121,12 @@ class EngagementProvider with ChangeNotifier {
 
       return result;
     } catch (e) {
-      app_logger.Logger.error('Submit interaction exception',
-          tag: 'EngagementProvider', error: e);
-      return {
-        'success': false,
-        'message': 'Failed to submit interaction',
-      };
+      app_logger.Logger.error(
+        'Submit interaction exception',
+        tag: 'EngagementProvider',
+        error: e,
+      );
+      return {'success': false, 'message': 'Failed to submit interaction'};
     }
   }
 
@@ -1041,11 +1136,7 @@ class EngagementProvider with ChangeNotifier {
     required int userId,
     String? token, // Optional - kept for backward compatibility
   }) async {
-    await loadFeed(
-      userId: userId,
-      token: token,
-      forceRefresh: true,
-    );
+    await loadFeed(userId: userId, token: token, forceRefresh: true);
   }
 
   /// GET `/twork/v1/poll/state/{pollId}` via [EngagementService] — **auth required** (`skipAuth: false`).
@@ -1068,17 +1159,12 @@ class EngagementProvider with ChangeNotifier {
 
   /// Immediately refresh feed (for app resume, etc.)
   /// This triggers an instant refresh without waiting for polling interval
-  Future<void> refreshImmediately({
-    required int userId,
-    String? token,
-  }) async {
-    app_logger.Logger.info('Immediate refresh triggered for engagement feed',
-        tag: 'EngagementProvider');
-    await loadFeed(
-      userId: userId,
-      token: token,
-      forceRefresh: true,
+  Future<void> refreshImmediately({required int userId, String? token}) async {
+    app_logger.Logger.info(
+      'Immediate refresh triggered for engagement feed',
+      tag: 'EngagementProvider',
     );
+    await loadFeed(userId: userId, token: token, forceRefresh: true);
   }
 
   /// Clear all data
@@ -1093,10 +1179,7 @@ class EngagementProvider with ChangeNotifier {
     _notifyListenersDebounced();
   }
 
-  Future<void> _loadCachedFeedForUser(
-    int userId, {
-    bool notify = false,
-  }) async {
+  Future<void> _loadCachedFeedForUser(int userId, {bool notify = false}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_cacheKeyForUser(userId));
@@ -1213,8 +1296,9 @@ class EngagementProvider with ChangeNotifier {
       'rotation_duration': item.rotationDurationSeconds,
       'interaction_count': item.interactionCount,
       if (item.pollVotingSchedule != null)
-        'poll_voting_schedule':
-            Map<String, dynamic>.from(item.pollVotingSchedule!),
+        'poll_voting_schedule': Map<String, dynamic>.from(
+          item.pollVotingSchedule!,
+        ),
       if (item.pollResult != null)
         'poll_result': Map<String, dynamic>.from(item.pollResult!),
     };
@@ -1268,15 +1352,17 @@ class EngagementProvider with ChangeNotifier {
     // Only start polling if user is authenticated
     if (_currentUserId == null || _currentUserId != userId) {
       app_logger.Logger.warning(
-          'Cannot start polling: user ID mismatch or not authenticated',
-          tag: 'EngagementProvider');
+        'Cannot start polling: user ID mismatch or not authenticated',
+        tag: 'EngagementProvider',
+      );
       return;
     }
 
     app_logger.Logger.info(
-        'Starting automatic polling for engagement feed '
-        '(interval: ${computedInterval.inSeconds}s)',
-        tag: 'EngagementProvider');
+      'Starting automatic polling for engagement feed '
+      '(interval: ${computedInterval.inSeconds}s)',
+      tag: 'EngagementProvider',
+    );
 
     _pollingTimer = Timer.periodic(computedInterval, (timer) async {
       if (_isAutoPollPaused) {
@@ -1290,16 +1376,19 @@ class EngagementProvider with ChangeNotifier {
       // Check if user is still the same
       if (_currentUserId != userId) {
         app_logger.Logger.info(
-            'User changed during polling, stopping poll timer',
-            tag: 'EngagementProvider');
+          'User changed during polling, stopping poll timer',
+          tag: 'EngagementProvider',
+        );
         _stopPolling();
         return;
       }
 
       // Don't poll if already loading
       if (_isLoading) {
-        app_logger.Logger.info('Skipping poll: feed is already loading',
-            tag: 'EngagementProvider');
+        app_logger.Logger.info(
+          'Skipping poll: feed is already loading',
+          tag: 'EngagementProvider',
+        );
         return;
       }
 
@@ -1313,11 +1402,13 @@ class EngagementProvider with ChangeNotifier {
         // Full feed sync — detects create + delete and field updates
         final oldIds = _items.map((i) => i.id).toSet();
         final newIds = items.map((i) => i.id).toSet();
-        final structureChanged = oldIds.length != newIds.length ||
+        final structureChanged =
+            oldIds.length != newIds.length ||
             !oldIds.containsAll(newIds) ||
             !newIds.containsAll(oldIds);
 
-        final hasErrorFromService = EngagementService.lastError != null &&
+        final hasErrorFromService =
+            EngagementService.lastError != null &&
             EngagementService.lastError!.trim().isNotEmpty;
 
         if (structureChanged) {
@@ -1328,11 +1419,13 @@ class EngagementProvider with ChangeNotifier {
           */
           // New Code:
           _notifyListenersThrottledFromPolling();
-          unawaited(_persistFeedSnapshotForUser(
-            userId: userId,
-            items: _items,
-            hasServiceError: hasErrorFromService,
-          ));
+          unawaited(
+            _persistFeedSnapshotForUser(
+              userId: userId,
+              items: _items,
+              hasServiceError: hasErrorFromService,
+            ),
+          );
           _startPolling(userId: userId, token: token);
         } else {
           bool contentChanged = false;
@@ -1357,17 +1450,22 @@ class EngagementProvider with ChangeNotifier {
             */
             // New Code:
             _notifyListenersThrottledFromPolling();
-            unawaited(_persistFeedSnapshotForUser(
-              userId: userId,
-              items: _items,
-              hasServiceError: hasErrorFromService,
-            ));
+            unawaited(
+              _persistFeedSnapshotForUser(
+                userId: userId,
+                items: _items,
+                hasServiceError: hasErrorFromService,
+              ),
+            );
             _startPolling(userId: userId, token: token);
           }
         }
       } catch (e) {
-        app_logger.Logger.warning('Error during engagement updates poll: $e',
-            tag: 'EngagementProvider', error: e);
+        app_logger.Logger.warning(
+          'Error during engagement updates poll: $e',
+          tag: 'EngagementProvider',
+          error: e,
+        );
       }
     });
   }
@@ -1383,8 +1481,8 @@ class EngagementProvider with ChangeNotifier {
       if (raw.type != EngagementType.poll) continue;
 
       final schedule = raw.pollVotingSchedule;
-      final status =
-          (schedule?['voting_status']?.toString() ?? '').toLowerCase();
+      final status = (schedule?['voting_status']?.toString() ?? '')
+          .toLowerCase();
       final mode = (schedule?['poll_mode']?.toString() ?? '').toLowerCase();
       if (mode == 'auto_run') {
         hasAutoRunPoll = true;
@@ -1402,13 +1500,15 @@ class EngagementProvider with ChangeNotifier {
           ? secondsRaw
           : (secondsRaw is num ? secondsRaw.toInt() : 999999);
 
-      final bool isAutoRunNearClose = mode == 'auto_run' &&
+      final bool isAutoRunNearClose =
+          mode == 'auto_run' &&
           secondsUntilClose <= _fastPollingCloseThresholdSeconds;
       final bool isResultWindow = resultLikeStatuses.contains(status);
 
       // "has_interacted == true and waiting result" heuristic:
       // user already voted, result not yet materialized, and poll is near close/result transition.
-      final bool waitingResultAfterInteraction = raw.hasInteracted &&
+      final bool waitingResultAfterInteraction =
+          raw.hasInteracted &&
           raw.pollResult == null &&
           (isResultWindow || isAutoRunNearClose || secondsUntilClose <= 20);
 
@@ -1418,10 +1518,12 @@ class EngagementProvider with ChangeNotifier {
         final reason = isResultWindow
             ? 'showing_result'
             : (isAutoRunNearClose
-                ? 'auto_run_near_close'
-                : 'has_interacted_waiting_result');
+                  ? 'auto_run_near_close'
+                  : 'has_interacted_waiting_result');
         return _SmartPollingDecision(
-            interval: _fastPollingInterval, reason: reason);
+          interval: _fastPollingInterval,
+          reason: reason,
+        );
       }
     }
     /*
@@ -1448,8 +1550,10 @@ class EngagementProvider with ChangeNotifier {
       _activePollingInterval = null;
       _lastSmartPollingReason = null;
       _hasLoggedKeptInterval = false;
-      app_logger.Logger.info('Stopped automatic polling for engagement feed',
-          tag: 'EngagementProvider');
+      app_logger.Logger.info(
+        'Stopped automatic polling for engagement feed',
+        tag: 'EngagementProvider',
+      );
     }
   }
 
@@ -1509,10 +1613,7 @@ class EngagementProvider with ChangeNotifier {
       'Resuming auto-polling and fetching engagement feed immediately.',
       tag: 'EngagementProvider',
     );
-    await loadFeed(
-      userId: userId,
-      forceRefresh: true,
-    );
+    await loadFeed(userId: userId, forceRefresh: true);
   }
 
   /// Set loading state
@@ -1545,8 +1646,5 @@ class _SmartPollingDecision {
   final Duration interval;
   final String reason;
 
-  const _SmartPollingDecision({
-    required this.interval,
-    required this.reason,
-  });
+  const _SmartPollingDecision({required this.interval, required this.reason});
 }

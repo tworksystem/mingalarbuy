@@ -17,7 +17,7 @@ import '../utils/logger.dart' as app_logger;
 class EngagementCarousel extends StatefulWidget {
   final VoidCallback? onRefresh;
   final int?
-      initialItemId; // PROFESSIONAL FIX: Support navigation to specific item
+  initialItemId; // PROFESSIONAL FIX: Support navigation to specific item
 
   const EngagementCarousel({
     super.key,
@@ -37,7 +37,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   int _currentPage = 0;
   Timer? _autoScrollTimer;
   int? _lastUserId; // Track last user ID to detect user changes
-  int? _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
+  int?
+  _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
   String _lastWinnerScanSignature = '';
   final Set<String> _forcedOverlaySessionKeys = <String>{};
   final Map<String, DateTime> _handoverTriggeredAt = <String, DateTime>{};
@@ -53,7 +54,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final startedAt = (rawStartedAt == null || rawStartedAt.toString().isEmpty)
         ? 'nostart'
         : rawStartedAt.toString();
-    final votingStatus = (rawVotingStatus == null || rawVotingStatus.toString().isEmpty)
+    final votingStatus =
+        (rawVotingStatus == null || rawVotingStatus.toString().isEmpty)
         ? 'unknown'
         : rawVotingStatus.toString().toLowerCase();
     return '${item.id}_${sessionId}_${startedAt}_${votingStatus}';
@@ -74,8 +76,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       final seconds = schedule != null && schedule['seconds_until_close'] is int
           ? (schedule['seconds_until_close'] as int)
           : (schedule != null && schedule['seconds_until_close'] is num
-              ? (schedule['seconds_until_close'] as num).toInt()
-              : 0);
+                ? (schedule['seconds_until_close'] as num).toInt()
+                : 0);
       if (seconds > 0 && seconds <= 10) {
         validKeys.add(_pollSessionKey(item));
       }
@@ -115,8 +117,10 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     if (!mounted) return;
 
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
 
     // Wait a bit for auth to be ready
     await Future.delayed(const Duration(milliseconds: 300));
@@ -126,8 +130,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final token = await authProvider.token;
     if (authProvider.user == null || token == null) {
       app_logger.Logger.warning(
-          'User not authenticated, skipping engagement feed',
-          tag: 'EngagementCarousel');
+        'User not authenticated, skipping engagement feed',
+        tag: 'EngagementCarousel',
+      );
       _lastUserId = null;
       return;
     }
@@ -144,8 +149,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     }
 
     app_logger.Logger.info(
-        'Loading engagement feed for user: $currentUserId (userChanged: $userChanged)',
-        tag: 'EngagementCarousel');
+      'Loading engagement feed for user: $currentUserId (userChanged: $userChanged)',
+      tag: 'EngagementCarousel',
+    );
 
     try {
       // Force refresh if user changed, otherwise use normal refresh
@@ -161,8 +167,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       if (engagementProvider.hasItems) {
         _pruneForcedOverlaySessionKeys(engagementProvider.items);
         app_logger.Logger.info(
-            'Engagement feed loaded: ${engagementProvider.items.length} items',
-            tag: 'EngagementCarousel');
+          'Engagement feed loaded: ${engagementProvider.items.length} items',
+          tag: 'EngagementCarousel',
+        );
 
         // PROFESSIONAL FIX: Scroll to specific item if initialItemId is provided
         if (widget.initialItemId != null) {
@@ -177,12 +184,16 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         _forcedOverlaySessionKeys.clear();
         _handoverTriggeredAt.clear();
         app_logger.Logger.warning(
-            'Engagement feed is empty. Error: ${engagementProvider.error}',
-            tag: 'EngagementCarousel');
+          'Engagement feed is empty. Error: ${engagementProvider.error}',
+          tag: 'EngagementCarousel',
+        );
       }
     } catch (e) {
-      app_logger.Logger.error('Error loading engagement feed: $e',
-          tag: 'EngagementCarousel', error: e);
+      app_logger.Logger.error(
+        'Error loading engagement feed: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+      );
     }
   }
 
@@ -191,12 +202,15 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   void _scrollToItem(int itemId) {
     if (!mounted) return;
 
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     if (!engagementProvider.hasItems) {
       app_logger.Logger.warning(
-          'Cannot scroll to item $itemId: no items loaded',
-          tag: 'EngagementCarousel');
+        'Cannot scroll to item $itemId: no items loaded',
+        tag: 'EngagementCarousel',
+      );
       return;
     }
 
@@ -206,14 +220,17 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     );
 
     if (itemIndex == -1) {
-      app_logger.Logger.warning('Item $itemId not found in engagement feed',
-          tag: 'EngagementCarousel');
+      app_logger.Logger.warning(
+        'Item $itemId not found in engagement feed',
+        tag: 'EngagementCarousel',
+      );
       return;
     }
 
     app_logger.Logger.info(
-        'Scrolling to engagement item $itemId at index $itemIndex',
-        tag: 'EngagementCarousel');
+      'Scrolling to engagement item $itemId at index $itemIndex',
+      tag: 'EngagementCarousel',
+    );
 
     // Wait for page controller to be ready, then scroll
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -243,8 +260,10 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   void _startAutoScroll() {
     _autoScrollTimer?.cancel();
 
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     if (!engagementProvider.hasItems) {
       return;
     }
@@ -252,8 +271,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     // Get rotation duration from current item (backend-managed)
     // Backend always provides rotation_duration (either from item or global setting)
     final currentItem = engagementProvider.items.isNotEmpty
-        ? engagementProvider
-            .items[_currentPage % engagementProvider.items.length]
+        ? engagementProvider.items[_currentPage %
+              engagementProvider.items.length]
         : null;
 
     // Use rotation_duration from backend (always provided by backend now)
@@ -274,69 +293,71 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final validRotationSeconds = rotationSeconds.clamp(1, 60);
 
     app_logger.Logger.info(
-        'Starting auto-scroll with rotation duration: ${validRotationSeconds}s (from backend: ${currentItem?.rotationDurationSeconds ?? "default"})',
-        tag: 'EngagementCarousel');
+      'Starting auto-scroll with rotation duration: ${validRotationSeconds}s (from backend: ${currentItem?.rotationDurationSeconds ?? "default"})',
+      tag: 'EngagementCarousel',
+    );
 
-    _autoScrollTimer = Timer.periodic(
-      Duration(seconds: validRotationSeconds),
-      (timer) {
-        if (!mounted) {
-          timer.cancel();
-          return;
-        }
+    _autoScrollTimer = Timer.periodic(Duration(seconds: validRotationSeconds), (
+      timer,
+    ) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
 
-        final engagementProvider =
-            Provider.of<EngagementProvider>(context, listen: false);
-        if (!engagementProvider.hasItems) {
-          timer.cancel();
-          return;
-        }
+      final engagementProvider = Provider.of<EngagementProvider>(
+        context,
+        listen: false,
+      );
+      if (!engagementProvider.hasItems) {
+        timer.cancel();
+        return;
+      }
 
-        final nextPage = (_currentPage + 1) % engagementProvider.items.length;
+      final nextPage = (_currentPage + 1) % engagementProvider.items.length;
 
-        // Get rotation duration for next page item
-        final nextItem = engagementProvider.items[nextPage];
-        final nextRotationSeconds = nextItem.rotationDurationSeconds;
+      // Get rotation duration for next page item
+      final nextItem = engagementProvider.items[nextPage];
+      final nextRotationSeconds = nextItem.rotationDurationSeconds;
 
-        // OFF for next item: stop auto-scroll and just animate once into that item.
-        if (nextRotationSeconds == null || nextRotationSeconds <= 0) {
-          timer.cancel();
-          _currentPage = nextPage;
-          _pageController.animateToPage(
-            nextPage,
-            duration: const Duration(milliseconds: 600),
-            curve: Curves.easeInOut,
-          );
-          app_logger.Logger.info(
-            'Auto-scroll stopped on next item (rotation_duration = ${nextRotationSeconds ?? "null"})',
-            tag: 'EngagementCarousel',
-          );
-          return;
-        }
-
-        final validNextRotationSeconds = nextRotationSeconds.clamp(1, 60);
-
-        // If next item has different rotation duration, restart timer with new duration
-        if (validNextRotationSeconds != validRotationSeconds) {
-          timer.cancel();
-          _currentPage = nextPage;
-          _pageController.animateToPage(
-            nextPage,
-            duration: const Duration(milliseconds: 600),
-            curve: Curves.easeInOut,
-          );
-          // Restart timer with new duration
-          _startAutoScroll();
-          return;
-        }
-
+      // OFF for next item: stop auto-scroll and just animate once into that item.
+      if (nextRotationSeconds == null || nextRotationSeconds <= 0) {
+        timer.cancel();
+        _currentPage = nextPage;
         _pageController.animateToPage(
           nextPage,
           duration: const Duration(milliseconds: 600),
           curve: Curves.easeInOut,
         );
-      },
-    );
+        app_logger.Logger.info(
+          'Auto-scroll stopped on next item (rotation_duration = ${nextRotationSeconds ?? "null"})',
+          tag: 'EngagementCarousel',
+        );
+        return;
+      }
+
+      final validNextRotationSeconds = nextRotationSeconds.clamp(1, 60);
+
+      // If next item has different rotation duration, restart timer with new duration
+      if (validNextRotationSeconds != validRotationSeconds) {
+        timer.cancel();
+        _currentPage = nextPage;
+        _pageController.animateToPage(
+          nextPage,
+          duration: const Duration(milliseconds: 600),
+          curve: Curves.easeInOut,
+        );
+        // Restart timer with new duration
+        _startAutoScroll();
+        return;
+      }
+
+      _pageController.animateToPage(
+        nextPage,
+        duration: const Duration(milliseconds: 600),
+        curve: Curves.easeInOut,
+      );
+    });
   }
 
   bool _isPollResultEligibleForWinnerCheck(EngagementItem item) {
@@ -345,15 +366,18 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final status = (schedule?['voting_status']?.toString() ?? '').toLowerCase();
     final result = item.pollResult;
     if (result == null) return false;
-    final hasWinning = result['winning_option'] != null ||
+    final hasWinning =
+        result['winning_option'] != null ||
         (result['winning_index'] != null && result['winning_index'] >= 0) ||
         ((result['options'] as List?)?.isNotEmpty ?? false);
-    final isResultLikeStatus = status == 'showing_result' ||
+    final isResultLikeStatus =
+        status == 'showing_result' ||
         status == 'showing_results' ||
         status == 'ended' ||
         status == 'result' ||
         status == 'results';
-    return isResultLikeStatus && (((result['total_votes'] ?? 0) > 0) || hasWinning);
+    return isResultLikeStatus &&
+        (((result['total_votes'] ?? 0) > 0) || hasWinning);
   }
 
   String _winnerScanSignature(List<EngagementItem> items) {
@@ -423,8 +447,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
             if (engagementProvider.error != null &&
                 !engagementProvider.hasItems) {
               app_logger.Logger.error(
-                  'Engagement feed error: ${engagementProvider.error}',
-                  tag: 'EngagementCarousel');
+                'Engagement feed error: ${engagementProvider.error}',
+                tag: 'EngagementCarousel',
+              );
               // Show error state instead of hiding completely
               return _buildErrorState(engagementProvider.error!);
             }
@@ -432,8 +457,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
             // If no items, show empty state
             if (!engagementProvider.hasItems) {
               app_logger.Logger.info(
-                  'No engagement items available. Error: ${engagementProvider.error}',
-                  tag: 'EngagementCarousel');
+                'No engagement items available. Error: ${engagementProvider.error}',
+                tag: 'EngagementCarousel',
+              );
               return const SizedBox.shrink();
             }
 
@@ -444,7 +470,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
                 _triggerWinnerChecksForVisibleFeedPolls(
-                    engagementProvider.items);
+                  engagementProvider.items,
+                );
               });
             } else if (winnerSig.isEmpty) {
               _lastWinnerScanSignature = '';
@@ -452,8 +479,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 
             // If rotationDurationSeconds changed for current item (e.g. Global Rotation Settings updated),
             // restart auto-scroll with new value so changes apply instantly.
-            final currentItem = engagementProvider.items[
-                _currentPage % engagementProvider.items.length];
+            final currentItem = engagementProvider
+                .items[_currentPage % engagementProvider.items.length];
             final currentRotation = currentItem.rotationDurationSeconds;
             if (currentRotation != _lastRotationSeconds) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -529,8 +556,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
             ),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color:
-                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.2),
               width: 1.5,
             ),
           ),
@@ -547,10 +575,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 Text(
                   'Loading engagement...',
                   style: TextStyle(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withValues(alpha: 0.6),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.6),
                     fontSize: 14,
                   ),
                 ),
@@ -589,11 +616,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.info_outline,
-                    color: Colors.orange[700],
-                    size: 32,
-                  ),
+                  Icon(Icons.info_outline, color: Colors.orange[700], size: 32),
                   const SizedBox(height: 12),
                   Text(
                     // Old Code: 'Unable to load engagement',
@@ -611,10 +634,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                   const SizedBox(height: 8),
                   Text(
                     'Pull down to refresh',
-                    style: TextStyle(
-                      color: Colors.orange[700],
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: Colors.orange[700], fontSize: 12),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -636,10 +656,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
           value = (1 - (value.abs() * 0.15)).clamp(0.85, 1.0);
         }
 
-        return Transform.scale(
-          scale: value,
-          child: child,
-        );
+        return Transform.scale(scale: value, child: child);
       },
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
@@ -732,26 +749,23 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               autoplay: false,
               showControls: false,
               placeholder: Container(
-                decoration: BoxDecoration(
-                  gradient: AppTheme.primaryGradient,
-                ),
+                decoration: BoxDecoration(gradient: AppTheme.primaryGradient),
                 child: const Center(
                   child: CircularProgressIndicator(color: Colors.white),
                 ),
               ),
               errorWidget: Container(
-                decoration: BoxDecoration(
-                  gradient: AppTheme.primaryGradient,
+                decoration: BoxDecoration(gradient: AppTheme.primaryGradient),
+                child: const Icon(
+                  Icons.image_not_supported,
+                  color: Colors.white,
+                  size: 50,
                 ),
-                child: const Icon(Icons.image_not_supported,
-                    color: Colors.white, size: 50),
               ),
             )
           else
             Container(
-              decoration: BoxDecoration(
-                gradient: AppTheme.primaryGradient,
-              ),
+              decoration: BoxDecoration(gradient: AppTheme.primaryGradient),
             ),
           // Overlay Gradient
           Container(
@@ -759,10 +773,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.7),
-                ],
+                colors: [Colors.transparent, Colors.black.withOpacity(0.7)],
               ),
             ),
           ),
@@ -888,8 +899,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                         : [Colors.purple[400]!, Colors.deepPurple[600]!],
                   ),
                 ),
-                child: const Icon(Icons.image_not_supported,
-                    color: Colors.white, size: 50),
+                child: const Icon(
+                  Icons.image_not_supported,
+                  color: Colors.white,
+                  size: 50,
+                ),
               ),
             ),
           ),
@@ -899,10 +913,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.8),
-                ],
+                colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
               ),
             ),
             child: Padding(
@@ -943,7 +954,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                       if (item.rewardPoints > 0)
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
                           decoration: BoxDecoration(
                             color: Colors.white.withOpacity(0.3),
                             borderRadius: BorderRadius.circular(20),
@@ -962,7 +975,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                   const SizedBox(height: 12),
                   // Question or Content - Use Flexible to prevent overflow
                   Flexible(
-                    child: (item.quizData != null &&
+                    child:
+                        (item.quizData != null &&
                             item.quizData!.question.isNotEmpty)
                         ? Text(
                             item.quizData!.question,
@@ -982,24 +996,24 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                             overflow: TextOverflow.ellipsis,
                           )
                         : (item.content.isNotEmpty)
-                            ? Text(
-                                _stripHtmlTags(item.content),
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500,
-                                  shadows: [
-                                    Shadow(
-                                      color: Colors.black54,
-                                      offset: Offset(0, 1),
-                                      blurRadius: 2,
-                                    ),
-                                  ],
+                        ? Text(
+                            _stripHtmlTags(item.content),
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w500,
+                              shadows: [
+                                Shadow(
+                                  color: Colors.black54,
+                                  offset: Offset(0, 1),
+                                  blurRadius: 2,
                                 ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              )
-                            : const SizedBox.shrink(),
+                              ],
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          )
+                        : const SizedBox.shrink(),
                   ),
                   const SizedBox(height: 12),
                   // Action Button
@@ -1029,7 +1043,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                         backgroundColor: Colors.white,
                         foregroundColor: Colors.deepPurple,
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 24, vertical: 12),
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(25),
                         ),
@@ -1087,8 +1103,10 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 ),
                 if (item.rewardPoints > 0)
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.3),
                       borderRadius: BorderRadius.circular(20),
@@ -1138,8 +1156,10 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                             SizedBox(width: 8),
                             Text(
                               'Already answered',
-                              style:
-                                  TextStyle(color: Colors.white, fontSize: 14),
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
                             ),
                           ],
                         ),
@@ -1151,7 +1171,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                           backgroundColor: Colors.white,
                           foregroundColor: Colors.deepPurple,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 12),
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(25),
                           ),
@@ -1190,7 +1212,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                           backgroundColor: Colors.white,
                           foregroundColor: Colors.deepPurple,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 12),
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(25),
                           ),
@@ -1216,22 +1240,33 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final schedule = item.pollVotingSchedule;
     final votingStatusRaw = schedule?['voting_status']?.toString() ?? 'open';
     final votingStatus = votingStatusRaw.toLowerCase();
+    /*
+    Old Code:
     final secondsUntilClose = schedule != null && schedule['seconds_until_close'] is int
         ? (schedule['seconds_until_close'] as int)
         : (schedule != null && schedule['seconds_until_close'] is num
             ? (schedule['seconds_until_close'] as num).toInt()
             : 0);
+    */
+    final DateTime? serverEndsAtUtc = _resolvePollEndsAtUtc(schedule);
+    final int secondsUntilClose = _resolveServerAnchoredSeconds(
+      schedule: schedule,
+      endsAtUtc: serverEndsAtUtc,
+    );
     final r = item.pollResult;
-    final hasWinning = r != null &&
+    final hasWinning =
+        r != null &&
         (r['winning_option'] != null ||
             (r['winning_index'] != null && r['winning_index'] >= 0) ||
             ((r['options'] as List?)?.isNotEmpty ?? false));
-    final isResultLikeStatus = votingStatus == 'showing_result' ||
+    final isResultLikeStatus =
+        votingStatus == 'showing_result' ||
         votingStatus == 'showing_results' ||
         votingStatus == 'ended' ||
         votingStatus == 'result' ||
         votingStatus == 'results';
-    final showResult = isResultLikeStatus &&
+    final showResult =
+        isResultLikeStatus &&
         r != null &&
         ((r['total_votes'] ?? 0) > 0 || hasWinning);
 
@@ -1308,8 +1343,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                         : [Colors.orange[400]!, Colors.deepOrange[600]!],
                   ),
                 ),
-                child: const Icon(Icons.image_not_supported,
-                    color: Colors.white, size: 50),
+                child: const Icon(
+                  Icons.image_not_supported,
+                  color: Colors.white,
+                  size: 50,
+                ),
               ),
             ),
           ),
@@ -1326,10 +1364,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.black.withOpacity(0.8),
-                  ],
+                  colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
                 ),
               ),
               child: Padding(
@@ -1377,7 +1412,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                           const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.white.withOpacity(0.3),
                               borderRadius: BorderRadius.circular(20),
@@ -1452,15 +1489,18 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                           key: ValueKey('vote_submitted_${item.id}'),
                           detailedBets: pollUserDetailedBets(
                             item,
-                            engagementProvider:
-                                Provider.of<EngagementProvider>(context, listen: false),
+                            engagementProvider: Provider.of<EngagementProvider>(
+                              context,
+                              listen: false,
+                            ),
                           ),
                         ),
                       ),
                     ] else
                       ElevatedButton(
-                        onPressed:
-                            isPollActive ? () => _showPollDialog(item) : null,
+                        onPressed: isPollActive
+                            ? () => _showPollDialog(item)
+                            : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           foregroundColor: Colors.white,
@@ -1468,7 +1508,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                           // Use white color for disabled state to ensure visibility against dark background
                           disabledForegroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 12),
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(25),
                             side: BorderSide(
@@ -1491,237 +1533,253 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         ],
       );
     } else {
-    // No image - show gradient background with poll-specific colors
-    cardContent = Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: hasInteracted
-              ? [Colors.teal[400]!, Colors.teal[600]!]
-              : [Colors.orange[400]!, Colors.deepOrange[600]!],
+      // No image - show gradient background with poll-specific colors
+      cardContent = Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: hasInteracted
+                ? [Colors.teal[400]!, Colors.teal[600]!]
+                : [Colors.orange[400]!, Colors.deepOrange[600]!],
+          ),
         ),
-      ),
-      child: Padding(
-        // PROFESSIONAL FIX: Increase bottom padding when user has interacted
-        // This ensures "Your Choice" section has enough space and is not clipped
-        padding: EdgeInsets.fromLTRB(
-          20,
-          20,
-          20,
-          hasInteracted
-              ? 24
-              : 20, // Extra bottom padding for "Your Choice" section
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header with Poll Title
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Flexible(
-                  child: Text(
-                    item.title.isNotEmpty ? item.title : 'Poll',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-                if (item.rewardPoints > 0) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
+        child: Padding(
+          // PROFESSIONAL FIX: Increase bottom padding when user has interacted
+          // This ensures "Your Choice" section has enough space and is not clipped
+          padding: EdgeInsets.fromLTRB(
+            20,
+            20,
+            20,
+            hasInteracted
+                ? 24
+                : 20, // Extra bottom padding for "Your Choice" section
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header with Poll Title
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Flexible(
                     child: Text(
-                      '+${item.rewardPoints} PTS',
+                      item.title.isNotEmpty ? item.title : 'Poll',
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 12,
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
                     ),
                   ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 16),
-            // Question or Content
-            // PROFESSIONAL FIX: Optimized layout to prevent overflow - uses Flexible spacing and proper constraints
-            if (item.quizData != null && item.quizData!.question.isNotEmpty)
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    // PROFESSIONAL FIX: Use SingleChildScrollView for constrained spaces to prevent overflow
-                    return SingleChildScrollView(
-                      physics:
-                          const NeverScrollableScrollPhysics(), // Disable scrolling, just prevent overflow
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minHeight: constraints.maxHeight,
+                  if (item.rewardPoints > 0) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '+${item.rewardPoints} PTS',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Question text - flexible sizing
-                            Flexible(
-                              child: Text(
-                                item.quizData!.question,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 16),
+              // Question or Content
+              // PROFESSIONAL FIX: Optimized layout to prevent overflow - uses Flexible spacing and proper constraints
+              if (item.quizData != null && item.quizData!.question.isNotEmpty)
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // PROFESSIONAL FIX: Use SingleChildScrollView for constrained spaces to prevent overflow
+                      return SingleChildScrollView(
+                        physics:
+                            const NeverScrollableScrollPhysics(), // Disable scrolling, just prevent overflow
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: constraints.maxHeight,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Question text - flexible sizing
+                              Flexible(
+                                child: Text(
+                                  item.quizData!.question,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
                                 ),
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
                               ),
-                            ),
-                            // PROFESSIONAL FIX: Use Flexible instead of Spacer to prevent overflow
-                            // Only add spacing if there's enough space
-                            if (constraints.maxHeight > 100)
-                              const SizedBox(height: 8)
-                            else
-                              const SizedBox(height: 4),
-                            // Action Button - Poll specific
-                            // CREATIVE DESIGN: Beautiful animated celebration design for voted polls
-                            if (hasInteracted) ...[
-                              // PROFESSIONAL FIX: Wrap in Container with minimum height to ensure visibility
-                              Container(
-                                constraints: BoxConstraints(
-                                  minHeight:
-                                      100, // Ensure space for both badge and "Your Choice"
-                                  maxHeight: constraints.maxHeight,
+                              // PROFESSIONAL FIX: Use Flexible instead of Spacer to prevent overflow
+                              // Only add spacing if there's enough space
+                              if (constraints.maxHeight > 100)
+                                const SizedBox(height: 8)
+                              else
+                                const SizedBox(height: 4),
+                              // Action Button - Poll specific
+                              // CREATIVE DESIGN: Beautiful animated celebration design for voted polls
+                              if (hasInteracted) ...[
+                                // PROFESSIONAL FIX: Wrap in Container with minimum height to ensure visibility
+                                Container(
+                                  constraints: BoxConstraints(
+                                    minHeight:
+                                        100, // Ensure space for both badge and "Your Choice"
+                                    maxHeight: constraints.maxHeight,
+                                  ),
+                                  child: IntrinsicHeight(
+                                    child: _VoteSubmittedCelebration(
+                                      key: ValueKey(
+                                        'vote_submitted_${item.id}',
+                                      ),
+                                      detailedBets: pollUserDetailedBets(
+                                        item,
+                                        engagementProvider:
+                                            Provider.of<EngagementProvider>(
+                                              context,
+                                              listen: false,
+                                            ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                                child: IntrinsicHeight(
+                              ] else
+                                ElevatedButton(
+                                  onPressed: () => _showPollDialog(item),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white,
+                                    foregroundColor: Colors.deepOrange,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 24,
+                                      vertical: 12,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(25),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'ကစားမည်',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                )
+              else if (item.content.isNotEmpty)
+                // PROFESSIONAL FIX: Optimized layout to prevent overflow - same fix as quizData section
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return SingleChildScrollView(
+                        physics: const NeverScrollableScrollPhysics(),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: constraints.maxHeight,
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  _stripHtmlTags(item.content),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                              // PROFESSIONAL FIX: Use adaptive spacing instead of Spacer
+                              if (constraints.maxHeight > 100)
+                                const SizedBox(height: 8)
+                              else
+                                const SizedBox(height: 4),
+                              // Action Button - Poll specific
+                              // CREATIVE DESIGN: Beautiful animated celebration design for voted polls
+                              if (hasInteracted) ...[
+                                // PROFESSIONAL FIX: Use IntrinsicHeight to ensure proper space allocation
+                                IntrinsicHeight(
                                   child: _VoteSubmittedCelebration(
                                     key: ValueKey('vote_submitted_${item.id}'),
                                     detailedBets: pollUserDetailedBets(
                                       item,
-                                      engagementProvider: Provider.of<EngagementProvider>(
-                                          context,
-                                          listen: false),
+                                      engagementProvider:
+                                          Provider.of<EngagementProvider>(
+                                            context,
+                                            listen: false,
+                                          ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            ] else
-                              ElevatedButton(
-                                onPressed: () => _showPollDialog(item),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.white,
-                                  foregroundColor: Colors.deepOrange,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 24, vertical: 12),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(25),
+                              ] else
+                                ElevatedButton(
+                                  onPressed: isPollActive
+                                      ? () => _showPollDialog(item)
+                                      : null,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white,
+                                    foregroundColor: Colors.deepOrange,
+                                    // PROFESSIONAL FIX: Make "Poll Closed" text clearly visible with light gray
+                                    // Use light gray color for disabled state to ensure visibility against grey background
+                                    disabledForegroundColor: Colors.grey[600]!,
+                                    disabledBackgroundColor: Colors.grey[200]!,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 24,
+                                      vertical: 12,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(25),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    isPollActive ? 'ကစားမည်' : 'ပိတ်ထားသည်',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
-                                child: const Text(
-                                  'ကစားမည်',
-                                  style: TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
-              )
-            else if (item.content.isNotEmpty)
-              // PROFESSIONAL FIX: Optimized layout to prevent overflow - same fix as quizData section
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    return SingleChildScrollView(
-                      physics: const NeverScrollableScrollPhysics(),
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minHeight: constraints.maxHeight,
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                _stripHtmlTags(item.content),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                            // PROFESSIONAL FIX: Use adaptive spacing instead of Spacer
-                            if (constraints.maxHeight > 100)
-                              const SizedBox(height: 8)
-                            else
-                              const SizedBox(height: 4),
-                            // Action Button - Poll specific
-                            // CREATIVE DESIGN: Beautiful animated celebration design for voted polls
-                            if (hasInteracted) ...[
-                              // PROFESSIONAL FIX: Use IntrinsicHeight to ensure proper space allocation
-                              IntrinsicHeight(
-                                child: _VoteSubmittedCelebration(
-                                  key: ValueKey('vote_submitted_${item.id}'),
-                                  detailedBets: pollUserDetailedBets(
-                                    item,
-                                    engagementProvider:
-                                        Provider.of<EngagementProvider>(context, listen: false),
-                                  ),
-                                ),
-                              ),
-                            ] else
-                              ElevatedButton(
-                                onPressed: isPollActive
-                                    ? () => _showPollDialog(item)
-                                    : null,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.white,
-                                  foregroundColor: Colors.deepOrange,
-                                  // PROFESSIONAL FIX: Make "Poll Closed" text clearly visible with light gray
-                                  // Use light gray color for disabled state to ensure visibility against grey background
-                                  disabledForegroundColor: Colors.grey[600]!,
-                                  disabledBackgroundColor: Colors.grey[200]!,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 24, vertical: 12),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(25),
-                                  ),
-                                ),
-                                child: Text(
-                                  isPollActive ? 'ကစားမည်' : 'ပိတ်ထားသည်',
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-          ],
+            ],
+          ),
         ),
-      ),
-    );
+      );
     }
 
     return AnimatedSwitcher(
@@ -1773,9 +1831,13 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                             'timer_${item.id}_${votingStatus}_$sessionKey',
                           ),
                           initialSeconds: secondsUntilClose,
+                          serverEndsAtUtc: serverEndsAtUtc,
+                          debugLabel: 'poll_${item.id}_$sessionKey',
                           onReachedHandover: () {
                             if (!mounted) return;
-                            if (_forcedOverlaySessionKeys.contains(sessionKey)) {
+                            if (_forcedOverlaySessionKeys.contains(
+                              sessionKey,
+                            )) {
                               return;
                             }
                             setState(() {
@@ -1794,6 +1856,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               _PollCountdownOverlay(
                 key: ValueKey<String>('overlay_$sessionKey'),
                 initialSeconds: secondsUntilClose,
+                serverEndsAtUtc: serverEndsAtUtc,
+                debugLabel: 'poll_${item.id}_$sessionKey',
               ),
           ],
         ),
@@ -1838,8 +1902,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                         colors: [Colors.blue[400]!, Colors.cyan[600]!],
                       ),
                     ),
-                    child: const Icon(Icons.image_not_supported,
-                        color: Colors.white, size: 50),
+                    child: const Icon(
+                      Icons.image_not_supported,
+                      color: Colors.white,
+                      size: 50,
+                    ),
                   ),
                 ),
                 // Overlay with content
@@ -1863,8 +1930,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                         const Spacer(),
                         Row(
                           children: [
-                            const Icon(Icons.campaign,
-                                color: Colors.white, size: 28),
+                            const Icon(
+                              Icons.campaign,
+                              color: Colors.white,
+                              size: 28,
+                            ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -1961,8 +2031,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.campaign,
-                            color: Colors.white, size: 28),
+                        const Icon(
+                          Icons.campaign,
+                          color: Colors.white,
+                          size: 28,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -2040,7 +2113,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         final screenHeight = constraints.maxHeight.isFinite
             ? constraints.maxHeight
             : screenWidth *
-                1.15; // Engagement card has taller aspect ratio (height = width * 1.15)
+                  1.15; // Engagement card has taller aspect ratio (height = width * 1.15)
 
         // Account for padding and other elements
         final availableWidth = screenWidth - 32; // 16px padding on each side
@@ -2054,10 +2127,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 
         // Use the smaller of the two to ensure it fits perfectly
         // But prioritize making it as large as possible
-        final calculatedSize = (widthBasedSize < heightBasedSize
-                ? widthBasedSize
-                : heightBasedSize)
-            .clamp(180.0, 350.0); // Increased range for much larger numbers
+        final calculatedSize =
+            (widthBasedSize < heightBasedSize
+                    ? widthBasedSize
+                    : heightBasedSize)
+                .clamp(180.0, 350.0); // Increased range for much larger numbers
 
         return Container(
           decoration: BoxDecoration(
@@ -2082,8 +2156,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
               // PROFESSIONAL FIX: Minimize padding to maximize number size
               // Engagement card has taller aspect ratio (height = width * 1.15), so we must fit within that
               Padding(
-                padding:
-                    const EdgeInsets.all(12), // Reduced padding for more space
+                padding: const EdgeInsets.all(
+                  12,
+                ), // Reduced padding for more space
                 child: LayoutBuilder(
                   builder: (context, innerConstraints) {
                     // PROFESSIONAL FIX: Ensure constraints are bounded
@@ -2094,19 +2169,24 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                     final maxHeight = innerConstraints.maxHeight.isFinite
                         ? innerConstraints.maxHeight
                         : maxWidth *
-                            1.15; // Fallback to width * 1.15 (taller aspect ratio)
+                              1.15; // Fallback to width * 1.15 (taller aspect ratio)
 
                     // PROFESSIONAL FIX: Minimize title/badge space to maximize number size
                     // Calculate available height (accounting for title and badge)
-                    final titleHeight =
-                        item.title.isNotEmpty ? 30.0 : 0.0; // Reduced
-                    final badgeHeight =
-                        item.rewardPoints > 0 ? 28.0 : 0.0; // Reduced
-                    final spacing = (item.title.isNotEmpty ? 4.0 : 0.0) +
+                    final titleHeight = item.title.isNotEmpty
+                        ? 30.0
+                        : 0.0; // Reduced
+                    final badgeHeight = item.rewardPoints > 0
+                        ? 28.0
+                        : 0.0; // Reduced
+                    final spacing =
+                        (item.title.isNotEmpty ? 4.0 : 0.0) +
                         (item.rewardPoints > 0 ? 4.0 : 0.0); // Reduced spacing
                     final numberHeight =
-                        (maxHeight - titleHeight - badgeHeight - spacing)
-                            .clamp(100.0, maxHeight); // Increased minimum
+                        (maxHeight - titleHeight - badgeHeight - spacing).clamp(
+                          100.0,
+                          maxHeight,
+                        ); // Increased minimum
 
                     return Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -2208,11 +2288,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                       width: 2,
                     ),
                   ),
-                  child: const Icon(
-                    Icons.tag,
-                    color: Colors.white,
-                    size: 24,
-                  ),
+                  child: const Icon(Icons.tag, color: Colors.white, size: 24),
                 ),
               ),
               Positioned(
@@ -2301,14 +2377,15 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   /// Show Quick View dialog for engagement images
   /// Professional image viewer with zoom and pan capabilities
   void _showImageQuickView(
-      BuildContext context, String imageUrl, String title) {
+    BuildContext context,
+    String imageUrl,
+    String title,
+  ) {
     showDialog(
       context: context,
       barrierColor: Colors.black87,
-      builder: (context) => _ImageQuickViewDialog(
-        imageUrl: imageUrl,
-        title: title,
-      ),
+      builder: (context) =>
+          _ImageQuickViewDialog(imageUrl: imageUrl, title: title),
     );
   }
 
@@ -2325,29 +2402,72 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   }
 
   /// Record banner/announcement view with backend so Dashboard interaction count increases
-  void _recordBannerOrAnnouncementView(BuildContext context, EngagementItem item) {
-    if (item.type != EngagementType.banner && item.type != EngagementType.announcement) return;
+  void _recordBannerOrAnnouncementView(
+    BuildContext context,
+    EngagementItem item,
+  ) {
+    if (item.type != EngagementType.banner &&
+        item.type != EngagementType.announcement)
+      return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     if (authProvider.user == null) return;
-    final engagementProvider = Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     final userId = authProvider.user!.id;
     final token = authProvider.token;
-    engagementProvider.submitInteraction(
-      userId: userId,
-      token: token,
-      itemId: item.id,
-      answer: 'viewed',
-    ).then((result) {
-      if (result['success'] == true && mounted) {
-        engagementProvider.refresh(userId: userId, token: token);
-      }
-    }).catchError((_) {});
+    engagementProvider
+        .submitInteraction(
+          userId: userId,
+          token: token,
+          itemId: item.id,
+          answer: 'viewed',
+        )
+        .then((result) {
+          if (result['success'] == true && mounted) {
+            engagementProvider.refresh(userId: userId, token: token);
+          }
+        })
+        .catchError((_) {});
   }
 
   String _stripHtmlTags(String html) {
-    final RegExp exp =
-        RegExp(r'<[^>]*>', multiLine: true, caseSensitive: false);
+    final RegExp exp = RegExp(
+      r'<[^>]*>',
+      multiLine: true,
+      caseSensitive: false,
+    );
     return html.replaceAll(exp, '').trim();
+  }
+
+  DateTime? _resolvePollEndsAtUtc(Map<String, dynamic>? schedule) {
+    if (schedule == null) return null;
+    final raw =
+        schedule['ends_at'] ??
+        schedule['poll_actual_end_at'] ??
+        schedule['end_time'];
+    final text = raw?.toString().trim();
+    if (text == null || text.isEmpty) return null;
+    final parsed = DateTime.tryParse(text);
+    return parsed?.toUtc();
+  }
+
+  int _resolveServerAnchoredSeconds({
+    required Map<String, dynamic>? schedule,
+    required DateTime? endsAtUtc,
+  }) {
+    if (endsAtUtc != null) {
+      final diff = endsAtUtc.difference(DateTime.now().toUtc()).inSeconds;
+      return diff < 0 ? 0 : diff;
+    }
+    final rawSeconds = schedule?['seconds_until_close'];
+    if (rawSeconds is int) return rawSeconds < 0 ? 0 : rawSeconds;
+    if (rawSeconds is num) {
+      final v = rawSeconds.toInt();
+      return v < 0 ? 0 : v;
+    }
+    return 0;
   }
 }
 
@@ -2355,11 +2475,15 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 /// Separate from [_PollCountdownOverlay], which remains last-10-seconds only.
 class _PermanentPollTimer extends StatefulWidget {
   final int initialSeconds;
+  final DateTime? serverEndsAtUtc;
+  final String? debugLabel;
   final VoidCallback? onReachedHandover;
 
   const _PermanentPollTimer({
     super.key,
     required this.initialSeconds,
+    this.serverEndsAtUtc,
+    this.debugLabel,
     this.onReachedHandover,
   });
 
@@ -2374,18 +2498,26 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
 
   int _clampSeconds(int value) => value < 0 ? 0 : value;
 
+  int _serverAnchoredSeconds() {
+    final anchor = widget.serverEndsAtUtc;
+    if (anchor == null) return _clampSeconds(widget.initialSeconds);
+    final diff = anchor.difference(DateTime.now().toUtc()).inSeconds;
+    return _clampSeconds(diff);
+  }
+
   void _startOrRefreshTimer() {
     _timer?.cancel();
     _didNotifyHandover = false;
     if (_secondsLeft <= 0) return;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      if (_secondsLeft <= 0) {
-        _timer?.cancel();
-        return;
-      }
+      final nextFromServer = _serverAnchoredSeconds();
       setState(() {
+        /*
+        Old Code:
         _secondsLeft = _clampSeconds(_secondsLeft - 1);
+        */
+        _secondsLeft = nextFromServer;
       });
       if (_secondsLeft <= 10) {
         if (!_didNotifyHandover) {
@@ -2406,25 +2538,42 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   @override
   void initState() {
     super.initState();
-    _secondsLeft = _clampSeconds(widget.initialSeconds);
+    _secondsLeft = _serverAnchoredSeconds();
+    app_logger.Logger.info(
+      '[TimerSync] start permanent timer (${widget.debugLabel ?? 'unknown'}) at ${_secondsLeft}s',
+      tag: 'EngagementCarousel',
+    );
     _startOrRefreshTimer();
   }
 
   @override
   void didUpdateWidget(covariant _PermanentPollTimer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final nextServer = _serverAnchoredSeconds();
     final next = _clampSeconds(widget.initialSeconds);
     final prev = _clampSeconds(oldWidget.initialSeconds);
     if (next <= 10) {
-      _secondsLeft = next;
+      _secondsLeft = nextServer;
       _timer?.cancel();
       return;
     }
-    if (next != prev) {
+    final anchorChanged = oldWidget.serverEndsAtUtc != widget.serverEndsAtUtc;
+    if (next != prev || anchorChanged) {
+      /*
+      Old Code:
       // Guard against delayed parent refresh spikes (e.g. 10 -> 100) within same session widget.
       final looksLikeSpike = next > _secondsLeft && _secondsLeft <= 12;
       if (looksLikeSpike) return;
-      _secondsLeft = next;
+      */
+      // New Code: permit valid short-window resets; only skip massive jumps outside short window.
+      final looksLikeInvalidSpike =
+          nextServer > _secondsLeft + 90 && _secondsLeft > 12;
+      if (looksLikeInvalidSpike) return;
+      _secondsLeft = nextServer;
+      app_logger.Logger.info(
+        '[TimerSync] Re-seeding timer to server state: ${_secondsLeft}s (${widget.debugLabel ?? 'unknown'})',
+        tag: 'EngagementCarousel',
+      );
       _startOrRefreshTimer();
     }
   }
@@ -2459,11 +2608,7 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.timer_outlined,
-                  size: 14,
-                  color: Colors.white,
-                ),
+                const Icon(Icons.timer_outlined, size: 14, color: Colors.white),
                 const SizedBox(width: 6),
                 Text(
                   _formatMmSs(_secondsLeft),
@@ -2486,8 +2631,15 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
 /// Countdown overlay for Auto Run poll (last 10 seconds before close)
 class _PollCountdownOverlay extends StatefulWidget {
   final int initialSeconds;
+  final DateTime? serverEndsAtUtc;
+  final String? debugLabel;
 
-  const _PollCountdownOverlay({super.key, required this.initialSeconds});
+  const _PollCountdownOverlay({
+    super.key,
+    required this.initialSeconds,
+    this.serverEndsAtUtc,
+    this.debugLabel,
+  });
 
   @override
   State<_PollCountdownOverlay> createState() => _PollCountdownOverlayState();
@@ -2497,6 +2649,14 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
   late int _secondsLeft;
   Timer? _timer;
   bool _hasTriggeredForceRefreshBurst = false;
+
+  int _serverAnchoredSeconds() {
+    final anchor = widget.serverEndsAtUtc;
+    if (anchor == null)
+      return widget.initialSeconds < 0 ? 0 : widget.initialSeconds;
+    final diff = anchor.difference(DateTime.now().toUtc()).inSeconds;
+    return diff < 0 ? 0 : diff;
+  }
 
   void _triggerForceRefreshBurstOnTimerEnd() {
     if (_hasTriggeredForceRefreshBurst || !mounted) return;
@@ -2549,18 +2709,60 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
   @override
   void initState() {
     super.initState();
-    _secondsLeft = widget.initialSeconds;
+    _secondsLeft = _serverAnchoredSeconds();
+    app_logger.Logger.info(
+      '[TimerSync] start overlay timer (${widget.debugLabel ?? 'unknown'}) at ${_secondsLeft}s',
+      tag: 'EngagementCarousel',
+    );
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       setState(() {
+        /*
+        Old Code:
         if (_secondsLeft > 1) {
           _secondsLeft--;
+        */
+        final nextFromServer = _serverAnchoredSeconds();
+        if (nextFromServer > 1) {
+          _secondsLeft = nextFromServer;
         } else {
+          _secondsLeft = nextFromServer;
           _triggerForceRefreshBurstOnTimerEnd();
           _timer?.cancel();
         }
       });
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _PollCountdownOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final anchorChanged = oldWidget.serverEndsAtUtc != widget.serverEndsAtUtc;
+    final seedChanged = oldWidget.initialSeconds != widget.initialSeconds;
+    if (!anchorChanged && !seedChanged) return;
+    final reseeded = _serverAnchoredSeconds();
+    app_logger.Logger.info(
+      '[TimerSync] Re-seeding timer to server state: ${reseeded}s (${widget.debugLabel ?? 'unknown'})',
+      tag: 'EngagementCarousel',
+    );
+    setState(() {
+      _secondsLeft = reseeded;
+    });
+    if (_secondsLeft > 1 && (_timer == null || !_timer!.isActive)) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() {
+          final nextFromServer = _serverAnchoredSeconds();
+          if (nextFromServer > 1) {
+            _secondsLeft = nextFromServer;
+          } else {
+            _secondsLeft = nextFromServer;
+            _triggerForceRefreshBurstOnTimerEnd();
+            _timer?.cancel();
+          }
+        });
+      });
+    }
   }
 
   @override
@@ -2613,7 +2815,9 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
 
 /// Extracts text, media_url, and media_type from a poll option.
 /// Supports: Map (extended format) or String (legacy).
-({String text, String? mediaUrl, String? mediaType}) _parsePollOption(dynamic opt) {
+({String text, String? mediaUrl, String? mediaType}) _parsePollOption(
+  dynamic opt,
+) {
   if (opt == null) return (text: 'Option', mediaUrl: null, mediaType: null);
   if (opt is Map) {
     final m = Map<String, dynamic>.from(opt);
@@ -2637,21 +2841,19 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
 /// When [winning_index] is missing (legacy feed bug), derive a display winner from
 /// [vote_counts] so we do not always fall back to option 0.
 int? _leadingPollOptionIndexFromVoteCounts(
-    dynamic voteCountsRaw, int optionCount) {
+  dynamic voteCountsRaw,
+  int optionCount,
+) {
   if (voteCountsRaw == null || optionCount <= 0) return null;
   if (voteCountsRaw is! Map) return null;
   var bestIdx = -1;
   var bestCount = -1;
   voteCountsRaw.forEach((key, value) {
-    final idx = key is int
-        ? key
-        : int.tryParse(key.toString());
+    final idx = key is int ? key : int.tryParse(key.toString());
     if (idx == null || idx < 0 || idx >= optionCount) return;
     final c = value is int
         ? value
-        : (value is num
-            ? value.toInt()
-            : int.tryParse(value.toString()) ?? 0);
+        : (value is num ? value.toInt() : int.tryParse(value.toString()) ?? 0);
     if (c > bestCount) {
       bestCount = c;
       bestIdx = idx;
@@ -2671,7 +2873,8 @@ int? _leadingPollOptionIndexFromVoteCounts(
 int _stableFallbackOptionIndex(EngagementItem item, int optionCount) {
   if (optionCount <= 0) return 0;
   final schedule = item.pollVotingSchedule;
-  final endsAt = schedule?['result_display_ends_at']?.toString() ??
+  final endsAt =
+      schedule?['result_display_ends_at']?.toString() ??
       schedule?['end_time']?.toString() ??
       '';
   final seed = '${item.id}_${item.title}_$endsAt';
@@ -2689,7 +2892,8 @@ int pollSelectedOptionCountFromUserAnswer(EngagementItem item) {
   if (ua == null || ua.isEmpty) return 0;
   final optLen = item.quizData?.options.length ?? 0;
   var c = 0;
-  for (final part in ua.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty)) {
+  for (final part
+      in ua.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty)) {
     final idx = int.tryParse(part);
     if (idx != null && idx >= 0 && idx < optLen) {
       c++;
@@ -2743,8 +2947,10 @@ String? pollUserChoiceDisplayLabel(EngagementItem item) {
 // --- Poll per-option unit overlay (client persistence when API omits keys 3+, etc.) ---
 
 /// Storage key: engagement item + stable option id string.
-String pollUserLocalUnitStorageKey(int engagementItemId, String optionUniqueId) =>
-    '$engagementItemId|$optionUniqueId';
+String pollUserLocalUnitStorageKey(
+  int engagementItemId,
+  String optionUniqueId,
+) => '$engagementItemId|$optionUniqueId';
 
 /// Last-known units per option; synced from API when present, else from dialog edits.
 /// Survives widget rebuilds before feed returns full [user_bet_amount_per_option].
@@ -2803,7 +3009,10 @@ int _resolvePollOptionUnits({
   //    _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(itemId, uid)];
   //
   // New Code:
-  final fromLocal = engagementProvider.getPollUserLocalUnitOverride(itemId, uid);
+  final fromLocal = engagementProvider.getPollUserLocalUnitOverride(
+    itemId,
+    uid,
+  );
   if (fromLocal != null && fromLocal > 0) return fromLocal;
   if (isSingleSelection && declaredBet != null && declaredBet > 0) {
     return declaredBet;
@@ -2813,10 +3022,8 @@ int _resolvePollOptionUnits({
 
 /// Builds two-lane poll states (display and calculated use the same resolved units;
 /// no separate normalization—integer passthrough only).
-({
-  Map<String, int?>? displayBets,
-  Map<String, int?>? calculatedTotals,
-})? pollUserSeparatedBetStates(
+({Map<String, int?>? displayBets, Map<String, int?>? calculatedTotals})?
+pollUserSeparatedBetStates(
   EngagementItem item, {
   required EngagementProvider engagementProvider,
 }) {
@@ -2868,8 +3075,9 @@ int _resolvePollOptionUnits({
     if (rawLabel.isEmpty) continue;
 
     final match = RegExp(r'-\s*([^+]+?)\s*\+').firstMatch(rawLabel);
-    final cleanLabel =
-        match != null && match.group(1) != null ? match.group(1)!.trim() : rawLabel;
+    final cleanLabel = match != null && match.group(1) != null
+        ? match.group(1)!.trim()
+        : rawLabel;
 
     final fromApi = isolatedUnitsByOption[idx];
     final units = _resolvePollOptionUnits(
@@ -2933,48 +3141,50 @@ Map<String, int?>? pollUserCalculatedTotals(
 /// Compact inline receipt: `Option A : 2` (omits value if null).
 List<InlineSpan> _pollReceiptInlineSpans(Map<String, int?> detailedBets) {
   const shadow = [
-    Shadow(
-      color: Color(0x73000000),
-      offset: Offset(0, 1),
-      blurRadius: 2,
-    ),
+    Shadow(color: Color(0x73000000), offset: Offset(0, 1), blurRadius: 2),
   ];
   final spans = <InlineSpan>[];
   var i = 0;
   for (final e in detailedBets.entries) {
     if (i > 0) {
-      spans.add(TextSpan(
-        text: ', ',
-        style: TextStyle(
-          color: Colors.white.withOpacity(0.55),
+      spans.add(
+        TextSpan(
+          text: ', ',
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.55),
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            height: 1.35,
+            shadows: shadow,
+          ),
+        ),
+      );
+    }
+    spans.add(
+      TextSpan(
+        text: e.key,
+        style: const TextStyle(
+          color: Colors.white,
           fontSize: 14,
           fontWeight: FontWeight.w500,
           height: 1.35,
           shadows: shadow,
         ),
-      ));
-    }
-    spans.add(TextSpan(
-      text: e.key,
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 14,
-        fontWeight: FontWeight.w500,
-        height: 1.35,
-        shadows: shadow,
       ),
-    ));
+    );
     if (e.value != null) {
-      spans.add(TextSpan(
-        text: ' : ${e.value}',
-        style: TextStyle(
-          color: Colors.amber.shade100,
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-          height: 1.35,
-          shadows: shadow,
+      spans.add(
+        TextSpan(
+          text: ' : ${e.value}',
+          style: TextStyle(
+            color: Colors.amber.shade100,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            height: 1.35,
+            shadows: shadow,
+          ),
         ),
-      ));
+      );
     }
     i++;
   }
@@ -2998,11 +3208,7 @@ Widget _pollDetailedReceiptSection(
     letterSpacing: 0.9,
     color: Colors.white.withOpacity(0.9),
     shadows: const [
-      Shadow(
-        color: Color(0x73000000),
-        offset: Offset(0, 1),
-        blurRadius: 2,
-      ),
+      Shadow(color: Color(0x73000000), offset: Offset(0, 1), blurRadius: 2),
     ],
   );
 
@@ -3065,10 +3271,7 @@ Widget _pollDetailedReceiptSection(
             ],
           ),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: Colors.white.withOpacity(0.28),
-            width: 1,
-          ),
+          border: Border.all(color: Colors.white.withOpacity(0.28), width: 1),
         ),
         child: body,
       ),
@@ -3108,8 +3311,8 @@ class _PollResultCard extends StatelessWidget {
     final winningIndex = result['winning_index'] is int
         ? result['winning_index'] as int?
         : (result['winning_index'] is num)
-            ? (result['winning_index'] as num).toInt()
-            : null;
+        ? (result['winning_index'] as num).toInt()
+        : null;
 
     // Never use Random() here — results must be stable across rebuilds.
     // Prefer explicit winning_option / winning_index from API; if missing, use vote leader
@@ -3138,19 +3341,15 @@ class _PollResultCard extends StatelessWidget {
       }
     }
 
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     final userDetailed = item.hasInteracted
-        ? pollUserDetailedBets(
-            item,
-            engagementProvider: engagementProvider,
-          )
+        ? pollUserDetailedBets(item, engagementProvider: engagementProvider)
         : null;
     final userCalculated = item.hasInteracted
-        ? pollUserCalculatedTotals(
-            item,
-            engagementProvider: engagementProvider,
-          )
+        ? pollUserCalculatedTotals(item, engagementProvider: engagementProvider)
         : null;
 
     return _CompactPollResultCard(
@@ -3166,8 +3365,10 @@ class _PollResultCard extends StatelessWidget {
 class _CompactPollResultCard extends StatelessWidget {
   final String text;
   final String? mediaUrl;
+
   /// Selected options with per-option Count; null hides receipt.
   final Map<String, int?>? userDetailedBets;
+
   /// Calculation-only values (multiplier lane). Not shown in UI text.
   final Map<String, int?>? userCalculatedTotals;
 
@@ -3194,9 +3395,7 @@ class _CompactPollResultCard extends StatelessWidget {
                 fit: BoxFit.cover,
                 placeholder: (_, __) => Container(
                   color: Colors.grey[200],
-                  child: const Center(
-                    child: CircularProgressIndicator(),
-                  ),
+                  child: const Center(child: CircularProgressIndicator()),
                 ),
                 errorWidget: (_, __, ___) => Container(
                   color: Colors.grey[200],
@@ -3231,10 +3430,7 @@ class _CompactPollResultCard extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.8),
-                ],
+                colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
               ),
             ),
             child: Padding(
@@ -3244,10 +3440,14 @@ class _CompactPollResultCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.center,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (userDetailedBets != null && userDetailedBets!.isNotEmpty) ...[
+                  if (userDetailedBets != null &&
+                      userDetailedBets!.isNotEmpty) ...[
                     Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.16),
                         borderRadius: BorderRadius.circular(14),
@@ -3589,10 +3789,7 @@ class _QuizDialogState extends State<_QuizDialog> {
             // Question
             Text(
               quizData.question,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 20),
             // Options
@@ -3640,8 +3837,11 @@ class _QuizDialogState extends State<_QuizDialog> {
                                 : Colors.transparent,
                           ),
                           child: _selectedOption == index
-                              ? const Icon(Icons.check,
-                                  color: Colors.white, size: 16)
+                              ? const Icon(
+                                  Icons.check,
+                                  color: Colors.white,
+                                  size: 16,
+                                )
                               : null,
                         ),
                         const SizedBox(width: 12),
@@ -3725,8 +3925,10 @@ class _QuizDialogState extends State<_QuizDialog> {
     // This prevents blocking subsequent quiz submissions and ensures proper cleanup
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final engagementProvider =
-          Provider.of<EngagementProvider>(context, listen: false);
+      final engagementProvider = Provider.of<EngagementProvider>(
+        context,
+        listen: false,
+      );
       final pointProvider = Provider.of<PointProvider>(context, listen: false);
 
       // PROFESSIONAL FIX: Ensure token is loaded before checking authentication
@@ -3734,15 +3936,19 @@ class _QuizDialogState extends State<_QuizDialog> {
       String? token = authProvider.token; // Try synchronous getter first
       if (token == null) {
         // If token is not cached, load it from storage
-        app_logger.Logger.info('Token not cached, loading from storage...',
-            tag: 'EngagementCarousel');
+        app_logger.Logger.info(
+          'Token not cached, loading from storage...',
+          tag: 'EngagementCarousel',
+        );
         token = await authProvider.getToken();
       }
 
       // Validate authentication state with proper error handling
       if (authProvider.user == null) {
-        app_logger.Logger.warning('User is null, cannot submit quiz answer',
-            tag: 'EngagementCarousel');
+        app_logger.Logger.warning(
+          'User is null, cannot submit quiz answer',
+          tag: 'EngagementCarousel',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -3757,8 +3963,9 @@ class _QuizDialogState extends State<_QuizDialog> {
 
       if (token == null) {
         app_logger.Logger.warning(
-            'Token is null after loading attempt, cannot submit quiz answer',
-            tag: 'EngagementCarousel');
+          'Token is null after loading attempt, cannot submit quiz answer',
+          tag: 'EngagementCarousel',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -3775,8 +3982,9 @@ class _QuizDialogState extends State<_QuizDialog> {
       // This prevents submission with stale user data after account switch
       final currentUserId = authProvider.user!.id;
       app_logger.Logger.info(
-          'Submitting quiz answer: userId=$currentUserId, itemId=${widget.item.id}, answer=$_selectedOption',
-          tag: 'EngagementCarousel');
+        'Submitting quiz answer: userId=$currentUserId, itemId=${widget.item.id}, answer=$_selectedOption',
+        tag: 'EngagementCarousel',
+      );
 
       final result = await engagementProvider.submitInteraction(
         userId: currentUserId,
@@ -3805,14 +4013,15 @@ class _QuizDialogState extends State<_QuizDialog> {
         final responseData = result['data'] as Map<String, dynamic>?;
         final isCorrect =
             responseData?['is_correct'] ?? result['is_correct'] ?? false;
-        final pointsEarned = (responseData?['points_earned'] ??
-            result['points_earned'] ??
-            0) as int;
+        final pointsEarned =
+            (responseData?['points_earned'] ?? result['points_earned'] ?? 0)
+                as int;
         final message = result['message']?.toString() ?? '';
 
         app_logger.Logger.info(
-            'Quiz result - Correct: $isCorrect, Points: $pointsEarned, Message: $message',
-            tag: 'EngagementCarousel');
+          'Quiz result - Correct: $isCorrect, Points: $pointsEarned, Message: $message',
+          tag: 'EngagementCarousel',
+        );
 
         // Refresh points balance
         await pointProvider.loadBalance(
@@ -3837,15 +4046,18 @@ class _QuizDialogState extends State<_QuizDialog> {
         final isDuplicate = result['is_duplicate'] == true;
 
         app_logger.Logger.warning(
-            'Quiz submission failed: $message, isDuplicate: $isDuplicate',
-            tag: 'EngagementCarousel');
+          'Quiz submission failed: $message, isDuplicate: $isDuplicate',
+          tag: 'EngagementCarousel',
+        );
 
         // If duplicate or user mismatch, refresh engagement feed to sync state
         if (isDuplicate ||
             message.toLowerCase().contains('user') ||
             message.toLowerCase().contains('account')) {
-          final authProvider =
-              Provider.of<AuthProvider>(context, listen: false);
+          final authProvider = Provider.of<AuthProvider>(
+            context,
+            listen: false,
+          );
           if (authProvider.user != null) {
             await engagementProvider.refresh(
               userId: authProvider.user!.id,
@@ -3866,14 +4078,19 @@ class _QuizDialogState extends State<_QuizDialog> {
       }
     } catch (e, stackTrace) {
       // PROFESSIONAL FIX: Handle any exceptions gracefully
-      app_logger.Logger.error('Exception during quiz submission: $e',
-          tag: 'EngagementCarousel', error: e, stackTrace: stackTrace);
+      app_logger.Logger.error(
+        'Exception during quiz submission: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+        stackTrace: stackTrace,
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'An error occurred while submitting your answer. Please try again.'),
+              'An error occurred while submitting your answer. Please try again.',
+            ),
             backgroundColor: Colors.red,
           ),
         );
@@ -4049,6 +4266,7 @@ class _PollDialogState extends State<_PollDialog> {
   /// Checkbox-style poll: multiple selection (Set of option indices).
   /// Replaces previous radio-style single selection for better UX.
   final Set<int> _selectedIndices = {};
+
   /// Isolated per-option state: [pollOptionUniqueId] -> multiplier. Matches receipt lookup.
   final Map<String, int> _isolatedUnitsByOption = <String, int>{};
   bool _isSubmitting = false;
@@ -4069,7 +4287,8 @@ class _PollDialogState extends State<_PollDialog> {
   void didUpdateWidget(_PollDialog oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.item.userAnswer != oldWidget.item.userAnswer ||
-        widget.item.userBetUnitsPerOption != oldWidget.item.userBetUnitsPerOption) {
+        widget.item.userBetUnitsPerOption !=
+            oldWidget.item.userBetUnitsPerOption) {
       _updateSelectedFromItem();
     }
   }
@@ -4077,8 +4296,10 @@ class _PollDialogState extends State<_PollDialog> {
   /// Parse [userAnswer] indices; hydrate units from API, else overlay, else 1. Any option count.
   void _updateSelectedFromItem() {
     final options = widget.item.quizData?.options ?? const <dynamic>[];
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     if (widget.item.hasInteracted && widget.item.userAnswer != null) {
       final raw = widget.item.userAnswer!.trim();
       _selectedIndices.clear();
@@ -4097,12 +4318,19 @@ class _PollDialogState extends State<_PollDialog> {
         //     pollUserLocalUnitStorageKey(widget.item.id, k)];
         //
         // New Code:
-        final local =
-            engagementProvider.getPollUserLocalUnitOverride(widget.item.id, k);
+        final local = engagementProvider.getPollUserLocalUnitOverride(
+          widget.item.id,
+          k,
+        );
         final int u;
         if (fromApi != null && fromApi > 0) {
           u = fromApi;
-          recordPollUserLocalUnitOverride(engagementProvider, widget.item.id, k, u);
+          recordPollUserLocalUnitOverride(
+            engagementProvider,
+            widget.item.id,
+            k,
+            u,
+          );
         } else if (local != null && local > 0) {
           u = local;
         } else {
@@ -4133,12 +4361,18 @@ class _PollDialogState extends State<_PollDialog> {
   void _updateOptionUnitValue(int optionIndex, int nextValue) {
     if (nextValue <= 0) return;
     final k = _optionKeyForIndex(optionIndex);
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     setState(() {
       _isolatedUnitsByOption[k] = nextValue;
       recordPollUserLocalUnitOverride(
-          engagementProvider, widget.item.id, k, nextValue);
+        engagementProvider,
+        widget.item.id,
+        k,
+        nextValue,
+      );
       // ignore: avoid_print
       print('User Selected Multiplier: $nextValue (optionKey=$k)');
     });
@@ -4148,7 +4382,9 @@ class _PollDialogState extends State<_PollDialog> {
   int get _perUnitPollPnp {
     final q = widget.item.quizData;
     if (q == null) return 1000;
-    return q.spentPerUnitPnpForPoll(engagementRewardPoints: widget.item.rewardPoints);
+    return q.spentPerUnitPnpForPoll(
+      engagementRewardPoints: widget.item.rewardPoints,
+    );
   }
 
   /*
@@ -4172,7 +4408,8 @@ class _PollDialogState extends State<_PollDialog> {
   /// matching the same source My PNP card uses.
   static int _balanceFromCustomFields(Map<String, String>? customFields) {
     if (customFields == null) return 0;
-    final raw = customFields['my_point'] ??
+    final raw =
+        customFields['my_point'] ??
         customFields['my_points'] ??
         customFields['My Point Value'] ??
         customFields['points_balance'];
@@ -4212,7 +4449,9 @@ class _PollDialogState extends State<_PollDialog> {
     final q = widget.item.quizData;
     if (q == null) return;
     final allowUserAmount = q.allowUserAmount;
-    final int perUnitPnp = q.spentPerUnitPnpForPoll(engagementRewardPoints: widget.item.rewardPoints);
+    final int perUnitPnp = q.spentPerUnitPnpForPoll(
+      engagementRewardPoints: widget.item.rewardPoints,
+    );
     // Cost when Amount multiplier k = 1
     final requiredPerAmount = perUnitPnp * selectedCount;
 
@@ -4234,16 +4473,15 @@ class _PollDialogState extends State<_PollDialog> {
     // If PointProvider returned 0 (e.g. /points/balance failed or not loaded),
     // use AuthProvider custom fields (same source as My PNP) so user sees real balance.
     if (userBalance == 0) {
-      final fromAuth =
-          _balanceFromCustomFields(authProvider.user?.customFields);
+      final fromAuth = _balanceFromCustomFields(
+        authProvider.user?.customFields,
+      );
       if (fromAuth > 0) userBalance = fromAuth;
     }
 
     if (requiredPerAmount <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Poll cost မမှန်ကန်သဖြင့် ကစား၍မရပါ။'),
-        ),
+        const SnackBar(content: Text('Poll cost မမှန်ကန်သဖြင့် ကစား၍မရပါ။')),
       );
       return;
     }
@@ -4255,8 +4493,10 @@ class _PollDialogState extends State<_PollDialog> {
       showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Point မလောက်ပါ',
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+          title: const Text(
+            'Point မလောက်ပါ',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
+          ),
           content: Text(
             'ဤ Poll သည် checkbox တစ်ခုလျှင် $perUnitPnp points ကုန်ကျပါသည်။\n\n'
             'သင်ရွေးချယ်ထားသော checkbox $selectedCount ခုအတွက် အနည်းဆုံး '
@@ -4280,9 +4520,10 @@ class _PollDialogState extends State<_PollDialog> {
         showDialog<void>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('Point မလောက်ပါ',
-                style:
-                    TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+            title: const Text(
+              'Point မလောက်ပါ',
+              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
+            ),
             content: Text(
               'ဤ Poll သည် checkbox တစ်ခုလျှင် $perUnitPnp points ကုန်ကျပါသည်။\n\n'
               'သင်ရွေးချယ်ထားသော checkbox $selectedCount ခုအတွက် စုစုပေါင်း $totalCost points လိုအပ်ပါသည်။\n\n'
@@ -4449,13 +4690,21 @@ class _PollDialogState extends State<_PollDialog> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('သင့်လက်ရှိ Point: $userBalance', style: const TextStyle(fontWeight: FontWeight.w600)),
-                    Text('အဆင့် တစ်ခုလျှင်: $perUnitPnp PNP', style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+                    Text(
+                      'သင့်လက်ရှိ Point: $userBalance',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      'အဆင့် တစ်ခုလျှင်: $perUnitPnp PNP',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+                    ),
                     const SizedBox(height: 16),
                     ...selectedList.map((idx) {
                       final k = _optionKeyForIndex(idx);
                       final amt = _isolatedUnitsByOption[k] ?? 1;
-                      final optLabel = idx < options.length ? options[idx] : 'Option ${idx + 1}';
+                      final optLabel = idx < options.length
+                          ? options[idx]
+                          : 'Option ${idx + 1}';
                       final maxForThis = userBalance ~/ perUnitPnp;
                       return Padding(
                         key: ValueKey<String>(k),
@@ -4475,34 +4724,65 @@ class _PollDialogState extends State<_PollDialog> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
-                                  icon: const Icon(Icons.remove_circle_outline, size: 22),
+                                  icon: const Icon(
+                                    Icons.remove_circle_outline,
+                                    size: 22,
+                                  ),
                                   onPressed: amt > 1
                                       ? () => setDialogState(() {
-                                            final dynamicValue = amt - 1;
-                                            _updateOptionUnitValue(idx, dynamicValue);
-                                          })
+                                          final dynamicValue = amt - 1;
+                                          _updateOptionUnitValue(
+                                            idx,
+                                            dynamicValue,
+                                          );
+                                        })
                                       : null,
                                   padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 36,
+                                    minHeight: 36,
+                                  ),
                                 ),
                                 SizedBox(
                                   width: 36,
-                                  child: Text('$amt', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                  child: Text(
+                                    '$amt',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.add_circle_outline, size: 22),
+                                  icon: const Icon(
+                                    Icons.add_circle_outline,
+                                    size: 22,
+                                  ),
                                   onPressed: amt < maxForThis
                                       ? () => setDialogState(() {
-                                            final dynamicValue = amt + 1;
-                                            _updateOptionUnitValue(idx, dynamicValue);
-                                          })
+                                          final dynamicValue = amt + 1;
+                                          _updateOptionUnitValue(
+                                            idx,
+                                            dynamicValue,
+                                          );
+                                        })
                                       : null,
                                   padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                                  constraints: const BoxConstraints(
+                                    minWidth: 36,
+                                    minHeight: 36,
+                                  ),
                                 ),
                               ],
                             ),
-                            Text('${perUnitPnp * amt}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                            Text(
+                              '${perUnitPnp * amt}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -4510,12 +4790,21 @@ class _PollDialogState extends State<_PollDialog> {
                     const Divider(),
                     Text(
                       'စုစုပေါင်း ကုန်ကျမည်: $totalCost PNP',
-                      style: TextStyle(fontWeight: FontWeight.bold, color: canAfford ? null : Colors.red),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: canAfford ? null : Colors.red,
+                      ),
                     ),
                     if (!canAfford)
                       Padding(
                         padding: const EdgeInsets.only(top: 6),
-                        child: Text('Point မလောက်ပါ (လိုအပ်ချက်: $totalCost)', style: TextStyle(fontSize: 12, color: Colors.red[700])),
+                        child: Text(
+                          'Point မလောက်ပါ (လိုအပ်ချက်: $totalCost)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.red[700],
+                          ),
+                        ),
                       ),
                   ],
                 ),
@@ -4523,12 +4812,13 @@ class _PollDialogState extends State<_PollDialog> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('မလုပ်တော့ပါ', style: TextStyle(color: Colors.grey)),
+                  child: const Text(
+                    'မလုပ်တော့ပါ',
+                    style: TextStyle(color: Colors.grey),
+                  ),
                 ),
                 ElevatedButton(
-                  onPressed: canAfford
-                      ? () => Navigator.pop(ctx, true)
-                      : null,
+                  onPressed: canAfford ? () => Navigator.pop(ctx, true) : null,
                   child: const Text('ကစားမည်'),
                 ),
               ],
@@ -4547,14 +4837,20 @@ class _PollDialogState extends State<_PollDialog> {
     }
     if (finalTotalCost > userBalance) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('သတ်မှတ်ထားသော Amount အတွက် Point မလောက်တော့ပါ။ ပြန်လည် ကြိုးစားကြည့်ပါ။')),
+        const SnackBar(
+          content: Text(
+            'သတ်မှတ်ထားသော Amount အတွက် Point မလောက်တော့ပါ။ ပြန်လည် ကြိုးစားကြည့်ပါ။',
+          ),
+        ),
       );
       return;
     }
 
     final isolatedAmountPerOption = <int, int>{};
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     for (final idx in selectedList) {
       final k = _optionKeyForIndex(idx);
       final u = _isolatedUnitsByOption[k] ?? 1;
@@ -4620,10 +4916,7 @@ class _PollDialogState extends State<_PollDialog> {
             // Question
             Text(
               pollData.question,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 6),
             Text(
@@ -4636,7 +4929,8 @@ class _PollDialogState extends State<_PollDialog> {
             ),
             const SizedBox(height: 20),
             // Show message when user has already voted (read-only display).
-            if (widget.item.hasInteracted && userSelectedIndices.isNotEmpty) ...[
+            if (widget.item.hasInteracted &&
+                userSelectedIndices.isNotEmpty) ...[
               Builder(
                 builder: (context) {
                   // User Amount mode: show bet amount when available
@@ -4683,131 +4977,135 @@ class _PollDialogState extends State<_PollDialog> {
               const SizedBox(height: 20),
             ],
             // Options: Checkbox-style (multiple selection) instead of Radio.
-            ...List.generate(
-              pollData.options.length,
-              (index) {
-                final isSelected = _selectedIndices.contains(index);
-                final isUserPreviousSelection = widget.item.hasInteracted &&
-                    userSelectedIndices.contains(index) &&
-                    !isSelected;
+            ...List.generate(pollData.options.length, (index) {
+              final isSelected = _selectedIndices.contains(index);
+              final isUserPreviousSelection =
+                  widget.item.hasInteracted &&
+                  userSelectedIndices.contains(index) &&
+                  !isSelected;
 
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: InkWell(
-                    onTap: (_isSubmitting || widget.item.hasInteracted)
-                        ? null
-                        : () {
-                            _toggleOption(index);
-                            app_logger.Logger.info(
-                                'Poll option toggled: index=$index, selected=${_selectedIndices.toList()}',
-                                tag: 'EngagementCarousel');
-                          },
-                    borderRadius: BorderRadius.circular(12),
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? pollColor.withOpacity(0.15)
-                            : Colors.grey[100],
-                        border: Border.all(
-                          color: isSelected ? pollColor : Colors.grey[300]!,
-                          width: isUserPreviousSelection
-                              ? 2.5
-                              : isSelected
-                                  ? 3
-                                  : 2,
-                        ),
-                        borderRadius: BorderRadius.circular(12),
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: InkWell(
+                  onTap: (_isSubmitting || widget.item.hasInteracted)
+                      ? null
+                      : () {
+                          _toggleOption(index);
+                          app_logger.Logger.info(
+                            'Poll option toggled: index=$index, selected=${_selectedIndices.toList()}',
+                            tag: 'EngagementCarousel',
+                          );
+                        },
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? pollColor.withOpacity(0.15)
+                          : Colors.grey[100],
+                      border: Border.all(
+                        color: isSelected ? pollColor : Colors.grey[300]!,
+                        width: isUserPreviousSelection
+                            ? 2.5
+                            : isSelected
+                            ? 3
+                            : 2,
                       ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          // Checkbox-style: square with check (Material Checkbox for semantics).
-                          SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: Checkbox(
-                              value: isSelected,
-                              onChanged: (_isSubmitting ||
-                                      widget.item.hasInteracted)
-                                  ? null
-                                  : (_) => _toggleOption(index),
-                              activeColor: pollColor,
-                              checkColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Checkbox-style: square with check (Material Checkbox for semantics).
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: Checkbox(
+                            value: isSelected,
+                            onChanged:
+                                (_isSubmitting || widget.item.hasInteracted)
+                                ? null
+                                : (_) => _toggleOption(index),
+                            activeColor: pollColor,
+                            checkColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(4),
                             ),
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    pollData.options[index],
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  pollData.options[index],
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: isSelected
+                                        ? FontWeight.w600
+                                        : FontWeight.normal,
+                                  ),
+                                ),
+                              ),
+                              if (isUserPreviousSelection)
+                                Container(
+                                  margin: const EdgeInsets.only(left: 8),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: pollColor.withOpacity(0.7),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'ယခင်ရွေးချယ်မှု',
                                     style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: isSelected
-                                          ? FontWeight.w600
-                                          : FontWeight.normal,
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                )
+                              else if (isSelected)
+                                Container(
+                                  margin: const EdgeInsets.only(left: 8),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: pollColor,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'သင့်ရွေးချယ်မှု',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 ),
-                                if (isUserPreviousSelection)
-                                  Container(
-                                    margin: const EdgeInsets.only(left: 8),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: pollColor.withOpacity(0.7),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: const Text(
-                                      'ယခင်ရွေးချယ်မှု',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  )
-                                else if (isSelected)
-                                  Container(
-                                    margin: const EdgeInsets.only(left: 8),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: pollColor,
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: const Text(
-                                      'သင့်ရွေးချယ်မှု',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            }),
             const SizedBox(height: 20),
             // Submit Button - Poll specific (enabled when at least one option selected).
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _selectedIndices.isEmpty ||
+                onPressed:
+                    _selectedIndices.isEmpty ||
                         _isSubmitting ||
                         widget.item.hasInteracted
                     ? null
@@ -4827,8 +5125,9 @@ class _PollDialogState extends State<_PollDialog> {
                         width: 20,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(Colors.white),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
                         ),
                       )
                     : Text(
@@ -4846,7 +5145,10 @@ class _PollDialogState extends State<_PollDialog> {
     );
   }
 
-  Future<void> _submitVote({int amount = 1, Map<int, int>? amountPerOption}) async {
+  Future<void> _submitVote({
+    int amount = 1,
+    Map<int, int>? amountPerOption,
+  }) async {
     if (_selectedIndices.isEmpty) return;
 
     // TEMP: Block re-submission if user has already interacted with this poll
@@ -4858,8 +5160,9 @@ class _PollDialogState extends State<_PollDialog> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content:
-                Text('ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။'),
+            content: Text(
+              'ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။',
+            ),
             backgroundColor: Colors.orange,
           ),
         );
@@ -4873,8 +5176,9 @@ class _PollDialogState extends State<_PollDialog> {
     // But allow new submissions if previous one completed (even if refresh is ongoing)
     if (_isSubmitting) {
       app_logger.Logger.warning(
-          'Vote submission already in progress, ignoring duplicate request',
-          tag: 'EngagementCarousel');
+        'Vote submission already in progress, ignoring duplicate request',
+        tag: 'EngagementCarousel',
+      );
       return;
     }
 
@@ -4887,8 +5191,10 @@ class _PollDialogState extends State<_PollDialog> {
     // Each dialog instance has its own _isSubmitting state, so this ensures proper cleanup
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final engagementProvider =
-          Provider.of<EngagementProvider>(context, listen: false);
+      final engagementProvider = Provider.of<EngagementProvider>(
+        context,
+        listen: false,
+      );
       final pointProvider = Provider.of<PointProvider>(context, listen: false);
 
       // PROFESSIONAL FIX: Ensure token is loaded before checking authentication
@@ -4896,15 +5202,19 @@ class _PollDialogState extends State<_PollDialog> {
       String? token = authProvider.token; // Try synchronous getter first
       if (token == null) {
         // If token is not cached, load it from storage
-        app_logger.Logger.info('Token not cached, loading from storage...',
-            tag: 'EngagementCarousel');
+        app_logger.Logger.info(
+          'Token not cached, loading from storage...',
+          tag: 'EngagementCarousel',
+        );
         token = await authProvider.getToken();
       }
 
       // Validate authentication state with proper error handling
       if (authProvider.user == null) {
-        app_logger.Logger.warning('User is null, cannot submit poll vote',
-            tag: 'EngagementCarousel');
+        app_logger.Logger.warning(
+          'User is null, cannot submit poll vote',
+          tag: 'EngagementCarousel',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -4919,8 +5229,9 @@ class _PollDialogState extends State<_PollDialog> {
 
       if (token == null) {
         app_logger.Logger.warning(
-            'Token is null after loading attempt, cannot submit poll vote',
-            tag: 'EngagementCarousel');
+          'Token is null after loading attempt, cannot submit poll vote',
+          tag: 'EngagementCarousel',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -4938,13 +5249,15 @@ class _PollDialogState extends State<_PollDialog> {
       final quiz = widget.item.quizData;
       if (quiz == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Poll ဒေတာ မရှိပါ။')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Poll ဒေတာ မရှိပါ။')));
         }
         return;
       }
-      final stakePerUnit = quiz.spentPerUnitPnpForPoll(engagementRewardPoints: widget.item.rewardPoints);
+      final stakePerUnit = quiz.spentPerUnitPnpForPoll(
+        engagementRewardPoints: widget.item.rewardPoints,
+      );
       int totalCost;
       if (amountPerOption != null && amountPerOption.isNotEmpty) {
         totalCost = 0;
@@ -5000,48 +5313,65 @@ class _PollDialogState extends State<_PollDialog> {
       // Old Code:      }
 
       // Local estimate for optimistic UI only (no extra network before submit; server is source of truth).
-      int balanceBefore = _confirmedBalanceForSubmit ?? pointProvider.currentBalance;
+      int balanceBefore =
+          _confirmedBalanceForSubmit ?? pointProvider.currentBalance;
       if (balanceBefore == 0) {
-        final fromAuthUi =
-            _balanceFromCustomFields(authProvider.user?.customFields);
+        final fromAuthUi = _balanceFromCustomFields(
+          authProvider.user?.customFields,
+        );
         if (fromAuthUi > 0) balanceBefore = fromAuthUi;
       }
 
       // Send comma-separated indices for checkbox (multiple) selection.
       final answer = _selectedIndices.toList()..sort();
       final answerStr = answer.join(',');
-      
+
       // CRITICAL FIX: Get session_id for AUTO_RUN polls
       // This enables multi-session voting (user can vote in each cycle)
       String? sessionId;
       final schedule = widget.item.pollVotingSchedule;
-      
+
       if (schedule != null) {
         // Backend now provides current_session_id for AUTO_RUN polls
         sessionId = schedule['current_session_id']?.toString();
-        
+
         // Fallback: Calculate manually if backend doesn't provide it (legacy compatibility)
         if ((sessionId == null || sessionId.isEmpty)) {
           final pollModeRaw = schedule['poll_mode']?.toString();
           final pollMode = pollModeRaw?.toUpperCase();
-          
+
           // Calculate session for AUTO_RUN and MANUAL_SESSION polls
           if (pollMode == 'AUTO_RUN' || pollMode == 'MANUAL_SESSION') {
             final startedAtStr = schedule['poll_actual_start_at']?.toString();
+            /*
+            Old Code:
             final pollDuration = schedule['poll_duration'] ?? schedule['poll_period_minutes'];
+            */
+            // New Code: canonical poll_duration unit is MINUTES.
+            final pollDuration = schedule['poll_duration'];
+            /*
+            Old Code:
             final resultSecondsRaw = schedule['result_display_duration_seconds'] ??
                 schedule['result_display_seconds'];
-            
-            if (startedAtStr != null && pollDuration != null && resultSecondsRaw != null) {
+            */
+            final resultSecondsRaw =
+                schedule['result_display_duration_seconds'];
+
+            if (startedAtStr != null &&
+                pollDuration != null &&
+                resultSecondsRaw != null) {
               final startedAt = DateTime.tryParse(startedAtStr);
-              final pollDurationMin = (pollDuration is int) ? pollDuration : 
-                                     (pollDuration is double) ? pollDuration.toInt() : 15;
+              final pollDurationMin = (pollDuration is int)
+                  ? pollDuration
+                  : (pollDuration is double)
+                  ? pollDuration.toInt()
+                  : 15;
               final resultSeconds = (resultSecondsRaw is int)
                   ? resultSecondsRaw
                   : (resultSecondsRaw is double)
-                      ? resultSecondsRaw.toInt()
-                      : int.tryParse(resultSecondsRaw.toString()) ?? 60;
-              
+                  ? resultSecondsRaw.toInt()
+                  : int.tryParse(resultSecondsRaw.toString()) ?? 60;
+
               if (startedAt != null && pollDurationMin > 0) {
                 // Cycle = voting window (minutes→seconds) + result phase (seconds).
                 final cycleSeconds = (pollDurationMin * 60) + resultSeconds;
@@ -5050,21 +5380,24 @@ class _PollDialogState extends State<_PollDialog> {
                 final iteration = (elapsed / cycleSeconds).floor();
                 sessionId = 's$iteration';
                 app_logger.Logger.info(
-                    'AUTO_RUN poll session calculated manually: $sessionId (elapsed: ${elapsed}s, cycle: ${cycleSeconds}s)',
-                    tag: 'EngagementCarousel');
+                  'AUTO_RUN poll session calculated manually: $sessionId (elapsed: ${elapsed}s, cycle: ${cycleSeconds}s)',
+                  tag: 'EngagementCarousel',
+                );
               }
             }
           }
         } else {
           app_logger.Logger.info(
-              'Using session_id from backend: $sessionId',
-              tag: 'EngagementCarousel');
+            'Using session_id from backend: $sessionId',
+            tag: 'EngagementCarousel',
+          );
         }
       }
-      
+
       app_logger.Logger.info(
-          'Submitting poll vote: userId=$currentUserId, itemId=${widget.item.id}, answer=$answerStr, sessionId=$sessionId, balanceBefore(optimistic)=$balanceBefore, amountPerOption=$amountPerOption',
-          tag: 'EngagementCarousel');
+        'Submitting poll vote: userId=$currentUserId, itemId=${widget.item.id}, answer=$answerStr, sessionId=$sessionId, balanceBefore(optimistic)=$balanceBefore, amountPerOption=$amountPerOption',
+        tag: 'EngagementCarousel',
+      );
 
       final result = await engagementProvider.submitInteraction(
         userId: currentUserId,
@@ -5103,10 +5436,11 @@ class _PollDialogState extends State<_PollDialog> {
         // Winner rewards will be added to SAME TABLE when poll is resolved
         // Balance = SUM(type='earn') - SUM(type='redeem') from wp_twork_point_transactions
         // ============================================================================
-        
+
         app_logger.Logger.info(
-            '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, Balance: $balanceBefore → $newBalance',
-            tag: 'EngagementCarousel');
+          '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, Balance: $balanceBefore → $newBalance',
+          tag: 'EngagementCarousel',
+        );
 
         /*
         // OLD CODE:
@@ -5141,39 +5475,40 @@ class _PollDialogState extends State<_PollDialog> {
 
         // Refresh user (my_point, my_points, points_balance) so Home Page My PNP updates
         authProvider.refreshUser().catchError((error) {
-          app_logger.Logger.warning('Failed to refresh user after vote: $error',
-              tag: 'EngagementCarousel');
+          app_logger.Logger.warning(
+            'Failed to refresh user after vote: $error',
+            tag: 'EngagementCarousel',
+          );
         });
 
         // Refresh points balance (non-blocking)
         pointProvider
-            .loadBalance(
-          authProvider.user!.id.toString(),
-          forceRefresh: true,
-        )
+            .loadBalance(authProvider.user!.id.toString(), forceRefresh: true)
             .then((_) {
-          // loadBalance returns void, so we read the updated balance from the provider
-          final refreshedBalance = pointProvider.currentBalance;
-          app_logger.Logger.info(
-              'Balance refreshed after poll vote: $refreshedBalance (expected: $newBalance)',
-              tag: 'EngagementCarousel');
-        })
+              // loadBalance returns void, so we read the updated balance from the provider
+              final refreshedBalance = pointProvider.currentBalance;
+              app_logger.Logger.info(
+                'Balance refreshed after poll vote: $refreshedBalance (expected: $newBalance)',
+                tag: 'EngagementCarousel',
+              );
+            })
             .catchError((error) {
-          app_logger.Logger.warning('Failed to refresh points balance: $error',
-              tag: 'EngagementCarousel');
-        });
+              app_logger.Logger.warning(
+                'Failed to refresh points balance: $error',
+                tag: 'EngagementCarousel',
+              );
+            });
 
         // PROFESSIONAL FIX: Refresh engagement feed asynchronously without blocking
         // This allows subsequent vote submissions to proceed even during refresh
         engagementProvider
-            .refresh(
-          userId: authProvider.user!.id,
-          token: token,
-        )
+            .refresh(userId: authProvider.user!.id, token: token)
             .catchError((error) {
-          app_logger.Logger.warning('Failed to refresh engagement feed: $error',
-              tag: 'EngagementCarousel');
-        });
+              app_logger.Logger.warning(
+                'Failed to refresh engagement feed: $error',
+                tag: 'EngagementCarousel',
+              );
+            });
       } else {
         // PROFESSIONAL FIX: Handle duplicate and insufficient_balance errors
         final message =
@@ -5183,8 +5518,9 @@ class _PollDialogState extends State<_PollDialog> {
             result['code']?.toString().toLowerCase() == 'insufficient_balance';
 
         app_logger.Logger.warning(
-            'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient',
-            tag: 'EngagementCarousel');
+          'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient',
+          tag: 'EngagementCarousel',
+        );
 
         // Old Code: `confirmedBalance` / `serverSaysZero` / `weHadBalance` / `requiredInt` / layered displayMessage (server `insufficient_balance` already authoritative).
         // Old Code:        final int? confirmedBalance = _confirmedBalanceForSubmit;
@@ -5215,8 +5551,9 @@ class _PollDialogState extends State<_PollDialog> {
         final String displayMessage;
         if (isInsufficient) {
           final m = message.trim();
-          displayMessage =
-              m.isNotEmpty ? m : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
+          displayMessage = m.isNotEmpty
+              ? m
+              : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
         } else {
           displayMessage = message;
         }
@@ -5225,43 +5562,54 @@ class _PollDialogState extends State<_PollDialog> {
         if (isDuplicate ||
             message.toLowerCase().contains('user') ||
             message.toLowerCase().contains('account')) {
-          final authProvider =
-              Provider.of<AuthProvider>(context, listen: false);
+          final authProvider = Provider.of<AuthProvider>(
+            context,
+            listen: false,
+          );
           if (authProvider.user != null) {
             engagementProvider
                 .refresh(
-              userId: authProvider.user!.id,
-              token: authProvider.token,
-            )
+                  userId: authProvider.user!.id,
+                  token: authProvider.token,
+                )
                 .catchError((error) {
-              app_logger.Logger.warning(
-                  'Failed to refresh engagement feed after error: $error',
-                  tag: 'EngagementCarousel');
-            });
+                  app_logger.Logger.warning(
+                    'Failed to refresh engagement feed after error: $error',
+                    tag: 'EngagementCarousel',
+                  );
+                });
           }
         }
 
         messenger.showSnackBar(
           SnackBar(
-            content: Text(isDuplicate
-                ? 'ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။'
-                : displayMessage),
+            content: Text(
+              isDuplicate
+                  ? 'ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။'
+                  : displayMessage,
+            ),
             backgroundColor: isDuplicate ? Colors.orange : Colors.red,
             duration: Duration(
-                seconds: isDuplicate ? 3 : (isInsufficient ? 5 : 2)),
+              seconds: isDuplicate ? 3 : (isInsufficient ? 5 : 2),
+            ),
           ),
         );
       }
     } catch (e, stackTrace) {
       // PROFESSIONAL FIX: Handle any exceptions gracefully
-      app_logger.Logger.error('Exception during vote submission: $e',
-          tag: 'EngagementCarousel', error: e, stackTrace: stackTrace);
+      app_logger.Logger.error(
+        'Exception during vote submission: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+        stackTrace: stackTrace,
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'ကစားမှု ပို့ရာတွင် ပြဿနာတစ်ခု ဖြစ်နေပါသည်။ နောက်တစ်ကြိမ် ထပ်ကြိုးစားပါ။'),
+              'ကစားမှု ပို့ရာတွင် ပြဿနာတစ်ခု ဖြစ်နေပါသည်။ နောက်တစ်ကြိမ် ထပ်ကြိုးစားပါ။',
+            ),
             backgroundColor: Colors.red,
           ),
         );
@@ -5290,10 +5638,7 @@ class _ImageQuickViewDialog extends StatefulWidget {
   final String imageUrl;
   final String title;
 
-  const _ImageQuickViewDialog({
-    required this.imageUrl,
-    required this.title,
-  });
+  const _ImageQuickViewDialog({required this.imageUrl, required this.title});
 
   @override
   State<_ImageQuickViewDialog> createState() => _ImageQuickViewDialogState();
@@ -5378,16 +5723,15 @@ class _ImageQuickViewDialogState extends State<_ImageQuickViewDialog> {
             right: 0,
             child: SafeArea(
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withOpacity(0.7),
-                      Colors.transparent,
-                    ],
+                    colors: [Colors.black.withOpacity(0.7), Colors.transparent],
                   ),
                 ),
                 child: Row(
@@ -5433,10 +5777,7 @@ class _ImageQuickViewDialogState extends State<_ImageQuickViewDialog> {
                   gradient: LinearGradient(
                     begin: Alignment.bottomCenter,
                     end: Alignment.topCenter,
-                    colors: [
-                      Colors.black.withOpacity(0.7),
-                      Colors.transparent,
-                    ],
+                    colors: [Colors.black.withOpacity(0.7), Colors.transparent],
                   ),
                 ),
                 child: const Center(
@@ -5474,8 +5815,11 @@ class _ContentQuickViewDialog extends StatelessWidget {
 
   /// Helper method to strip HTML tags from content
   String _stripHtmlTags(String html) {
-    final RegExp exp =
-        RegExp(r'<[^>]*>', multiLine: true, caseSensitive: false);
+    final RegExp exp = RegExp(
+      r'<[^>]*>',
+      multiLine: true,
+      caseSensitive: false,
+    );
     return html.replaceAll(exp, '').trim();
   }
 
@@ -5496,8 +5840,10 @@ class _ContentQuickViewDialog extends StatelessWidget {
               children: [
                 // Title bar
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
@@ -5523,8 +5869,8 @@ class _ContentQuickViewDialog extends StatelessWidget {
                           item.title.isNotEmpty
                               ? item.title
                               : (item.type == EngagementType.banner
-                                  ? 'Banner'
-                                  : 'Announcement'),
+                                    ? 'Banner'
+                                    : 'Announcement'),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -5705,10 +6051,7 @@ class _BlinkingNumberWidget extends StatefulWidget {
   final String number;
   final double size;
 
-  const _BlinkingNumberWidget({
-    required this.number,
-    required this.size,
-  });
+  const _BlinkingNumberWidget({required this.number, required this.size});
 
   @override
   State<_BlinkingNumberWidget> createState() => _BlinkingNumberWidgetState();
@@ -5733,27 +6076,29 @@ class _BlinkingNumberWidgetState extends State<_BlinkingNumberWidget>
 
     // Optimized opacity animation - smooth transition for number text blinking
     // Only the number text opacity changes, no background effects
-    _opacityAnimation = Tween<double>(
-      begin: 0.2, // Lower minimum for more dramatic fade effect
-      end: 1.0,
-    ).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: Curves.easeInOut, // Smooth transition prevents flickering
-      ),
-    );
+    _opacityAnimation =
+        Tween<double>(
+          begin: 0.2, // Lower minimum for more dramatic fade effect
+          end: 1.0,
+        ).animate(
+          CurvedAnimation(
+            parent: _controller,
+            curve: Curves.easeInOut, // Smooth transition prevents flickering
+          ),
+        );
 
     // Subtle scale animation for pulsing effect - applies only to number text
     // Creates smooth pulsing/blinking effect on the number itself
-    _scaleAnimation = Tween<double>(
-      begin: 0.92, // Subtle scale variation
-      end: 1.08, // Smooth pulsing effect
-    ).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: Curves.easeInOut, // Smooth curve prevents visual jumps
-      ),
-    );
+    _scaleAnimation =
+        Tween<double>(
+          begin: 0.92, // Subtle scale variation
+          end: 1.08, // Smooth pulsing effect
+        ).animate(
+          CurvedAnimation(
+            parent: _controller,
+            curve: Curves.easeInOut, // Smooth curve prevents visual jumps
+          ),
+        );
   }
 
   @override
@@ -5787,8 +6132,8 @@ class _BlinkingNumberWidgetState extends State<_BlinkingNumberWidget>
         // Use the smaller of the two to ensure it fits perfectly
         final responsiveSize = maxWidth.isFinite && maxHeight.isFinite
             ? (widthBasedSize < heightBasedSize
-                ? widthBasedSize
-                : heightBasedSize)
+                  ? widthBasedSize
+                  : heightBasedSize)
             : widget.size.clamp(180.0, 450.0);
 
         // PROFESSIONAL FIX: Optimized AnimatedBuilder - only the number text blinks, no background effects
@@ -5874,12 +6219,7 @@ class _AnimatedNumberBackgroundState extends State<_AnimatedNumberBackground>
     _rotationAnimation = Tween<double>(
       begin: 0,
       end: 2 * 3.14159, // Full rotation in radians
-    ).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: Curves.linear,
-      ),
-    );
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.linear));
   }
 
   @override
@@ -5894,9 +6234,7 @@ class _AnimatedNumberBackgroundState extends State<_AnimatedNumberBackground>
       animation: _controller,
       builder: (context, child) {
         return CustomPaint(
-          painter: _NumberBackgroundPainter(
-            rotation: _rotationAnimation.value,
-          ),
+          painter: _NumberBackgroundPainter(rotation: _rotationAnimation.value),
           child: Container(),
         );
       },
@@ -5925,11 +6263,7 @@ class _NumberBackgroundPainter extends CustomPainter {
       final x = center.dx + radius * 0.3 * (i + 1) * (rotation % 1);
       final y = center.dy + radius * 0.2 * (i + 1) * (rotation % 1);
 
-      canvas.drawCircle(
-        Offset(x, y),
-        radius * 0.1 * (i + 1),
-        paint,
-      );
+      canvas.drawCircle(Offset(x, y), radius * 0.1 * (i + 1), paint);
     }
 
     // Draw decorative lines
@@ -5944,11 +6278,7 @@ class _NumberBackgroundPainter extends CustomPainter {
       final endX = center.dx + radius * 0.6 * (i % 2 == 0 ? 1 : -1);
       final endY = center.dy;
 
-      canvas.drawLine(
-        Offset(startX, startY),
-        Offset(endX, endY),
-        linePaint,
-      );
+      canvas.drawLine(Offset(startX, startY), Offset(endX, endY), linePaint);
     }
   }
 
@@ -5962,10 +6292,7 @@ class _NumberBackgroundPainter extends CustomPainter {
 class _VoteSubmittedCelebration extends StatelessWidget {
   final Map<String, int?>? detailedBets;
 
-  const _VoteSubmittedCelebration({
-    super.key,
-    this.detailedBets,
-  });
+  const _VoteSubmittedCelebration({super.key, this.detailedBets});
 
   @override
   Widget build(BuildContext context) {
@@ -5994,10 +6321,7 @@ class _VoteSubmittedCelebration extends StatelessWidget {
     );
 
     return IgnorePointer(
-      child: SizedBox(
-        width: double.infinity,
-        child: content,
-      ),
+      child: SizedBox(width: double.infinity, child: content),
     );
   }
 }

@@ -50,7 +50,7 @@ class PollStateData {
   final String state;
   final String currentSessionId;
   final String? endsAt;
-  final int pollDuration;
+  final int pollDurationMinutes;
 
   /// Server-driven length of the result phase (total seconds). Legacy APIs sent minutes as [result_display_duration].
   final int resultDisplayDurationSeconds;
@@ -68,7 +68,7 @@ class PollStateData {
     required this.state,
     required this.currentSessionId,
     this.endsAt,
-    required this.pollDuration,
+    required this.pollDurationMinutes,
     required this.resultDisplayDurationSeconds,
     required this.mode,
     this.pollBaseCost = 0,
@@ -84,7 +84,12 @@ class PollStateData {
       state: (data['state'] ?? 'ACTIVE').toString(),
       currentSessionId: (data['current_session_id'] ?? '').toString(),
       endsAt: data['ends_at']?.toString(),
+      /*
+      Old Code:
       pollDuration: (data['poll_duration'] as num?)?.toInt() ?? 15,
+      */
+      // New Code: canonical unit is MINUTES across codebase.
+      pollDurationMinutes: (data['poll_duration'] as num?)?.toInt() ?? 15,
       resultDisplayDurationSeconds: _parseResultDisplayDurationSeconds(data),
       mode: (data['mode'] ?? 'MANUAL').toString(),
       pollBaseCost: (data['poll_base_cost'] as num?)?.toInt() ?? 0,
@@ -524,8 +529,15 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
         if (parsedEndsAt != null) {
           _phaseEndsAtUtc = parsedEndsAt.toUtc();
         } else {
+          /*
+          Old Code:
           final pollSeconds = data.pollDuration > 0 ? data.pollDuration : 15;
           _phaseEndsAtUtc = nowUtc.add(Duration(seconds: pollSeconds));
+          */
+          final pollMinutes = data.pollDurationMinutes > 0
+              ? data.pollDurationMinutes
+              : 15;
+          _phaseEndsAtUtc = nowUtc.add(Duration(minutes: pollMinutes));
         }
         _transitionTo(AutoPollState.activeVoting);
         return 'ACTIVE';
@@ -534,8 +546,15 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
         if (parsedEndsAt != null) {
           _phaseEndsAtUtc = parsedEndsAt.toUtc();
         } else {
+          /*
+          Old Code:
           final pollSeconds = data.pollDuration > 0 ? data.pollDuration : 15;
           _phaseEndsAtUtc = nowUtc.add(Duration(seconds: pollSeconds));
+          */
+          final pollMinutes = data.pollDurationMinutes > 0
+              ? data.pollDurationMinutes
+              : 15;
+          _phaseEndsAtUtc = nowUtc.add(Duration(minutes: pollMinutes));
         }
         _transitionTo(AutoPollState.activeVoting);
         return 'ACTIVE';
@@ -1156,7 +1175,8 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
           final label = widget.options[idx].trim();
           int betPnp;
           int units;
-          if (betAmountPerOption != null && betAmountPerOption.containsKey(idx)) {
+          if (betAmountPerOption != null &&
+              betAmountPerOption.containsKey(idx)) {
             // Old Code: averaged or ambiguous fallbacks when per-option missing.
             //
             // New Code: exact per line — units from map, PNP = perUnit * units.
