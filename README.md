@@ -17,8 +17,7 @@ A production-ready, enterprise-grade e-commerce application built with Flutter, 
 **Author**: Maw Kunn Myat | **Maintained by**: T-Work System
 
 **Poll System (Auto-Run Poll, Engagement Hub)**  
-Mirror / upstream: [github.com/mawkunn-sg/pollsystem](https://github.com/mawkunn-sg/pollsystem)  
-**Contact**: mawkunn@clickrmedia.com
+Auto-run poll lifecycle and engagement components are maintained within this repository and documented under `docs/`.
 
 [Features](#-features) • [Quick Start](#-getting-started) • [Architecture](#-architecture) • [Documentation](#-documentation) • [Contributing](#-contributing)
 
@@ -1342,8 +1341,6 @@ We would like to express our gratitude to the following technologies, platforms,
 
 ### Project Repository
 - **Main (Mingalarbuy)**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Poll System**: [github.com/mawkunn-sg/pollsystem](https://github.com/mawkunn-sg/pollsystem) — Auto-Run Poll lifecycle, point validation, confirmation flow, engagement provider pause/resume, and WordPress integration.  
-  **Contact**: mawkunn@clickrmedia.com
 - **Issues**: [GitHub Issues](https://github.com/tworksystem/mingalarbuy/issues)
 - **Documentation**: See `docs/` folder for detailed guides
 
