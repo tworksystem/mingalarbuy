@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -48,8 +49,10 @@ class QuizData {
   final List<String> options;
   final int correctIndex;
   final bool isActive;
+
   /// Poll base cost per option (for polls that deduct points)
   final int pollBaseCost;
+
   /// Whether user is allowed to choose custom betting Amount (multiple of base cost)
   final bool allowUserAmount;
 
@@ -103,6 +106,18 @@ class QuizData {
   }
 
   factory QuizData.fromJson(Map<String, dynamic> json) {
+    int _parseNonNegativeInt(dynamic raw) {
+      if (raw == null) return 0;
+      if (raw is int) return raw >= 0 ? raw : 0;
+      if (raw is num) {
+        final n = raw.toInt();
+        return n >= 0 ? n : 0;
+      }
+      final cleaned = raw.toString().trim().replaceAll(',', '');
+      final parsed = int.tryParse(cleaned);
+      return (parsed != null && parsed >= 0) ? parsed : 0;
+    }
+
     // Determine active/disabled state from multiple possible backend flags
     bool isActive = true;
     if (json.containsKey('is_active')) {
@@ -135,9 +150,14 @@ class QuizData {
 
     // Note: correct_index is removed by backend for security, so we default to 0
     // This is safe because the backend validates answers server-side
-    final pollBaseCost = (json['poll_base_cost'] as num?)?.toInt() ??
-        (json['pollBaseCost'] as num?)?.toInt() ??
-        0;
+    final pollBaseCost = _parseNonNegativeInt(
+      json['poll_base_cost'] ??
+          json['pollBaseCost'] ??
+          json['unit_value'] ??
+          json['pnp_per_vote'] ??
+          json['cost'] ??
+          json['bet_amount'],
+    );
 
     // Allow user amount selector by default unless explicitly disabled
     bool allowUserAmount = true;
@@ -179,15 +199,21 @@ class EngagementItem {
   final QuizData? quizData;
   final bool hasInteracted;
   final String? userAnswer;
+
   /// User Amount mode: the multiplier (1, 2, 3...) user selected when voting. null = Base Cost mode or not voted.
   final int? userBetAmount;
+
   /// Optional per-option bet multipliers from API (option index -> units k). When null, UI falls back to [userBetAmount].
   final Map<int, int>? userBetUnitsPerOption;
   final int?
-      rotationDurationSeconds; // Rotation duration in seconds (null = use default)
+  rotationDurationSeconds; // Rotation duration in seconds (null = use default)
   final int interactionCount; // Total interactions (for corner badge)
-  final Map<String, dynamic>? pollVotingSchedule; // seconds_until_close, voting_status, result_display_ends_at, etc.
-  final Map<String, dynamic>? pollResult; // vote_counts, vote_percentages, winning_index (when showing result)
+  final Map<String, dynamic>?
+  pollVotingSchedule; // seconds_until_close, voting_status, result_display_ends_at, etc.
+  final Map<String, dynamic>?
+  pollResult; // vote_counts, vote_percentages, winning_index (when showing result)
+  /// Raw backend payload for deep audit/debug (kept for diagnostics only).
+  final Map<String, dynamic>? rawData;
 
   const EngagementItem({
     required this.id,
@@ -205,6 +231,7 @@ class EngagementItem {
     this.interactionCount = 0,
     this.pollVotingSchedule,
     this.pollResult,
+    this.rawData,
   });
 
   /// Create a copy with updated fields (for merging lightweight updates without full refresh)
@@ -217,24 +244,48 @@ class EngagementItem {
     int? userBetAmount,
     Map<int, int>? userBetUnitsPerOption,
     bool clearPollResult = false,
-  }) =>
-      EngagementItem(
-        id: id,
-        type: type,
-        title: title,
-        mediaUrl: mediaUrl,
-        content: content,
-        rewardPoints: rewardPoints,
-        quizData: quizData,
-        hasInteracted: hasInteracted ?? this.hasInteracted,
-        userAnswer: userAnswer,
-        userBetAmount: userBetAmount ?? this.userBetAmount,
-        userBetUnitsPerOption: userBetUnitsPerOption ?? this.userBetUnitsPerOption,
-        rotationDurationSeconds: rotationDurationSeconds,
-        interactionCount: interactionCount ?? this.interactionCount,
-        pollVotingSchedule: pollVotingSchedule ?? this.pollVotingSchedule,
-        pollResult: clearPollResult ? null : (pollResult ?? this.pollResult),
-      );
+  }) => EngagementItem(
+    id: id,
+    type: type,
+    title: title,
+    mediaUrl: mediaUrl,
+    content: content,
+    rewardPoints: rewardPoints,
+    quizData: quizData,
+    hasInteracted: hasInteracted ?? this.hasInteracted,
+    userAnswer: userAnswer,
+    userBetAmount: userBetAmount ?? this.userBetAmount,
+    userBetUnitsPerOption: userBetUnitsPerOption ?? this.userBetUnitsPerOption,
+    rotationDurationSeconds: rotationDurationSeconds,
+    interactionCount: interactionCount ?? this.interactionCount,
+    pollVotingSchedule: pollVotingSchedule ?? this.pollVotingSchedule,
+    pollResult: clearPollResult ? null : (pollResult ?? this.pollResult),
+    rawData: rawData,
+  );
+
+  Map<String, dynamic> toDebugMap() {
+    return <String, dynamic>{
+      if (rawData != null) ...rawData!,
+      'id': id,
+      'type': type.name,
+      'title': title,
+      'content': content,
+      'reward_points': rewardPoints,
+      if (quizData != null)
+        'quiz_data': <String, dynamic>{
+          'question': quizData!.question,
+          'options': quizData!.options,
+          'correct_index': quizData!.correctIndex,
+          'is_active': quizData!.isActive,
+          'poll_base_cost': quizData!.pollBaseCost,
+          'allow_user_amount': quizData!.allowUserAmount,
+          'bet_amount_step': quizData!.betAmountStep,
+        },
+      if (pollVotingSchedule != null)
+        'poll_voting_schedule': pollVotingSchedule,
+      if (pollResult != null) 'poll_result': pollResult,
+    };
+  }
 
   factory EngagementItem.fromJson(Map<String, dynamic> json) {
     final typeStr = json['type'] ?? 'banner';
@@ -247,8 +298,10 @@ class EngagementItem {
         final raw = json['quiz_data'];
         if (raw is String) {
           if (raw.trim().isEmpty) {
-            app_logger.Logger.warning('quiz_data is empty string, skipping',
-                tag: 'EngagementService');
+            app_logger.Logger.warning(
+              'quiz_data is empty string, skipping',
+              tag: 'EngagementService',
+            );
           } else {
             final decoded = jsonDecode(raw);
             if (decoded is Map) {
@@ -262,18 +315,21 @@ class EngagementItem {
         if (parsedQuizData.isNotEmpty) {
           quizData = QuizData.fromJson(parsedQuizData);
           app_logger.Logger.info(
-              'Parsed quiz_data: question="${quizData.question}", options=${quizData.options.length}',
-              tag: 'EngagementService');
+            'Parsed quiz_data: question="${quizData.question}", options=${quizData.options.length}',
+            tag: 'EngagementService',
+          );
         } else if (raw != null) {
           app_logger.Logger.warning(
-              'quiz_data is not a valid object: ${raw.runtimeType}',
-              tag: 'EngagementService');
+            'quiz_data is not a valid object: ${raw.runtimeType}',
+            tag: 'EngagementService',
+          );
         }
       } catch (e) {
         app_logger.Logger.error(
-            'Failed to parse quiz_data: $e, data: ${json['quiz_data']}',
-            tag: 'EngagementService',
-            error: e);
+          'Failed to parse quiz_data: $e, data: ${json['quiz_data']}',
+          tag: 'EngagementService',
+          error: e,
+        );
         // Don't fail the entire item if quiz_data parsing fails
       }
     }
@@ -282,8 +338,8 @@ class EngagementItem {
     final mediaUrl = json['media_url'];
     final String? finalMediaUrl =
         (mediaUrl != null && mediaUrl.toString().trim().isNotEmpty)
-            ? mediaUrl.toString()
-            : null;
+        ? mediaUrl.toString()
+        : null;
 
     // Parse rotation_duration from backend (in seconds)
     // Backend now always provides rotation_duration (either from item or global setting)
@@ -300,15 +356,17 @@ class EngagementItem {
       if (rotationDurationSeconds != null &&
           (rotationDurationSeconds < 0 || rotationDurationSeconds > 60)) {
         app_logger.Logger.warning(
-            'Invalid rotation_duration: $rotationDurationSeconds (must be 0-60 seconds), using default 5',
-            tag: 'EngagementService');
+          'Invalid rotation_duration: $rotationDurationSeconds (must be 0-60 seconds), using default 5',
+          tag: 'EngagementService',
+        );
         rotationDurationSeconds = 5; // Use default instead of null
       }
     } else {
       // Backend should always send rotation_duration now, but if missing, use default
       app_logger.Logger.warning(
-          'rotation_duration not found in response for item ${json['id']}, using default 5 seconds',
-          tag: 'EngagementService');
+        'rotation_duration not found in response for item ${json['id']}, using default 5 seconds',
+        tag: 'EngagementService',
+      );
       rotationDurationSeconds = 5; // Use default instead of null
     }
 
@@ -333,14 +391,14 @@ class EngagementItem {
     final interactionCount = (json['interaction_count'] is int)
         ? json['interaction_count'] as int
         : (json['interaction_count'] is num)
-            ? (json['interaction_count'] as num).toInt()
-            : 0;
+        ? (json['interaction_count'] as num).toInt()
+        : 0;
 
-    final pollVotingSchedule = json['poll_voting_schedule'] is Map<String, dynamic>
-        ? json['poll_voting_schedule'] as Map<String, dynamic>
+    final pollVotingSchedule = json['poll_voting_schedule'] is Map
+        ? Map<String, dynamic>.from(json['poll_voting_schedule'] as Map)
         : null;
-    final pollResult = json['poll_result'] is Map<String, dynamic>
-        ? json['poll_result'] as Map<String, dynamic>
+    final pollResult = json['poll_result'] is Map
+        ? Map<String, dynamic>.from(json['poll_result'] as Map)
         : null;
 
     Map<int, int>? _parseUserBetUnitsPerOption(dynamic raw) {
@@ -373,10 +431,11 @@ class EngagementItem {
       rewardPoints: (json['reward_points'] is int)
           ? json['reward_points'] as int
           : (json['reward_points'] is String)
-              ? int.tryParse(json['reward_points']) ?? 0
-              : 0,
+          ? int.tryParse(json['reward_points']) ?? 0
+          : 0,
       quizData: quizData,
-      hasInteracted: json['has_interacted'] == true ||
+      hasInteracted:
+          json['has_interacted'] == true ||
           json['has_interacted'] == 1 ||
           json['has_interacted'] == '1',
       userAnswer: json['user_answer']?.toString(),
@@ -388,6 +447,7 @@ class EngagementItem {
       interactionCount: interactionCount,
       pollVotingSchedule: pollVotingSchedule,
       pollResult: pollResult,
+      rawData: Map<String, dynamic>.from(json),
     );
   }
 }
@@ -411,76 +471,91 @@ class EngagementService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/engagement/feed/$userId',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      app_logger.Logger.info('Fetching engagement feed for user: $userId',
-          tag: 'EngagementService');
-      app_logger.Logger.info('Engagement feed URL: $uri',
-          tag: 'EngagementService');
+      app_logger.Logger.info(
+        'Fetching engagement feed for user: $userId',
+        tag: 'EngagementService',
+      );
+      app_logger.Logger.info(
+        'Engagement feed URL: $uri',
+        tag: 'EngagementService',
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'getEngagementFeed',
       );
 
       if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
+          final Map<String, dynamic>? data = ApiService.responseAsJsonMap(
+            response,
+          );
           if (data == null) {
             _lastError = 'Failed to parse engagement feed response';
             return [];
           }
 
           app_logger.Logger.info(
-              'Engagement feed response: success=${data['success']}, hasData=${data['data'] != null}, dataType=${data['data']?.runtimeType}',
-              tag: 'EngagementService');
+            'Engagement feed response: success=${data['success']}, hasData=${data['data'] != null}, dataType=${data['data']?.runtimeType}',
+            tag: 'EngagementService',
+          );
 
           if (data['success'] == true && data['data'] != null) {
             final rawItems = data['data'] as List;
-            app_logger.Logger.info('Raw items count: ${rawItems.length}',
-                tag: 'EngagementService');
+            app_logger.Logger.info(
+              'Raw items count: ${rawItems.length}',
+              tag: 'EngagementService',
+            );
 
             if (rawItems.isNotEmpty) {
               app_logger.Logger.info(
-                  'First item sample: ${jsonEncode(rawItems[0])}',
-                  tag: 'EngagementService');
+                'First item sample: ${jsonEncode(rawItems[0])}',
+                tag: 'EngagementService',
+              );
             }
 
             final List<EngagementItem> items = [];
             for (var i = 0; i < rawItems.length; i++) {
               try {
                 final item = EngagementItem.fromJson(
-                    rawItems[i] as Map<String, dynamic>);
+                  rawItems[i] as Map<String, dynamic>,
+                );
                 items.add(item);
                 app_logger.Logger.info(
-                    'Successfully parsed item ${i + 1}: id=${item.id}, type=${item.type}, title=${item.title}',
-                    tag: 'EngagementService');
+                  'Successfully parsed item ${i + 1}: id=${item.id}, type=${item.type}, title=${item.title}',
+                  tag: 'EngagementService',
+                );
               } catch (e) {
                 app_logger.Logger.error(
-                    'Failed to parse engagement item ${i + 1}: $e',
-                    tag: 'EngagementService',
-                    error: e);
-                app_logger.Logger.error('Item data: ${jsonEncode(rawItems[i])}',
-                    tag: 'EngagementService');
+                  'Failed to parse engagement item ${i + 1}: $e',
+                  tag: 'EngagementService',
+                  error: e,
+                );
+                app_logger.Logger.error(
+                  'Item data: ${jsonEncode(rawItems[i])}',
+                  tag: 'EngagementService',
+                );
                 // Continue parsing other items even if one fails
               }
             }
 
             app_logger.Logger.info(
-                'Loaded ${items.length} engagement items (${rawItems.length} total, ${rawItems.length - items.length} failed)',
-                tag: 'EngagementService');
+              'Loaded ${items.length} engagement items (${rawItems.length} total, ${rawItems.length - items.length} failed)',
+              tag: 'EngagementService',
+            );
             return items;
           } else {
             _lastError =
                 data['message']?.toString() ?? 'Failed to load engagement feed';
             app_logger.Logger.warning(
-                'Engagement feed returned success=false or null data. Response: ${jsonEncode(data)}',
-                tag: 'EngagementService');
+              'Engagement feed returned success=false or null data. Response: ${jsonEncode(data)}',
+              tag: 'EngagementService',
+            );
             return [];
           }
         } catch (e, stackTrace) {
@@ -491,25 +566,33 @@ class EngagementService {
               ? '${full.substring(0, 500)}...'
               : full;
           app_logger.Logger.error(
-              'Engagement feed JSON parse error: $_lastError',
-              tag: 'EngagementService',
-              error: e,
-              stackTrace: stackTrace);
-          app_logger.Logger.error('Response body preview: $responsePreview',
-              tag: 'EngagementService');
+            'Engagement feed JSON parse error: $_lastError',
+            tag: 'EngagementService',
+            error: e,
+            stackTrace: stackTrace,
+          );
+          app_logger.Logger.error(
+            'Response body preview: $responsePreview',
+            tag: 'EngagementService',
+          );
           return [];
         }
       } else {
         _lastError =
             'Invalid response from server. Status: ${response?.statusCode}';
-        app_logger.Logger.error('Engagement feed invalid response: $_lastError',
-            tag: 'EngagementService');
+        app_logger.Logger.error(
+          'Engagement feed invalid response: $_lastError',
+          tag: 'EngagementService',
+        );
         return [];
       }
     } catch (e) {
       _lastError = 'Engagement feed exception: ${e.toString()}';
-      app_logger.Logger.error('Engagement feed exception: $_lastError',
-          tag: 'EngagementService', error: e);
+      app_logger.Logger.error(
+        'Engagement feed exception: $_lastError',
+        tag: 'EngagementService',
+        error: e,
+      );
       return [];
     }
   }
@@ -554,13 +637,15 @@ class EngagementService {
       if (raw is! List) return [];
       return raw
           .whereType<Map<String, dynamic>>()
-          .map((e) => {
-                'id': e['id'],
-                'interaction_count': e['interaction_count'],
-                'poll_result': e['poll_result'],
-                'poll_voting_schedule': e['poll_voting_schedule'],
-                'has_interacted': e['has_interacted'],
-              })
+          .map(
+            (e) => {
+              'id': e['id'],
+              'interaction_count': e['interaction_count'],
+              'poll_result': e['poll_result'],
+              'poll_voting_schedule': e['poll_voting_schedule'],
+              'has_interacted': e['has_interacted'],
+            },
+          )
           .toList();
     } catch (e) {
       return [];
@@ -587,9 +672,7 @@ class EngagementService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'fetchPollState',
       );
@@ -638,9 +721,7 @@ class EngagementService {
           uri.path,
           queryParameters: uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{
-            'Content-Type': 'application/json',
-          },
+          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'fetchPollResults',
       );
@@ -687,8 +768,10 @@ class EngagementService {
         '${AppConfig.backendUrl}/wp-json/twork/v1/engagement/interact',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
 
-      app_logger.Logger.info('Submitting interaction for item: $itemId',
-          tag: 'EngagementService');
+      app_logger.Logger.info(
+        'Submitting interaction for item: $itemId',
+        tag: 'EngagementService',
+      );
       app_logger.Logger.info('Interaction URL: $uri', tag: 'EngagementService');
 
       final bodyMap = <String, dynamic>{
@@ -707,6 +790,9 @@ class EngagementService {
       } else if (betAmount != null && betAmount > 0) {
         bodyMap['bet_amount'] = betAmount;
       }
+      /*
+      Old Code: executeWithRetry re-POSTs on timeout after the server may have already
+      applied the vote/deduction → double-transaction risk. No Idempotency-Key on retries.
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.post(
           uri.path,
@@ -719,15 +805,60 @@ class EngagementService {
         ),
         context: 'submitInteraction',
       );
+      */
+
+      // One-shot POST only: single network attempt per user action; backend may dedupe via header.
+      final String idempotencyKey =
+          'eng_interact_${userId}_${itemId}_${sessionId ?? 'nosess'}_${DateTime.now().microsecondsSinceEpoch}';
+      Response<dynamic>? response;
+      try {
+        response = await ApiService.post(
+          uri.path,
+          queryParameters: uri.queryParameters,
+          skipAuth: false,
+          headers: <String, dynamic>{
+            'Content-Type': 'application/json',
+            'Idempotency-Key': idempotencyKey,
+          },
+          data: bodyMap,
+        ).timeout(AppConfig.networkTimeout);
+      } on TimeoutException catch (e) {
+        _lastError = 'Request timed out';
+        app_logger.Logger.error(
+          'Interaction timed out after ${AppConfig.networkTimeout.inSeconds}s',
+          tag: 'EngagementService',
+          error: e,
+        );
+        return {'success': false, 'message': _lastError!};
+      } on DioException catch (e) {
+        response = e.response;
+        if (response == null) {
+          _lastError = NetworkUtils.getErrorMessage(e);
+          app_logger.Logger.error(
+            'Interaction failed (no response body): $_lastError',
+            tag: 'EngagementService',
+            error: e,
+          );
+          return {'success': false, 'message': _lastError ?? 'Network error'};
+        }
+      } catch (e, stackTrace) {
+        _lastError = NetworkUtils.getErrorMessage(e);
+        app_logger.Logger.error(
+          'Interaction request failed: $_lastError',
+          tag: 'EngagementService',
+          error: e,
+          stackTrace: stackTrace,
+        );
+        return {'success': false, 'message': _lastError ?? 'Request failed'};
+      }
 
       if (response == null) {
         _lastError = 'No response from server';
-        app_logger.Logger.error('Interaction failed: $_lastError',
-            tag: 'EngagementService');
-        return {
-          'success': false,
-          'message': _lastError,
-        };
+        app_logger.Logger.error(
+          'Interaction failed: $_lastError',
+          tag: 'EngagementService',
+        );
+        return {'success': false, 'message': _lastError};
       }
 
       // PROFESSIONAL FIX: Parse JSON even on non-2xx responses (e.g. 400 already-voted)
@@ -735,7 +866,9 @@ class EngagementService {
         Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
         data ??= () {
           try {
-            final Object? d = jsonDecode(ApiService.responseBodyString(response));
+            final Object? d = jsonDecode(
+              ApiService.responseBodyString(response),
+            );
             if (d is Map<String, dynamic>) return d;
             if (d is Map) return Map<String, dynamic>.from(d);
           } catch (_) {}
@@ -766,7 +899,8 @@ class EngagementService {
               : null;
           final isCorrect =
               responseData?['is_correct'] ?? data['is_correct'] ?? false;
-          final pointsEarned = responseData?['points_earned'] ??
+          final pointsEarned =
+              responseData?['points_earned'] ??
               data['points_earned'] ??
               data['points_awarded'] ??
               0;
@@ -781,8 +915,9 @@ class EngagementService {
           );
 
           app_logger.Logger.info(
-              'Interaction submitted successfully - Correct: $isCorrect, Points: $pointsEarned',
-              tag: 'EngagementService');
+            'Interaction submitted successfully - Correct: $isCorrect, Points: $pointsEarned',
+            tag: 'EngagementService',
+          );
           return {
             'success': true,
             'is_correct': isCorrect,
@@ -802,14 +937,16 @@ class EngagementService {
 
         // Duplicate detection: prefer explicit flags/codes, fallback to message text
         final code = data['code']?.toString().toLowerCase();
-        final isDuplicate = data['is_duplicate'] == true ||
+        final isDuplicate =
+            data['is_duplicate'] == true ||
             code == 'already_voted' ||
             (_lastError?.toLowerCase().contains('already') ?? false);
 
         if (isDuplicate) {
           app_logger.Logger.warning(
-              'Duplicate interaction detected: $_lastError (code=$code)',
-              tag: 'EngagementService');
+            'Duplicate interaction detected: $_lastError (code=$code)',
+            tag: 'EngagementService',
+          );
           final responseData = data['data'] as Map<String, dynamic>?;
           return {
             'success': false,
@@ -821,8 +958,9 @@ class EngagementService {
         }
 
         app_logger.Logger.error(
-            'Interaction error: $_lastError (status=${response.statusCode})',
-            tag: 'EngagementService');
+          'Interaction error: $_lastError (status=${response.statusCode})',
+          tag: 'EngagementService',
+        );
 
         // Old Code: return {
         // Old Code:   'success': false,
@@ -853,23 +991,27 @@ class EngagementService {
         final responsePreview = full.length > 500
             ? '${full.substring(0, 500)}...'
             : full;
-        app_logger.Logger.error('Interaction parse failed: $_lastError',
-            tag: 'EngagementService', error: e, stackTrace: stackTrace);
-        app_logger.Logger.error('Response body preview: $responsePreview',
-            tag: 'EngagementService');
-        return {
-          'success': false,
-          'message': _lastError,
-        };
+        app_logger.Logger.error(
+          'Interaction parse failed: $_lastError',
+          tag: 'EngagementService',
+          error: e,
+          stackTrace: stackTrace,
+        );
+        app_logger.Logger.error(
+          'Response body preview: $responsePreview',
+          tag: 'EngagementService',
+        );
+        return {'success': false, 'message': _lastError};
       }
     } catch (e, stackTrace) {
       _lastError = NetworkUtils.getErrorMessage(e);
-      app_logger.Logger.error('Interaction exception: $_lastError',
-          tag: 'EngagementService', error: e, stackTrace: stackTrace);
-      return {
-        'success': false,
-        'message': _lastError,
-      };
+      app_logger.Logger.error(
+        'Interaction exception: $_lastError',
+        tag: 'EngagementService',
+        error: e,
+        stackTrace: stackTrace,
+      );
+      return {'success': false, 'message': _lastError};
     }
   }
 }

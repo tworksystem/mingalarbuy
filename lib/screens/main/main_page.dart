@@ -30,12 +30,13 @@ import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
+import 'package:shimmer/shimmer.dart';
 import 'components/custom_bottom_bar.dart';
 import '../product/all_products_page.dart';
 
 class MainPage extends StatefulWidget {
   final int?
-      engagementItemId; // PROFESSIONAL FIX: Support navigation to specific engagement item
+  engagementItemId; // PROFESSIONAL FIX: Support navigation to specific engagement item
 
   const MainPage({super.key, this.engagementItemId});
 
@@ -75,15 +76,15 @@ class _MainPageState extends State<MainPage>
   /// After login, skip one balance baseline when [PointProvider] finishes first hydrate.
   bool _initialPointHydrationSyncHandled = false;
   bool _isResumeRefreshInProgress = false;
-  DateTime? _lastResumeNetworkRefreshAt;
-  static const Duration _resumeNetworkRefreshMinInterval = Duration(minutes: 2);
   DateTime? _lastResumeEngagementRefreshAt;
-  static const Duration _resumeEngagementRefreshMinInterval =
-      Duration(seconds: 30);
+  static const Duration _resumeEngagementRefreshMinInterval = Duration(
+    seconds: 30,
+  );
   static const bool _forceNetworkOnResumeForEngagement = false;
   DateTime? _lastHomeTabEngagementRefreshAt;
-  static const Duration _homeTabEngagementRefreshMinInterval =
-      Duration(seconds: 30);
+  static const Duration _homeTabEngagementRefreshMinInterval = Duration(
+    seconds: 30,
+  );
 
   /// Poll / engagement automated popups: do not show [PointNotificationModal] from MainPage.
   bool _shouldSilencePollRelatedPointModal(PointNotificationEvent event) {
@@ -95,10 +96,11 @@ class _MainPageState extends State<MainPage>
     if (event.type == PointNotificationType.earned) {
       final oid = event.orderId ?? '';
       if (oid.startsWith('engagement:poll:')) return true;
-      final itemType = (event.additionalData?['itemType'] ??
-              event.additionalData?['item_type'])
-          ?.toString()
-          .toLowerCase();
+      final itemType =
+          (event.additionalData?['itemType'] ??
+                  event.additionalData?['item_type'])
+              ?.toString()
+              .toLowerCase();
       if (itemType == 'poll') return true;
     }
     return false;
@@ -136,22 +138,20 @@ class _MainPageState extends State<MainPage>
       if (!authProvider.isAuthenticated || authProvider.user == null) {
         return;
       }
-      final pointProvider = Provider.of<PointProvider>(context, listen: false);
-      final engagementProvider =
-          Provider.of<EngagementProvider>(context, listen: false);
+      final engagementProvider = Provider.of<EngagementProvider>(
+        context,
+        listen: false,
+      );
       final userId = authProvider.user!.id.toString();
       final parsedUserId = int.tryParse(userId);
       if (parsedUserId == null) return;
 
       final now = DateTime.now();
-      final shouldRunNetworkRefresh = _lastResumeNetworkRefreshAt == null ||
-          now.difference(_lastResumeNetworkRefreshAt!) >=
-              _resumeNetworkRefreshMinInterval;
       final shouldRunEngagementNetworkRefresh =
           _forceNetworkOnResumeForEngagement ||
-              _lastResumeEngagementRefreshAt == null ||
-              now.difference(_lastResumeEngagementRefreshAt!) >=
-                  _resumeEngagementRefreshMinInterval;
+          _lastResumeEngagementRefreshAt == null ||
+          now.difference(_lastResumeEngagementRefreshAt!) >=
+              _resumeEngagementRefreshMinInterval;
 
       if (shouldRunEngagementNetworkRefresh) {
         _lastResumeEngagementRefreshAt = now;
@@ -173,25 +173,13 @@ class _MainPageState extends State<MainPage>
         );
       }
 
-      if (shouldRunNetworkRefresh) {
-        _lastResumeNetworkRefreshAt = now;
-        // Ensure point state is reconciled with latest backend state on resume.
-        await pointProvider.refreshPointState(
-          userId: userId,
-          forceRefresh: true,
-          refreshBalance: true,
-          refreshTransactions: true,
-          refreshUserCallback: () => authProvider.refreshUser(),
-        );
-      } else {
-        Logger.info(
-          'Skipping resume network refresh (cooldown active: ${_resumeNetworkRefreshMinInterval.inSeconds}s)',
-          tag: 'MainPage',
-        );
-      }
-
       if (mounted && !_isDisposed) {
-        _myPointWidgetKey.currentState?.refreshBalance();
+        /*
+        Old Code:
+        Resume-time point reconcile lived here alongside engagement refresh.
+        New Code:
+        MyApp (main.dart) runs global [PointProvider.refreshPointState] on resume for all routes.
+        */
         _luckyBoxBannerKey.currentState?.refreshBanner();
       }
     } catch (e, st) {
@@ -228,8 +216,12 @@ class _MainPageState extends State<MainPage>
         },
       );
     } catch (e, st) {
-      Logger.error('Error in _initializeProducts: $e',
-          tag: 'MainPage', error: e, stackTrace: st);
+      Logger.error(
+        'Error in _initializeProducts: $e',
+        tag: 'MainPage',
+        error: e,
+        stackTrace: st,
+      );
       if (mounted && !_isDisposed) {
         setState(() => isLoading = false);
       }
@@ -239,8 +231,7 @@ class _MainPageState extends State<MainPage>
   /// Setup listener for point notification events
   /// PROFESSIONAL FIX: Enhanced listener with better error handling and fallback logic
   void _setupPointNotificationListener() {
-    _pointNotificationSubscription =
-        PointNotificationManager.modalEvents.listen(
+    _pointNotificationSubscription = PointNotificationManager.modalEvents.listen(
       (event) {
         // Only show modal if we're on the home tab and no modal is currently showing
         // Note: PointNotificationManager also handles modal display directly,
@@ -294,8 +285,9 @@ class _MainPageState extends State<MainPage>
   void _setupPointBalanceListener() {
     // Use a periodic check to monitor point balance changes
     // This ensures we catch updates even if notifyListeners doesn't fire
-    _pointChangeCheckTimer =
-        Timer.periodic(const Duration(seconds: 2), (timer) {
+    _pointChangeCheckTimer = Timer.periodic(const Duration(seconds: 2), (
+      timer,
+    ) {
       if (!mounted || _isDisposed) {
         timer.cancel();
         return;
@@ -303,8 +295,10 @@ class _MainPageState extends State<MainPage>
 
       try {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        final pointProvider =
-            Provider.of<PointProvider>(context, listen: false);
+        final pointProvider = Provider.of<PointProvider>(
+          context,
+          listen: false,
+        );
 
         // Only check if user is authenticated
         if (!authProvider.isAuthenticated || authProvider.user == null) {
@@ -356,7 +350,8 @@ class _MainPageState extends State<MainPage>
           // PROFESSIONAL FIX: If the balance update was applied from an incoming push snapshot,
           // skip the "balance-change-based" modal to avoid duplicate / wrong-type popups.
           final lastPushSnapshotAt = pointProvider.lastPushBalanceSnapshotAt;
-          final isRecentPushSnapshot = lastPushSnapshotAt != null &&
+          final isRecentPushSnapshot =
+              lastPushSnapshotAt != null &&
               DateTime.now().difference(lastPushSnapshotAt).inSeconds < 5;
           if (isRecentPushSnapshot) {
             _lastKnownBalance = currentBalance;
@@ -367,7 +362,8 @@ class _MainPageState extends State<MainPage>
           // Only show modal for significant point gains (avoid noise from small updates)
           // Also check if we've already shown a modal recently (within last 5 seconds) to prevent duplicates
           final now = DateTime.now();
-          final recentlyShownModal = _lastModalShownTime != null &&
+          final recentlyShownModal =
+              _lastModalShownTime != null &&
               now.difference(_lastModalShownTime!).inSeconds < 5;
 
           if (pointsGained > 0 &&
@@ -376,8 +372,9 @@ class _MainPageState extends State<MainPage>
               !recentlyShownModal) {
             // Check if this is an engagement-related transaction
             final transactions = pointProvider.transactions;
-            final latestTransaction =
-                transactions.isNotEmpty ? transactions.first : null;
+            final latestTransaction = transactions.isNotEmpty
+                ? transactions.first
+                : null;
 
             // Skip if we've already shown modal for this transaction
             if (latestTransaction != null &&
@@ -416,9 +413,10 @@ class _MainPageState extends State<MainPage>
               currentBalance: currentBalance,
               additionalData:
                   isEngagementPoints && latestTransaction?.orderId != null
-                      ? _extractEngagementDataFromOrderId(
-                          latestTransaction!.orderId!)
-                      : null,
+                  ? _extractEngagementDataFromOrderId(
+                      latestTransaction!.orderId!,
+                    )
+                  : null,
             );
 
             // Track that we've shown modal for this transaction
@@ -468,8 +466,10 @@ class _MainPageState extends State<MainPage>
       }
       return null;
     } catch (e) {
-      Logger.warning('Error extracting engagement data from orderId: $e',
-          tag: 'MainPage');
+      Logger.warning(
+        'Error extracting engagement data from orderId: $e',
+        tag: 'MainPage',
+      );
       return null;
     }
   }
@@ -568,8 +568,8 @@ class _MainPageState extends State<MainPage>
         final now = DateTime.now();
         final shouldRefreshEngagement =
             _lastHomeTabEngagementRefreshAt == null ||
-                now.difference(_lastHomeTabEngagementRefreshAt!) >=
-                    _homeTabEngagementRefreshMinInterval;
+            now.difference(_lastHomeTabEngagementRefreshAt!) >=
+                _homeTabEngagementRefreshMinInterval;
         if (!shouldRefreshEngagement) {
           Logger.info(
             'MainPage: skipping Home revisit engagement refresh '
@@ -583,27 +583,27 @@ class _MainPageState extends State<MainPage>
           return;
         }
         _lastHomeTabEngagementRefreshAt = now;
-        final engagementProvider =
-            Provider.of<EngagementProvider>(context, listen: false);
+        final engagementProvider = Provider.of<EngagementProvider>(
+          context,
+          listen: false,
+        );
         unawaited(
           engagementProvider
-              .refresh(
-            userId: authProvider.user!.id,
-            token: authProvider.token,
-          )
+              .refresh(userId: authProvider.user!.id, token: authProvider.token)
               .then((_) {
-            Logger.info(
-              'MainPage: Home revisit engagement refresh completed',
-              tag: 'MainPage',
-            );
-          }).catchError((Object e, StackTrace st) {
-            Logger.warning(
-              'MainPage: Home revisit engagement refresh failed: $e',
-              tag: 'MainPage',
-              error: e,
-              stackTrace: st,
-            );
-          }),
+                Logger.info(
+                  'MainPage: Home revisit engagement refresh completed',
+                  tag: 'MainPage',
+                );
+              })
+              .catchError((Object e, StackTrace st) {
+                Logger.warning(
+                  'MainPage: Home revisit engagement refresh failed: $e',
+                  tag: 'MainPage',
+                  error: e,
+                  stackTrace: st,
+                );
+              }),
         );
       });
     }
@@ -641,8 +641,10 @@ class _MainPageState extends State<MainPage>
               isLoading = false; // Set loading to false when cache is loaded
             });
           }
-          Logger.info('Loaded ${cachedProducts.length} cached products',
-              tag: 'MainPage');
+          Logger.info(
+            'Loaded ${cachedProducts.length} cached products',
+            tag: 'MainPage',
+          );
         } else {
           Logger.info('Cached products list is empty', tag: 'MainPage');
         }
@@ -656,8 +658,11 @@ class _MainPageState extends State<MainPage>
         }
       }
     } catch (e) {
-      Logger.error('Error loading cached products: $e',
-          tag: 'MainPage', error: e);
+      Logger.error(
+        'Error loading cached products: $e',
+        tag: 'MainPage',
+        error: e,
+      );
       // On error, set loading to false if offline
       // OPTIMIZED: Use cached connectivity service
       if (!_connectivityService.isConnected && mounted) {
@@ -672,8 +677,9 @@ class _MainPageState extends State<MainPage>
   Future<void> _saveProductsToCache(List<Product> productsToCache) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final productsJson =
-          json.encode(productsToCache.map((p) => p.toJson()).toList());
+      final productsJson = json.encode(
+        productsToCache.map((p) => p.toJson()).toList(),
+      );
       await prefs.setString(_cachedProductsKey, productsJson);
       Logger.info('Cached ${productsToCache.length} products', tag: 'MainPage');
     } catch (e) {
@@ -681,8 +687,10 @@ class _MainPageState extends State<MainPage>
     }
   }
 
-  Future<void> _loadProducts(
-      {int page = 1, bool skipLoadingState = false}) async {
+  Future<void> _loadProducts({
+    int page = 1,
+    bool skipLoadingState = false,
+  }) async {
     if (_isDisposed) return;
 
     Logger.info('Loading products for page $page', tag: 'MainPage');
@@ -701,8 +709,10 @@ class _MainPageState extends State<MainPage>
       final isOnline = _connectivityService.isConnected;
 
       if (!isOnline) {
-        Logger.info('Device is offline, loading cached products',
-            tag: 'MainPage');
+        Logger.info(
+          'Device is offline, loading cached products',
+          tag: 'MainPage',
+        );
         // Always try to load cached products when offline
         await _loadCachedProducts();
         // Set loading to false to show cached products
@@ -717,20 +727,21 @@ class _MainPageState extends State<MainPage>
       final stopwatch = Stopwatch()..start();
       final wooProducts =
           await WooCommerceService.getProducts(perPage: 20, page: page).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          Logger.warning('Product loading timeout', tag: 'MainPage');
-          throw Exception('Request timeout');
-        },
-      );
+            const Duration(seconds: 10),
+            onTimeout: () {
+              Logger.warning('Product loading timeout', tag: 'MainPage');
+              throw Exception('Request timeout');
+            },
+          );
       stopwatch.stop();
 
       Logger.logPerformance('Load Products', stopwatch.elapsed);
 
       if (_isDisposed) return;
 
-      final convertedProducts =
-          wooProducts.map((wooProduct) => wooProduct.toProduct()).toList();
+      final convertedProducts = wooProducts
+          .map((wooProduct) => wooProduct.toProduct())
+          .toList();
 
       // Cache products for offline viewing
       await _saveProductsToCache(convertedProducts);
@@ -746,8 +757,10 @@ class _MainPageState extends State<MainPage>
         });
       }
 
-      Logger.info('Successfully loaded ${convertedProducts.length} products',
-          tag: 'MainPage');
+      Logger.info(
+        'Successfully loaded ${convertedProducts.length} products',
+        tag: 'MainPage',
+      );
     } catch (e, stackTrace) {
       Logger.logError('Load Products', e, stackTrace: stackTrace);
       // On error, try to load cached products as fallback
@@ -781,10 +794,14 @@ class _MainPageState extends State<MainPage>
     // Get providers once
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final pointProvider = Provider.of<PointProvider>(context, listen: false);
-    final spinWheelProvider =
-        Provider.of<SpinWheelProvider>(context, listen: false);
-    final engagementProvider =
-        Provider.of<EngagementProvider>(context, listen: false);
+    final spinWheelProvider = Provider.of<SpinWheelProvider>(
+      context,
+      listen: false,
+    );
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
     final user = authProvider.user;
 
     try {
@@ -794,11 +811,14 @@ class _MainPageState extends State<MainPage>
 
       // Task 1: Load products (independent operation)
       // Skip loading state since we already set it above
-      refreshTasks
-          .add(_loadProducts(page: 1, skipLoadingState: true).catchError((e) {
-        Logger.warning('Error loading products during refresh: $e',
-            tag: 'MainPage');
-      }));
+      refreshTasks.add(
+        _loadProducts(page: 1, skipLoadingState: true).catchError((e) {
+          Logger.warning(
+            'Error loading products during refresh: $e',
+            tag: 'MainPage',
+          );
+        }),
+      );
 
       // Task 2: Refresh user-related data (if authenticated)
       if (authProvider.isAuthenticated &&
@@ -835,8 +855,10 @@ class _MainPageState extends State<MainPage>
                 ),
               ]);
             } catch (e) {
-              Logger.warning('Error refreshing user data during refresh: $e',
-                  tag: 'MainPage');
+              Logger.warning(
+                'Error refreshing user data during refresh: $e',
+                tag: 'MainPage',
+              );
               // Error is logged, continue execution (don't throw)
             }
           })(),
@@ -863,8 +885,12 @@ class _MainPageState extends State<MainPage>
         _luckyBoxBannerKey.currentState?.refreshBanner();
       }
     } catch (e, stackTrace) {
-      Logger.error('Error during refresh: $e',
-          tag: 'MainPage', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error during refresh: $e',
+        tag: 'MainPage',
+        error: e,
+        stackTrace: stackTrace,
+      );
     } finally {
       // Ensure loading state is cleared even if errors occur
       if (mounted) {
@@ -877,9 +903,7 @@ class _MainPageState extends State<MainPage>
 
   @override
   Widget build(BuildContext context) {
-    return NetworkStatusBanner(
-      child: _buildMainContent(context),
-    );
+    return NetworkStatusBanner(child: _buildMainContent(context));
   }
 
   Widget _buildMainContent(BuildContext context) {
@@ -888,9 +912,7 @@ class _MainPageState extends State<MainPage>
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Flexible(
-            child: const _PlanetMMHeader(),
-          ),
+          Flexible(child: const _PlanetMMHeader()),
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -898,9 +920,7 @@ class _MainPageState extends State<MainPage>
               NotificationBadge(
                 child: IconButton(
                   onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => NotificationsPage(),
-                    ),
+                    MaterialPageRoute(builder: (_) => NotificationsPage()),
                   ),
                   icon: const Icon(Icons.notifications),
                   tooltip: 'Notifications',
@@ -934,9 +954,7 @@ class _MainPageState extends State<MainPage>
                     ),
                     slivers: [
                       // AppBar
-                      SliverToBoxAdapter(
-                        child: appBar,
-                      ),
+                      SliverToBoxAdapter(child: appBar),
                       // My Point Widget - Creative display
                       SliverToBoxAdapter(
                         child: Padding(
@@ -973,7 +991,7 @@ class _MainPageState extends State<MainPage>
               ),
             ),
             // Only Home and Profile tabs are accessible from the bottom bar.
-            ProfilePageNew()
+            ProfilePageNew(),
           ],
         ),
       ),
@@ -1019,8 +1037,10 @@ class _HomeActionButtonsState extends State<_HomeActionButtons>
         });
       }
     } catch (e) {
-      Logger.warning('Error handling usage tracking lifecycle: $e',
-          tag: 'MainPage');
+      Logger.warning(
+        'Error handling usage tracking lifecycle: $e',
+        tag: 'MainPage',
+      );
     }
   }
 
@@ -1047,7 +1067,11 @@ class _HomeActionButtonsState extends State<_HomeActionButtons>
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.fromLTRB(
-          4, 8, 4, 0), // No bottom padding to prevent extra space
+        4,
+        8,
+        4,
+        0,
+      ), // No bottom padding to prevent extra space
       width: double.infinity,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1057,9 +1081,7 @@ class _HomeActionButtonsState extends State<_HomeActionButtons>
           _ModernActionButton(
             onPressed: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const AllProductsPage(),
-                ),
+                MaterialPageRoute(builder: (_) => const AllProductsPage()),
               );
             },
             icon: Icons.shopping_bag_rounded,
@@ -1125,8 +1147,10 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         return;
       }
     } catch (e) {
-      Logger.warning('Vibration package failed, using HapticFeedback: $e',
-          tag: 'LuckyBox');
+      Logger.warning(
+        'Vibration package failed, using HapticFeedback: $e',
+        tag: 'LuckyBox',
+      );
     }
 
     try {
@@ -1149,12 +1173,15 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         return txn.orderId == 'luckybox' || txn.orderId!.contains('luckybox');
       }
 
-      final luckyBoxTransactions =
-          transactions.where((txn) => isLuckyBoxTransaction(txn)).toList();
+      final luckyBoxTransactions = transactions
+          .where((txn) => isLuckyBoxTransaction(txn))
+          .toList();
 
       if (luckyBoxTransactions.isEmpty) {
-        Logger.info('LuckyBox: No luckybox transactions found, showing default',
-            tag: 'LuckyBox');
+        Logger.info(
+          'LuckyBox: No luckybox transactions found, showing default',
+          tag: 'LuckyBox',
+        );
         return '🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ';
       }
 
@@ -1165,8 +1192,9 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
       if (hasPending) {
         _approvedStateTimestamps.clear();
         Logger.info(
-            'LuckyBox: Pending transaction found (most recent: ${mostRecentTransaction.id}, status: ${mostRecentTransaction.status})',
-            tag: 'LuckyBox');
+          'LuckyBox: Pending transaction found (most recent: ${mostRecentTransaction.id}, status: ${mostRecentTransaction.status})',
+          tag: 'LuckyBox',
+        );
         return '⏳ တောင်းဆိုမှု ဆောင်ရွက်နေပါတယ်';
       }
 
@@ -1178,27 +1206,31 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
           _approvedStateTimestamps[transactionId] = now;
           _startApprovedStateResetTimer();
           Logger.info(
-              'LuckyBox: First time detecting approved transaction, storing timestamp: $transactionId',
-              tag: 'LuckyBox');
+            'LuckyBox: First time detecting approved transaction, storing timestamp: $transactionId',
+            tag: 'LuckyBox',
+          );
         } else {
           final timeSinceFirstSeen = now.difference(firstSeenTime);
           if (timeSinceFirstSeen.inSeconds < 60) {
             Logger.info(
-                'LuckyBox: Approved transaction detected ${timeSinceFirstSeen.inSeconds} seconds ago: $transactionId',
-                tag: 'LuckyBox');
+              'LuckyBox: Approved transaction detected ${timeSinceFirstSeen.inSeconds} seconds ago: $transactionId',
+              tag: 'LuckyBox',
+            );
             return '🎉 ကံကောင်းပါတယ်!';
           } else {
             Logger.info(
-                'LuckyBox: Approved message shown for ${timeSinceFirstSeen.inSeconds} seconds (>= 60s), showing default: $transactionId',
-                tag: 'LuckyBox');
+              'LuckyBox: Approved message shown for ${timeSinceFirstSeen.inSeconds} seconds (>= 60s), showing default: $transactionId',
+              tag: 'LuckyBox',
+            );
             return '🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ';
           }
         }
         return '🎉 ကံကောင်းပါတယ်!';
       }
 
-      final approvedTransactions =
-          luckyBoxTransactions.where((txn) => txn.isApproved).toList();
+      final approvedTransactions = luckyBoxTransactions
+          .where((txn) => txn.isApproved)
+          .toList();
       if (approvedTransactions.isNotEmpty) {
         approvedTransactions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
         final mostRecentApproved = approvedTransactions.first;
@@ -1209,46 +1241,58 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
           _approvedStateTimestamps[transactionId] = now;
           _startApprovedStateResetTimer();
           Logger.info(
-              'LuckyBox: First time detecting approved transaction (fallback): $transactionId',
-              tag: 'LuckyBox');
+            'LuckyBox: First time detecting approved transaction (fallback): $transactionId',
+            tag: 'LuckyBox',
+          );
           return '🎉 ကံကောင်းပါတယ်!';
         } else {
           final timeSinceFirstSeen = now.difference(firstSeenTime);
           if (timeSinceFirstSeen.inSeconds < 60) {
             Logger.info(
-                'LuckyBox: Approved transaction detected ${timeSinceFirstSeen.inSeconds} seconds ago (fallback): $transactionId',
-                tag: 'LuckyBox');
+              'LuckyBox: Approved transaction detected ${timeSinceFirstSeen.inSeconds} seconds ago (fallback): $transactionId',
+              tag: 'LuckyBox',
+            );
             return '🎉 ကံကောင်းပါတယ်!';
           } else {
             Logger.info(
-                'LuckyBox: Approved message shown for ${timeSinceFirstSeen.inSeconds} seconds (>= 60s), showing default (fallback): $transactionId',
-                tag: 'LuckyBox');
+              'LuckyBox: Approved message shown for ${timeSinceFirstSeen.inSeconds} seconds (>= 60s), showing default (fallback): $transactionId',
+              tag: 'LuckyBox',
+            );
             return '🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ';
           }
         }
       }
 
       Logger.info(
-          'LuckyBox: No pending or recent approved transactions, showing default',
-          tag: 'LuckyBox');
+        'LuckyBox: No pending or recent approved transactions, showing default',
+        tag: 'LuckyBox',
+      );
       return '🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ';
     } catch (e, stackTrace) {
-      Logger.error('Error getting Lucky Box subtitle: $e',
-          tag: 'LuckyBox', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error getting Lucky Box subtitle: $e',
+        tag: 'LuckyBox',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return '🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ';
     }
   }
 
   Widget _buildAnimatedApprovedSubtitle(String text, Color baseColor) {
     return AnimatedBuilder(
-      animation: Listenable.merge(
-          [_bounceAnimation, _pulseAnimation, _shimmerAnimation]),
+      animation: Listenable.merge([
+        _bounceAnimation,
+        _pulseAnimation,
+        _shimmerAnimation,
+      ]),
       builder: (context, child) {
         final bounceScale = 0.7 + (_bounceAnimation.value * 0.3);
         final pulseScale = _pulseAnimation.value;
         final finalScale = bounceScale * pulseScale;
 
-        final glowIntensity = 0.6 +
+        final glowIntensity =
+            0.6 +
             (0.4 *
                 (0.5 + 0.5 * math.sin(_shimmerAnimation.value * 2 * math.pi)));
 
@@ -1260,14 +1304,16 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
               borderRadius: BorderRadius.circular(6),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.yellow.shade400
-                      .withValues(alpha: 0.7 * glowIntensity),
+                  color: Colors.yellow.shade400.withValues(
+                    alpha: 0.7 * glowIntensity,
+                  ),
                   blurRadius: 12 * finalScale,
                   spreadRadius: 2 * finalScale,
                 ),
                 BoxShadow(
-                  color: Colors.amber.shade400
-                      .withValues(alpha: 0.5 * glowIntensity),
+                  color: Colors.amber.shade400.withValues(
+                    alpha: 0.5 * glowIntensity,
+                  ),
                   blurRadius: 20 * finalScale,
                   spreadRadius: 1 * finalScale,
                 ),
@@ -1287,14 +1333,16 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
                     offset: const Offset(0, 1),
                   ),
                   Shadow(
-                    color: Colors.yellow.shade400
-                        .withValues(alpha: 0.8 * glowIntensity),
+                    color: Colors.yellow.shade400.withValues(
+                      alpha: 0.8 * glowIntensity,
+                    ),
                     blurRadius: 8,
                     offset: const Offset(0, 0),
                   ),
                   Shadow(
-                    color: Colors.amber.shade400
-                        .withValues(alpha: 0.6 * glowIntensity),
+                    color: Colors.amber.shade400.withValues(
+                      alpha: 0.6 * glowIntensity,
+                    ),
                     blurRadius: 12,
                     offset: const Offset(0, 0),
                   ),
@@ -1309,8 +1357,9 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
 
   void _startApprovedStateResetTimer() {
     _approvedStateResetTimer?.cancel();
-    _approvedStateResetTimer =
-        Timer.periodic(const Duration(seconds: 5), (timer) {
+    _approvedStateResetTimer = Timer.periodic(const Duration(seconds: 5), (
+      timer,
+    ) {
       if (!mounted) {
         timer.cancel();
         return;
@@ -1324,8 +1373,9 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         if (timeSinceFirstSeen.inSeconds >= 60) {
           shouldUpdate = true;
           Logger.info(
-              'LuckyBox: Approved state expired (${timeSinceFirstSeen.inSeconds}s >= 60s) for transaction: ${entry.key}',
-              tag: 'LuckyBox');
+            'LuckyBox: Approved state expired (${timeSinceFirstSeen.inSeconds}s >= 60s) for transaction: ${entry.key}',
+            tag: 'LuckyBox',
+          );
           break;
         }
       }
@@ -1342,8 +1392,9 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
 
   void _startPeriodicTransactionRefresh() {
     _transactionRefreshTimer?.cancel();
-    _transactionRefreshTimer =
-        Timer.periodic(const Duration(seconds: 10), (timer) {
+    _transactionRefreshTimer = Timer.periodic(const Duration(seconds: 10), (
+      timer,
+    ) {
       if (!mounted) {
         timer.cancel();
         return;
@@ -1364,8 +1415,10 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         await pointProvider.loadTransactions(userId, forceRefresh: true);
       }
     } catch (e) {
-      Logger.warning('Error refreshing transactions silently: $e',
-          tag: 'LuckyBox');
+      Logger.warning(
+        'Error refreshing transactions silently: $e',
+        tag: 'LuckyBox',
+      );
     }
   }
 
@@ -1384,8 +1437,10 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
   void _loadLuckyBoxConfig() {
     if (!mounted) return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final spinWheelProvider =
-        Provider.of<SpinWheelProvider>(context, listen: false);
+    final spinWheelProvider = Provider.of<SpinWheelProvider>(
+      context,
+      listen: false,
+    );
     final userId = authProvider.user?.id.toString();
     if (authProvider.isAuthenticated && userId != null) {
       spinWheelProvider.loadConfigForUser(userId);
@@ -1457,8 +1512,10 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final spinWheelProvider =
-        Provider.of<SpinWheelProvider>(context, listen: false);
+    final spinWheelProvider = Provider.of<SpinWheelProvider>(
+      context,
+      listen: false,
+    );
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final userId = authProvider.user?.id.toString();
 
@@ -1492,8 +1549,8 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
             }
 
             return _ModernActionButton(
-              onPressed: (!spinWheelProvider.isEnabled ||
-                      spinWheelProvider.isLoading)
+              onPressed:
+                  (!spinWheelProvider.isEnabled || spinWheelProvider.isLoading)
                   ? () {}
                   : () async {
                       _triggerVibration();
@@ -1509,8 +1566,10 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
                       final uid = authProvider.user!.id.toString();
 
                       try {
-                        await pointProvider.loadTransactions(uid,
-                            forceRefresh: true);
+                        await pointProvider.loadTransactions(
+                          uid,
+                          forceRefresh: true,
+                        );
                         final transactions = pointProvider.transactions;
 
                         bool isLuckyBoxTransaction(PointTransaction txn) {
@@ -1525,17 +1584,22 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
 
                         if (luckyBoxTransactions.isNotEmpty) {
                           luckyBoxTransactions.sort(
-                              (a, b) => b.createdAt.compareTo(a.createdAt));
+                            (a, b) => b.createdAt.compareTo(a.createdAt),
+                          );
                           final mostRecentTransaction =
                               luckyBoxTransactions.first;
 
-                          final hasPending =
-                              luckyBoxTransactions.any((txn) => txn.isPending);
+                          final hasPending = luckyBoxTransactions.any(
+                            (txn) => txn.isPending,
+                          );
                           if (hasPending) {
                             await LuckyBoxRequestSheet.showPendingStatus(
-                                context);
-                            await pointProvider.loadTransactions(uid,
-                                forceRefresh: true);
+                              context,
+                            );
+                            await pointProvider.loadTransactions(
+                              uid,
+                              forceRefresh: true,
+                            );
                             return;
                           }
 
@@ -1548,66 +1612,83 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
                             final now = DateTime.now();
 
                             if (firstSeenTime != null) {
-                              final timeSinceFirstSeen =
-                                  now.difference(firstSeenTime);
+                              final timeSinceFirstSeen = now.difference(
+                                firstSeenTime,
+                              );
 
                               if (timeSinceFirstSeen.inSeconds < 60) {
                                 Logger.info(
-                                    'LuckyBox: Approved transaction detected ${timeSinceFirstSeen.inSeconds} seconds ago, showing approved status: $transactionId',
-                                    tag: 'LuckyBox');
+                                  'LuckyBox: Approved transaction detected ${timeSinceFirstSeen.inSeconds} seconds ago, showing approved status: $transactionId',
+                                  tag: 'LuckyBox',
+                                );
                                 shouldShowApprovedStatus = true;
                               } else {
                                 Logger.info(
-                                    'LuckyBox: Approved transaction older than 60 seconds (${timeSinceFirstSeen.inSeconds}s), skipping approved status and allowing new luckybox: $transactionId',
-                                    tag: 'LuckyBox');
+                                  'LuckyBox: Approved transaction older than 60 seconds (${timeSinceFirstSeen.inSeconds}s), skipping approved status and allowing new luckybox: $transactionId',
+                                  tag: 'LuckyBox',
+                                );
                               }
                             } else {
                               _approvedStateTimestamps[transactionId] =
                                   DateTime.now();
                               _startApprovedStateResetTimer();
                               Logger.info(
-                                  'LuckyBox: First time detecting approved transaction on button click, storing timestamp: $transactionId',
-                                  tag: 'LuckyBox');
+                                'LuckyBox: First time detecting approved transaction on button click, storing timestamp: $transactionId',
+                                tag: 'LuckyBox',
+                              );
                               shouldShowApprovedStatus = true;
                             }
 
                             if (shouldShowApprovedStatus) {
                               await LuckyBoxRequestSheet.showApprovedStatus(
-                                  context);
-                              await pointProvider.loadBalance(uid,
-                                  forceRefresh: true);
-                              await pointProvider.loadTransactions(uid,
-                                  forceRefresh: true);
+                                context,
+                              );
+                              await pointProvider.loadBalance(
+                                uid,
+                                forceRefresh: true,
+                              );
+                              await pointProvider.loadTransactions(
+                                uid,
+                                forceRefresh: true,
+                              );
                               return;
                             }
                           }
                         }
 
-                        final hasPendingLuckyBox = transactions.any((txn) =>
-                            isLuckyBoxTransaction(txn) && txn.isPending);
+                        final hasPendingLuckyBox = transactions.any(
+                          (txn) => isLuckyBoxTransaction(txn) && txn.isPending,
+                        );
 
                         if (hasPendingLuckyBox) {
                           await LuckyBoxRequestSheet.showPendingStatus(context);
                           return;
                         }
                       } catch (e) {
-                        Logger.warning('Error checking transaction status: $e',
-                            tag: 'LuckyBox');
+                        Logger.warning(
+                          'Error checking transaction status: $e',
+                          tag: 'LuckyBox',
+                        );
                       }
 
                       Logger.info(
-                          'LuckyBox: Opening new luckybox (no pending transactions and approved transaction is older than 60s or no approved transactions)',
-                          tag: 'LuckyBox');
+                        'LuckyBox: Opening new luckybox (no pending transactions and approved transaction is older than 60s or no approved transactions)',
+                        tag: 'LuckyBox',
+                      );
                       await LuckyBoxRequestSheet.show(
                         context,
                         submit: () =>
                             spinWheelProvider.openLuckyBox(userId: uid),
                         onSuccess: () async {
                           _approvedStateTimestamps.clear();
-                          await pointProvider.loadBalance(uid,
-                              forceRefresh: true);
-                          await pointProvider.loadTransactions(uid,
-                              forceRefresh: true);
+                          await pointProvider.loadBalance(
+                            uid,
+                            forceRefresh: true,
+                          );
+                          await pointProvider.loadTransactions(
+                            uid,
+                            forceRefresh: true,
+                          );
                         },
                       );
                     },
@@ -1715,11 +1796,7 @@ class _ModernActionButton extends StatelessWidget {
                       : iconColor.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(
-                  icon,
-                  color: iconColor,
-                  size: 24,
-                ),
+                child: Icon(icon, color: iconColor, size: 24),
               ),
               const SizedBox(width: 16),
               // Text content
@@ -1788,10 +1865,7 @@ class _PlanetMMHeader extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
-              colors: [
-                AppTheme.deepBlue,
-                mediumYellow,
-              ],
+              colors: [AppTheme.deepBlue, mediumYellow],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
@@ -1925,7 +1999,11 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
 
     return Container(
       margin: const EdgeInsets.fromLTRB(
-          4, 8, 4, 0), // Remove bottom margin to prevent extra space
+        4,
+        8,
+        4,
+        0,
+      ), // Remove bottom margin to prevent extra space
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: Container(
@@ -1954,12 +2032,21 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
   }
 
   // OPTIMIZED: Cache regex patterns to avoid recreation
-  static final RegExp _headingRegex = RegExp(r'<h[1-6][^>]*>(.*?)</h[1-6]>',
-      caseSensitive: false, dotAll: true);
-  static final RegExp _paraRegex =
-      RegExp(r'<p[^>]*>(.*?)</p>', caseSensitive: false, dotAll: true);
-  static final RegExp _divRegex =
-      RegExp(r'<div[^>]*>(.*?)</div>', caseSensitive: false, dotAll: true);
+  static final RegExp _headingRegex = RegExp(
+    r'<h[1-6][^>]*>(.*?)</h[1-6]>',
+    caseSensitive: false,
+    dotAll: true,
+  );
+  static final RegExp _paraRegex = RegExp(
+    r'<p[^>]*>(.*?)</p>',
+    caseSensitive: false,
+    dotAll: true,
+  );
+  static final RegExp _divRegex = RegExp(
+    r'<div[^>]*>(.*?)</div>',
+    caseSensitive: false,
+    dotAll: true,
+  );
   static final RegExp _htmlTagRegex = RegExp(r'<[^>]*>');
   static final RegExp _whitespaceRegex = RegExp(r'\s+');
 
@@ -2019,61 +2106,63 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
         // Display headings
         if (headings.isNotEmpty)
           ...headings
-              .map<Widget>((heading) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      heading,
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: secondaryColor,
-                        height: 1.3,
-                      ),
+              .map<Widget>(
+                (heading) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    heading,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: secondaryColor,
+                      height: 1.3,
                     ),
-                  ))
+                  ),
+                ),
+              )
               .toList(),
 
         // Display paragraphs
         if (paragraphs.isNotEmpty)
           ...paragraphs
-              .map<Widget>((para) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      para,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: onSurfaceColor,
-                        height: 1.5,
-                      ),
+              .map<Widget>(
+                (para) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    para,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: onSurfaceColor,
+                      height: 1.5,
                     ),
-                  ))
+                  ),
+                ),
+              )
               .toList(),
 
         // Display div content
         if (divs.isNotEmpty && paragraphs.isEmpty)
           ...divs
-              .map<Widget>((div) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(
-                      div,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: onSurfaceColor,
-                        height: 1.5,
-                      ),
+              .map<Widget>(
+                (div) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    div,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: onSurfaceColor,
+                      height: 1.5,
                     ),
-                  ))
+                  ),
+                ),
+              )
               .toList(),
 
         // Fallback: display all text if no structured content
         if (!hasStructuredContent && allText.isNotEmpty)
           Text(
             allText,
-            style: TextStyle(
-              fontSize: 14,
-              color: onSurfaceColor,
-              height: 1.5,
-            ),
+            style: TextStyle(fontSize: 14, color: onSurfaceColor, height: 1.5),
           ),
       ],
     );
@@ -2081,8 +2170,10 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
 
   // OPTIMIZED: Cache regex patterns for image extraction
   static final RegExp _imgPattern = RegExp('<img', caseSensitive: false);
-  static final RegExp _srcPattern =
-      RegExp('src\\s*=\\s*["\']([^"\']+)["\']', caseSensitive: false);
+  static final RegExp _srcPattern = RegExp(
+    'src\\s*=\\s*["\']([^"\']+)["\']',
+    caseSensitive: false,
+  );
 
   Widget _buildImageFromHtml(String html) {
     // Extract image URLs from HTML - use simpler approach
@@ -2116,9 +2207,10 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
               height: 200,
               // Improved image quality with better caching and error handling
               filterQuality: FilterQuality.high, // High quality rendering
-              cacheWidth: (MediaQuery.of(context).size.width *
-                      MediaQuery.of(context).devicePixelRatio)
-                  .round(), // Optimize for device resolution
+              cacheWidth:
+                  (MediaQuery.of(context).size.width *
+                          MediaQuery.of(context).devicePixelRatio)
+                      .round(), // Optimize for device resolution
               errorBuilder: (context, error, stackTrace) {
                 return const SizedBox.shrink();
               },
@@ -2131,7 +2223,7 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
                     child: CircularProgressIndicator(
                       value: loadingProgress.expectedTotalBytes != null
                           ? loadingProgress.cumulativeBytesLoaded /
-                              loadingProgress.expectedTotalBytes!
+                                loadingProgress.expectedTotalBytes!
                           : null,
                     ),
                   ),
@@ -2182,8 +2274,9 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
       if (_lastUserId != null && _lastUserId != currentUserId) {
         // User account changed - reset widget state
         Logger.info(
-            'MyPointWidget - User account changed from $_lastUserId to $currentUserId, resetting state',
-            tag: 'MyPointWidget');
+          'MyPointWidget - User account changed from $_lastUserId to $currentUserId, resetting state',
+          tag: 'MyPointWidget',
+        );
         setState(() {
           _isRefreshing = false;
         });
@@ -2234,8 +2327,9 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
     // PROFESSIONAL FIX: Check if user changed - if so, reset and reload
     if (_lastUserId != null && _lastUserId != userId) {
       Logger.info(
-          'MyPointWidget - User changed during load, resetting and reloading',
-          tag: 'MyPointWidget');
+        'MyPointWidget - User changed during load, resetting and reloading',
+        tag: 'MyPointWidget',
+      );
       _lastUserId = userId;
     }
 
@@ -2251,8 +2345,10 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
     }
 
     try {
-      Logger.info('MyPointWidget - Loading balance for user: $userId',
-          tag: 'MyPointWidget');
+      Logger.info(
+        'MyPointWidget - Loading balance for user: $userId',
+        tag: 'MyPointWidget',
+      );
 
       // PROFESSIONAL FIX: Wrap in timeout so loading never gets stuck (e.g. API hang)
       /*
@@ -2306,11 +2402,16 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
         });
       }
 
-      Logger.info('MyPointWidget - Balance loaded successfully',
-          tag: 'MyPointWidget');
+      Logger.info(
+        'MyPointWidget - Balance loaded successfully',
+        tag: 'MyPointWidget',
+      );
     } catch (e) {
-      Logger.error('Error loading balance in MyPointWidget: $e',
-          tag: 'MyPointWidget', error: e);
+      Logger.error(
+        'Error loading balance in MyPointWidget: $e',
+        tag: 'MyPointWidget',
+        error: e,
+      );
       if (mounted) {
         setState(() {
           _isRefreshing = false;
@@ -2374,22 +2475,28 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
     return Consumer<AuthProvider>(
       builder: (context, authProvider, _) {
         final pointProvider = context.read<PointProvider>();
-        final int balanceFromProvider =
-            context.select<PointProvider, int>((p) => p.currentBalance);
-        final bool pointIsLoading =
-            context.select<PointProvider, bool>((p) => p.isLoading);
-        final String? pointErrorMessage =
-            context.select<PointProvider, String?>((p) => p.errorMessage);
-        final bool pointInitialHydrateDone =
-            context.select<PointProvider, bool>(
-          (p) => p.hasCompletedSessionInitialBalanceLoad,
+        final int balanceFromProvider = context.select<PointProvider, int>(
+          (p) => p.currentBalance,
         );
-        final bool hasPointBalanceObject =
-            context.select<PointProvider, bool>((p) => p.balance != null);
+        final bool pointIsLoading = context.select<PointProvider, bool>(
+          (p) => p.isLoading,
+        );
+        final String? pointErrorMessage = context
+            .select<PointProvider, String?>((p) => p.errorMessage);
+        final bool pointInitialHydrateDone = context
+            .select<PointProvider, bool>(
+              (p) => p.hasCompletedSessionInitialBalanceLoad,
+            );
+        final bool hasPointBalanceObject = context.select<PointProvider, bool>(
+          (p) => p.balance != null,
+        );
+        final bool isSyncingBalance = context.select<PointProvider, bool>(
+          (p) => p.isSyncingBalance,
+        );
         Logger.info(
           'DEBUG_SYNC: My PNP Widget Rebuilt with balance: $balanceFromProvider '
           '(auth=${authProvider.isAuthenticated}, isLoading=$pointIsLoading, '
-          'error=$pointErrorMessage)',
+          'error=$pointErrorMessage, isSyncingBalance=$isSyncingBalance)',
           tag: 'MyPointWidget',
         );
         final theme = Theme.of(context);
@@ -2471,8 +2578,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
             (pointProvider.isLoading && !hasBackendValue);
         */
 
-        // Home My PNP must listen directly to PointProvider so stale user-meta values
-        // (for example an old 16200 snapshot) never override the live balance.
+        // Home My PNP — single source of truth: [PointProvider.currentBalance] only.
+        // Do not use [AuthProvider.userPointsBalance] here (meta can lag the points REST ledger).
         Logger.info(
           'MyPointWidget - Using PointProvider balance directly: $balanceFromProvider',
           tag: 'MyPointWidget',
@@ -2505,13 +2612,23 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
         final bool trustworthyBalanceForUi =
             pointInitialHydrateDone || hasPointBalanceObject;
         final bool showBalancePlaceholder = !trustworthyBalanceForUi;
-        final int displayBalanceValue =
-            trustworthyBalanceForUi ? balanceFromProvider : 0;
+        final int displayBalanceValue = trustworthyBalanceForUi
+            ? balanceFromProvider
+            : 0;
         final bool showLoadingStrip =
             _isRefreshing || (pointIsLoading && showBalancePlaceholder);
-        final bool showSyncWarning = !showLoadingStrip &&
+        final bool showSyncWarning =
+            !showLoadingStrip &&
             pointErrorMessage != null &&
             pointErrorMessage.isNotEmpty;
+
+        final String balanceSyncSubtitle = context
+            .select<PointProvider, String>((p) => p.balanceSyncLoadingSubtitle);
+        final bool balanceSyncStrictUi = context.select<PointProvider, bool>(
+          (p) => p.balanceSyncUsesExtendedPollWinUi,
+        );
+        final bool myPnpPointsReconciling =
+            isSyncingBalance || (pointIsLoading && trustworthyBalanceForUi);
 
         return RepaintBoundary(
           child: Container(
@@ -2540,191 +2657,261 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
             ),
             child: Material(
               color: Colors.transparent,
-              child: InkWell(
-                onTap: () {
-                  // Navigate to My Points page (Point History with Exchange Process)
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const PointHistoryPage(),
-                    ),
-                  );
-                },
-                borderRadius: BorderRadius.circular(20),
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Row(
-                    children: [
-                      // Icon with gradient background
-                      Container(
-                        width: 56,
-                        height: 56,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              colorScheme.primary,
-                              colorScheme.secondary,
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                          ),
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(
-                              color: colorScheme.primary.withValues(alpha: 0.3),
-                              blurRadius: 8,
-                              spreadRadius: 0,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: const Icon(
-                          Icons.account_balance_wallet_rounded,
-                          color: Colors.white,
-                          size: 28,
-                        ),
+              child: AbsorbPointer(
+                absorbing: myPnpPointsReconciling,
+                child: InkWell(
+                  onTap: () {
+                    // Navigate to My Points page (Point History with Exchange Process)
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const PointHistoryPage(),
                       ),
-                      const SizedBox(width: 16),
-                      // Point balance info
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              'My PNP',
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: colorScheme.onSurface
-                                    .withValues(alpha: 0.6),
-                                fontWeight: FontWeight.w500,
-                                letterSpacing: 0.5,
-                              ),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(20),
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Row(
+                      children: [
+                        // Icon with gradient background
+                        Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                colorScheme.primary,
+                                colorScheme.secondary,
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
                             ),
-                            const SizedBox(height: 4),
-                            if (showLoadingStrip)
-                              SizedBox(
-                                height: 24,
-                                width: 80,
-                                child: LinearProgressIndicator(
-                                  backgroundColor:
-                                      colorScheme.surfaceContainerHighest,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    colorScheme.primary,
-                                  ),
-                                  minHeight: 2,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: colorScheme.primary.withValues(
+                                  alpha: 0.3,
                                 ),
-                              )
-                            else if (showBalancePlaceholder)
-                              SizedBox(
-                                height: 32,
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Text(
-                                    '···',
-                                    style: theme.textTheme.headlineMedium
-                                        ?.copyWith(
-                                      color: colorScheme.primary,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 28,
-                                      height: 1.2,
-                                      letterSpacing: 6,
+                                blurRadius: 8,
+                                spreadRadius: 0,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(
+                            Icons.account_balance_wallet_rounded,
+                            color: Colors.white,
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        // Point balance info
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'My PNP',
+                                style: theme.textTheme.labelMedium?.copyWith(
+                                  color: colorScheme.onSurface.withValues(
+                                    alpha: 0.6,
+                                  ),
+                                  fontWeight: FontWeight.w500,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              if (showLoadingStrip)
+                                SizedBox(
+                                  height: 24,
+                                  width: 80,
+                                  child: LinearProgressIndicator(
+                                    backgroundColor:
+                                        colorScheme.surfaceContainerHighest,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      colorScheme.primary,
+                                    ),
+                                    minHeight: 2,
+                                  ),
+                                )
+                              else if (showBalancePlaceholder)
+                                SizedBox(
+                                  height: 32,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      '···',
+                                      style: theme.textTheme.headlineMedium
+                                          ?.copyWith(
+                                            color: colorScheme.primary,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 28,
+                                            height: 1.2,
+                                            letterSpacing: 6,
+                                          ),
                                     ),
                                   ),
-                                ),
-                              )
-                            else
-                              // Display PointProvider balance (canonical).
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.baseline,
-                                textBaseline: TextBaseline.alphabetic,
-                                children: [
-                                  Text(
-                                    'ⓟ',
-                                    style: theme.textTheme.bodyMedium?.copyWith(
-                                      color: colorScheme.onSurface
-                                          .withValues(alpha: 0.7),
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Selector<PointProvider, int>(
-                                    selector: (_, provider) =>
-                                        provider.currentBalance,
-                                    builder: (context, animatedBalance, __) {
-                                      final target = trustworthyBalanceForUi
-                                          ? animatedBalance
-                                          : displayBalanceValue;
-                                      return _AnimatedPointCounter(
-                                        value: target,
-                                        duration:
-                                            const Duration(milliseconds: 650),
-                                        style: theme.textTheme.headlineMedium
-                                            ?.copyWith(
-                                          color: colorScheme.primary,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 28,
-                                          height: 1.2,
+                                )
+                              else if (isSyncingBalance)
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      height: 28,
+                                      width: 140,
+                                      child: Shimmer.fromColors(
+                                        baseColor:
+                                            colorScheme.surfaceContainerHighest,
+                                        highlightColor: colorScheme.primary
+                                            .withValues(
+                                              alpha: balanceSyncStrictUi
+                                                  ? 0.42
+                                                  : 0.25,
+                                            ),
+                                        period: Duration(
+                                          milliseconds: balanceSyncStrictUi
+                                              ? 700
+                                              : 1300,
                                         ),
-                                      );
-                                    },
-                                  ),
-                                  if (showSyncWarning) ...[
-                                    const SizedBox(width: 8),
-                                    Tooltip(
-                                      message: pointErrorMessage,
-                                      child: IconButton(
-                                        visualDensity: VisualDensity.compact,
-                                        constraints: const BoxConstraints(
-                                          minWidth: 28,
-                                          minHeight: 28,
+                                        child: Container(
+                                          height: 26,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
                                         ),
-                                        padding: EdgeInsets.zero,
-                                        splashRadius: 16,
-                                        icon: Icon(
-                                          Icons.error_outline_rounded,
-                                          size: 18,
-                                          color: Colors.orange.shade700,
-                                        ),
-                                        onPressed: () async {
-                                          final user = authProvider.user;
-                                          if (user == null) return;
-                                          final uid = user.id.toString();
-                                          await pointProvider.loadBalance(
-                                            uid,
-                                            forceRefresh: true,
-                                          );
-                                          if (!context.mounted) return;
-                                          final msg =
-                                              pointProvider.errorMessage;
-                                          if (msg != null && msg.isNotEmpty) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(
-                                              SnackBar(content: Text(msg)),
-                                            );
-                                          }
-                                        },
                                       ),
                                     ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      balanceSyncSubtitle,
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                            color: colorScheme.onSurface
+                                                .withValues(alpha: 0.55),
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                    ),
                                   ],
-                                ],
-                              ),
-                          ],
+                                )
+                              else
+                                // Display PointProvider balance (canonical).
+                                Opacity(
+                                  opacity:
+                                      (myPnpPointsReconciling &&
+                                          !isSyncingBalance)
+                                      ? 0.48
+                                      : 1.0,
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.baseline,
+                                    textBaseline: TextBaseline.alphabetic,
+                                    children: [
+                                      Text(
+                                        'ⓟ',
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                              color: colorScheme.onSurface
+                                                  .withValues(alpha: 0.7),
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Selector<PointProvider, int>(
+                                        selector: (_, provider) =>
+                                            provider.currentBalance,
+                                        builder:
+                                            (context, animatedBalance, __) {
+                                              final target =
+                                                  trustworthyBalanceForUi
+                                                  ? animatedBalance
+                                                  : displayBalanceValue;
+                                              return _AnimatedPointCounter(
+                                                value: target,
+                                                duration: const Duration(
+                                                  milliseconds: 650,
+                                                ),
+                                                style: theme
+                                                    .textTheme
+                                                    .headlineMedium
+                                                    ?.copyWith(
+                                                      color:
+                                                          colorScheme.primary,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      fontSize: 28,
+                                                      height: 1.2,
+                                                    ),
+                                              );
+                                            },
+                                      ),
+                                      if (showSyncWarning) ...[
+                                        const SizedBox(width: 8),
+                                        Tooltip(
+                                          message: pointErrorMessage,
+                                          child: IconButton(
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            constraints: const BoxConstraints(
+                                              minWidth: 28,
+                                              minHeight: 28,
+                                            ),
+                                            padding: EdgeInsets.zero,
+                                            splashRadius: 16,
+                                            icon: Icon(
+                                              Icons.error_outline_rounded,
+                                              size: 18,
+                                              color: Colors.orange.shade700,
+                                            ),
+                                            onPressed: () async {
+                                              final user = authProvider.user;
+                                              if (user == null) return;
+                                              final uid = user.id.toString();
+                                              await pointProvider.loadBalance(
+                                                uid,
+                                                forceRefresh: true,
+                                              );
+                                              if (!context.mounted) return;
+                                              final msg =
+                                                  pointProvider.errorMessage;
+                                              if (msg != null &&
+                                                  msg.isNotEmpty) {
+                                                ScaffoldMessenger.of(
+                                                  context,
+                                                ).showSnackBar(
+                                                  SnackBar(content: Text(msg)),
+                                                );
+                                              }
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
-                      ),
-                      // Arrow icon
-                      Container(
-                        width: 36,
-                        height: 36,
-                        decoration: BoxDecoration(
-                          color: colorScheme.primaryContainer,
-                          borderRadius: BorderRadius.circular(10),
+                        // Arrow icon
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            color: colorScheme.onPrimaryContainer,
+                            size: 16,
+                          ),
                         ),
-                        child: Icon(
-                          Icons.arrow_forward_ios_rounded,
-                          color: colorScheme.onPrimaryContainer,
-                          size: 16,
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -2757,19 +2944,18 @@ class _AnimatedPointCounterState
 
   @override
   void forEachTween(TweenVisitor<dynamic> visitor) {
-    _valueTween = visitor(
-      _valueTween,
-      widget.value,
-      (dynamic value) => IntTween(begin: value as int),
-    ) as IntTween?;
+    _valueTween =
+        visitor(
+              _valueTween,
+              widget.value,
+              (dynamic value) => IntTween(begin: value as int),
+            )
+            as IntTween?;
   }
 
   @override
   Widget build(BuildContext context) {
     final current = _valueTween?.evaluate(animation) ?? widget.value;
-    return Text(
-      '$current',
-      style: widget.style,
-    );
+    return Text('$current', style: widget.style);
   }
 }

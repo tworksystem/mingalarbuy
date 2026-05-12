@@ -4949,6 +4949,141 @@ class TWork_Rewards_System
     }
 
     /**
+     * Admin View Results: HTML snippet for poll option-wise vote totals (cards layout).
+     * Used on initial render and via AJAX (option_vote_summary_html).
+     *
+     * @param array      $quiz_data Decoded quiz_data with 'options' list.
+     * @param array|null $stats      Return value of get_engagement_item_statistics() or null.
+     * @return string HTML (no outer #poll-option-vote-summary wrapper).
+     */
+    private function build_poll_option_vote_summary_html($quiz_data, $stats)
+    {
+        if (!is_array($quiz_data) || empty($quiz_data['options']) || !is_array($quiz_data['options'])) {
+            return '<p style="margin:0;color:#666;font-size:13px;text-align:center;">'
+                . esc_html__('Poll options are not configured.', 'twork-rewards')
+                . '</p>';
+        }
+        if (!is_array($stats) || empty($stats['vote_counts']) || !is_array($stats['vote_counts'])) {
+            return '<p style="margin:0;color:#666;font-size:13px;text-align:center;">'
+                . esc_html__('Vote statistics could not be loaded.', 'twork-rewards')
+                . '</p>';
+        }
+
+        $options = $quiz_data['options'];
+        $vote_counts = $stats['vote_counts'];
+        $vote_percentages = isset($stats['vote_percentages']) && is_array($stats['vote_percentages'])
+            ? $stats['vote_percentages']
+            : array();
+        $total_votes = isset($stats['total_votes']) ? max(0, (int) $stats['total_votes']) : 0;
+
+        $amount_counts = isset($stats['amount_counts']) && is_array($stats['amount_counts'])
+            ? $stats['amount_counts']
+            : array();
+
+        $accent_colors = array('#667eea', '#764ba2', '#2196F3', '#4CAF50', '#FF9800', '#EC407A');
+
+        ob_start();
+        ?>
+        <div class="twork-poll-option-vote-summary" style="margin:0 0 4px 0;">
+            <p style="margin:0 0 14px 0;font-size:12px;color:#666;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">
+                <?php esc_html_e('Votes by option', 'twork-rewards'); ?>
+                <span style="font-weight:400;color:#999;text-transform:none;letter-spacing:0;">
+                    — <?php echo esc_html(sprintf(
+                        /* translators: %d: total vote count across options */
+                        _n('%d total vote recorded', '%d total votes recorded', $total_votes, 'twork-rewards'),
+                        $total_votes
+                    )); ?>
+                </span>
+            </p>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
+                <?php
+                $card_i = 0;
+                foreach ($options as $option_key => $raw_opt) {
+                    $votes = 0;
+                    if (isset($vote_counts[$option_key])) {
+                        $votes = max(0, (int) $vote_counts[$option_key]);
+                    } elseif (is_numeric($option_key) && isset($vote_counts[(int) $option_key])) {
+                        $votes = max(0, (int) $vote_counts[(int) $option_key]);
+                    }
+
+                    $pct = 0.0;
+                    if (isset($vote_percentages[$option_key])) {
+                        $pct = (float) $vote_percentages[$option_key];
+                    } elseif (is_numeric($option_key) && isset($vote_percentages[(int) $option_key])) {
+                        $pct = (float) $vote_percentages[(int) $option_key];
+                    }
+
+                    $pnp_option_total = 0;
+                    if (isset($amount_counts[$option_key])) {
+                        $pnp_option_total = max(0, (int) $amount_counts[$option_key]);
+                    } elseif (is_numeric($option_key) && isset($amount_counts[(int) $option_key])) {
+                        $pnp_option_total = max(0, (int) $amount_counts[(int) $option_key]);
+                    }
+
+                    $idx = is_numeric($option_key) ? (int) $option_key : $card_i;
+                    if (is_array($raw_opt) && isset($raw_opt['text'])) {
+                        $label = trim((string) $raw_opt['text']);
+                    } else {
+                        $label = trim((string) $raw_opt);
+                    }
+                    if ($label === '') {
+                        /* translators: %d: 1-based option index for display */
+                        $label = sprintf(__('Option %d', 'twork-rewards'), $idx + 1);
+                    }
+                    $accent = $accent_colors[$card_i % count($accent_colors)];
+                    $card_i++;
+                    ?>
+                    <div class="twork-poll-option-card" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:18px 16px;box-shadow:0 2px 4px rgba(0,0,0,0.05);border-left:4px solid <?php echo esc_attr($accent); ?>;">
+                        <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.45px;margin-bottom:6px;">
+                            <?php echo esc_html(sprintf(
+                                /* translators: %d: 1-based option index */
+                                __('Option %d', 'twork-rewards'),
+                                $idx + 1
+                            )); ?>
+                        </div>
+                        <div style="font-size:15px;font-weight:600;color:#333;line-height:1.35;margin-bottom:10px;word-break:break-word;">
+                            <?php echo esc_html($label); ?>
+                        </div>
+                        <?php
+                        // --- OLD CODE START ---
+                        // Previous card footer: vote count headline + gray "votes · %%-%" line only — no per-option PNP total.
+                        // --- OLD CODE END ---
+                        ?>
+                        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 14px;margin-bottom:6px;">
+                            <div style="font-size:28px;font-weight:700;color:<?php echo esc_attr($accent); ?>;line-height:1.2;">
+                                <?php echo (int) $votes; ?> <span style="font-size:13px;font-weight:600;color:#666;"><?php esc_html_e('votes', 'twork-rewards'); ?></span>
+                            </div>
+                            <span style="color:#cbd5e1;font-weight:400;" aria-hidden="true">|</span>
+                            <div style="font-size:14px;color:#10b981;font-weight:600;line-height:1.2;">
+                                <?php
+                                echo esc_html(sprintf(
+                                    /* translators: %s: formatted integer PNP amount */
+                                    __('%s PNP', 'twork-rewards'),
+                                    number_format((int) $pnp_option_total)
+                                ));
+                                ?>
+                            </div>
+                        </div>
+                        <div style="font-size:12px;color:#999;margin-top:2px;">
+                            <?php
+                            echo esc_html(sprintf(
+                                /* translators: %s: vote share percentage */
+                                __('Share of picks: %s%%', 'twork-rewards'),
+                                number_format((float) $pct, (floor((float) $pct) === (float) $pct ? 0 : 2))
+                            ));
+                            ?>
+                        </div>
+                    </div>
+                    <?php
+                }
+                ?>
+            </div>
+        </div>
+        <?php
+        return (string) ob_get_clean();
+    }
+
+    /**
      * Format bet amount for admin display.
      * When bet_amount_per_option exists: "Option A: 2, Option B: 3, Option C: 1 (6 PNP)"
      * Otherwise: single amount "2 (6000 PNP)" or "2"
@@ -7034,13 +7169,17 @@ class TWork_Rewards_System
         $total_votes = 0;
         $vote_counts = array();
         $vote_percentages = array();
+        $amount_counts = array();
 
-        // Initialize vote counts for each option
+        // Initialize vote counts and PNP aggregates for each option
         foreach (array_keys($options) as $index) {
             $vote_counts[$index] = 0;
+            $amount_counts[$index] = 0;
         }
 
         if ($item['type'] === 'poll') {
+            // --- OLD CODE START ---
+            /*
             // Poll: support multiple selection (comma-separated indices e.g. "0,1,3")
             $rows = $wpdb->get_results($wpdb->prepare(
                 "SELECT interaction_value FROM $table_interactions WHERE item_id = %d",
@@ -7059,6 +7198,83 @@ class TWork_Rewards_System
                     $idx = is_numeric($part) ? (int) $part : -1;
                     if ($idx >= 0 && $idx < $num_options && array_key_exists($idx, $vote_counts)) {
                         $vote_counts[$idx]++;
+                    }
+                }
+            }
+            $total_votes = array_sum($vote_counts);
+            */
+            // --- OLD CODE END ---
+
+            // Poll: include bet fields for per-option PNP totals (aligns with calculate_poll_user_bet_amount_pnp bet_step logic).
+            $bet_step = 1000;
+            if (isset($quiz_data['bet_amount_step'])) {
+                $bet_step = max(1, (int) $quiz_data['bet_amount_step']);
+            } elseif (isset($quiz_data['poll_base_cost'])) {
+                $base_poll = max(0, (int) $quiz_data['poll_base_cost']);
+                if ($base_poll > 0) {
+                    $bet_step = ($base_poll < 1000) ? ($base_poll * 1000) : $base_poll;
+                }
+            }
+
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT interaction_value, bet_amount, bet_amount_per_option FROM $table_interactions WHERE item_id = %d",
+                $item_id
+            ), ARRAY_A);
+            $num_options = count($options);
+            if (!is_array($rows)) {
+                $rows = array();
+            }
+
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $value = isset($row['interaction_value']) ? trim((string) $row['interaction_value']) : '';
+                // One entry per comma-separated pick (duplicates allowed) — aligns legacy PNP: bet_step * bet_amt * count(picks).
+                $selected_occurrences = array();
+                if ($value !== '') {
+                    foreach (array_map('trim', explode(',', $value)) as $part) {
+                        if ($part === '') {
+                            continue;
+                        }
+                        $idx = is_numeric($part) ? (int) $part : -1;
+                        if ($idx >= 0 && $idx < $num_options && array_key_exists($idx, $vote_counts)) {
+                            $vote_counts[$idx]++;
+                            $selected_occurrences[] = $idx;
+                        }
+                    }
+                }
+
+                $per_option = null;
+                $per_opt_raw = isset($row['bet_amount_per_option']) ? $row['bet_amount_per_option'] : null;
+                if (is_array($per_opt_raw) && !empty($per_opt_raw)) {
+                    $per_option = $per_opt_raw;
+                } elseif (is_string($per_opt_raw) && trim($per_opt_raw) !== '') {
+                    $decoded_bo = json_decode($per_opt_raw, true);
+                    if (is_array($decoded_bo) && !empty($decoded_bo)) {
+                        $per_option = $decoded_bo;
+                    }
+                }
+
+                if (is_array($per_option) && !empty($per_option)) {
+                    foreach ($per_option as $idx_str => $amt_unit) {
+                        if (!is_scalar($amt_unit) && !is_numeric($amt_unit)) {
+                            continue;
+                        }
+                        $oi = is_numeric($idx_str) ? (int) $idx_str : (int) trim((string) $idx_str);
+                        if ($oi < 0 || $oi >= $num_options || !array_key_exists($oi, $amount_counts)) {
+                            continue;
+                        }
+                        $units = max(1, (int) $amt_unit);
+                        $amount_counts[$oi] += $bet_step * $units;
+                    }
+                } else {
+                    $bet_amt_legacy = isset($row['bet_amount']) ? max(1, (int) $row['bet_amount']) : 1;
+                    $share_pnp = $bet_step * $bet_amt_legacy;
+                    foreach ($selected_occurrences as $si) {
+                        if (array_key_exists($si, $amount_counts)) {
+                            $amount_counts[$si] += $share_pnp;
+                        }
                     }
                 }
             }
@@ -7096,10 +7312,24 @@ class TWork_Rewards_System
         // Get correct answer index if available
         $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : null;
 
+        // --- OLD CODE START ---
+        /*
         return array(
             'total_votes' => $total_votes,
             'vote_counts' => $vote_counts,
             'vote_percentages' => $vote_percentages,
+            'options' => $options,
+            'correct_index' => $correct_index,
+            'has_correct_answer' => $correct_index !== null && $correct_index >= 0,
+        );
+        */
+        // --- OLD CODE END ---
+
+        return array(
+            'total_votes' => $total_votes,
+            'vote_counts' => $vote_counts,
+            'vote_percentages' => $vote_percentages,
+            'amount_counts' => $amount_counts,
             'options' => $options,
             'correct_index' => $correct_index,
             'has_correct_answer' => $correct_index !== null && $correct_index >= 0,
@@ -19421,6 +19651,22 @@ class TWork_Rewards_System
                         <?php endif; ?>
 
                         <h3 style="margin-top: 30px; margin-bottom: 15px; font-size: 18px; color: #333;"><?php esc_html_e('Detailed Results', 'twork-rewards'); ?></h3>
+                        <?php
+                        // --- OLD CODE START ---
+                        // Previously: this heading flowed directly into <div class="twork-engagement-table"> with no poll option vote summary block.
+                        // --- OLD CODE END ---
+                        ?>
+                        <div id="poll-option-vote-summary" style="margin-bottom: 24px;">
+                            <?php
+                            if ($item->type === 'poll') {
+                                $poll_summary_stats_initial = $this->get_engagement_item_statistics((int) $id);
+                                echo $this->build_poll_option_vote_summary_html(
+                                    is_array($quiz_data) ? $quiz_data : array(),
+                                    is_array($poll_summary_stats_initial) ? $poll_summary_stats_initial : null
+                                );
+                            }
+                            ?>
+                        </div>
                         <div class="twork-engagement-table">
                             <table class="wp-list-table widefat fixed striped">
                                 <thead>
@@ -19529,6 +19775,13 @@ class TWork_Rewards_System
 
                                         // Update Table Rows
                                         $('#live-results-tbody').html(response.data.html_rows);
+
+                                        // --- OLD CODE START ---
+                                        // Only table + resolve panel were refreshed; poll option vote summary had no live DOM update.
+                                        // --- OLD CODE END ---
+                                        if (Object.prototype.hasOwnProperty.call(response.data, 'option_vote_summary_html')) {
+                                            $('#poll-option-vote-summary').html(response.data.option_vote_summary_html);
+                                        }
 
                                         // Hide Resolve Panel dynamically if another admin resolved it
                                         if (response.data.is_resolved) {
@@ -21242,6 +21495,17 @@ class TWork_Rewards_System
         }
         $html_rows = ob_get_clean();
 
+        $option_vote_summary_html = '';
+        if ($item->type === 'poll') {
+            $poll_ajax_stats = $this->get_engagement_item_statistics($item_id);
+            $option_vote_summary_html = $this->build_poll_option_vote_summary_html(
+                is_array($quiz_data) ? $quiz_data : array(),
+                is_array($poll_ajax_stats) ? $poll_ajax_stats : null
+            );
+        }
+
+        // --- OLD CODE START ---
+        /*
         wp_send_json_success(array(
             'stats' => array(
                 'total' => $total,
@@ -21251,6 +21515,20 @@ class TWork_Rewards_System
             ),
             'is_resolved' => ($correct_index !== null && $correct_index >= 0),
             'html_rows' => $html_rows
+        ));
+        */
+        // --- OLD CODE END ---
+
+        wp_send_json_success(array(
+            'stats' => array(
+                'total' => $total,
+                'correct' => $correct_count,
+                'incorrect' => $total - $correct_count,
+                'points' => $total_points
+            ),
+            'is_resolved' => ($correct_index !== null && $correct_index >= 0),
+            'html_rows' => $html_rows,
+            'option_vote_summary_html' => $option_vote_summary_html,
         ));
     }
 

@@ -9,18 +9,14 @@ import '../services/auth_service.dart';
 import '../services/connectivity_service.dart';
 import '../services/missed_notification_recovery_service.dart';
 import '../services/push_notification_service.dart';
+import '../services/auth_session_cache_service.dart';
 import '../services/canonical_point_balance_sync.dart';
+import '../services/point_balance_sync_lock.dart';
 import 'in_app_notification_provider.dart';
 import '../utils/logger.dart';
 import 'point_provider.dart';
 
-enum AuthStatus {
-  initial,
-  loading,
-  authenticated,
-  unauthenticated,
-  error,
-}
+enum AuthStatus { initial, loading, authenticated, unauthenticated, error }
 
 class AuthProvider with ChangeNotifier {
   static final AuthProvider _instance = AuthProvider._internal();
@@ -33,10 +29,13 @@ class AuthProvider with ChangeNotifier {
   bool _hasInitialized = false;
   String? _cachedToken; // Cache token for synchronous access
 
+  /*
   /// After poll win / push snapshot, do not let [refreshUser] overwrite points
   /// with a lower API value until this time (server read replicas / meta lag).
+  /// DISABLED: always trust API balance from [refreshUser] (align with PointProvider).
   DateTime? _pointsBalanceNonDowngradeUntil;
   int _lastAppliedPointsBalance = 0;
+  */
 
   // Getters
   AuthStatus get status => _status;
@@ -77,11 +76,14 @@ class AuthProvider with ChangeNotifier {
       final isLoggedIn = await AuthService.isLoggedIn();
 
       if (isLoggedIn && storedUser != null) {
-        Logger.debug('User is logged in, verifying token...',
-            tag: 'AuthProvider');
         Logger.debug(
-            'Stored user: ${storedUser.firstName} ${storedUser.lastName}, Phone: ${storedUser.phone}',
-            tag: 'AuthProvider');
+          'User is logged in, verifying token...',
+          tag: 'AuthProvider',
+        );
+        Logger.debug(
+          'Stored user: ${storedUser.firstName} ${storedUser.lastName}, Phone: ${storedUser.phone}',
+          tag: 'AuthProvider',
+        );
 
         // Use stored user immediately to avoid blocking on network
         _user = storedUser;
@@ -96,54 +98,73 @@ class AuthProvider with ChangeNotifier {
           final connectivityService = _getConnectivityService();
           if (connectivityService != null && connectivityService.isConnected) {
             // Try to verify token with timeout (non-blocking)
-            final currentUser = await AuthService.getCurrentUser().timeout(
-              const Duration(seconds: 5),
-              onTimeout: () {
-                Logger.debug('Token verification timeout, using stored user',
-                    tag: 'AuthProvider');
-                return null;
-              },
-            ).catchError((e) {
-              Logger.debug('Token verification error: $e, using stored user',
-                  tag: 'AuthProvider', error: e);
-              return null;
-            });
+            final currentUser = await AuthService.getCurrentUser()
+                .timeout(
+                  const Duration(seconds: 5),
+                  onTimeout: () {
+                    Logger.debug(
+                      'Token verification timeout, using stored user',
+                      tag: 'AuthProvider',
+                    );
+                    return null;
+                  },
+                )
+                .catchError((e) {
+                  Logger.debug(
+                    'Token verification error: $e, using stored user',
+                    tag: 'AuthProvider',
+                    error: e,
+                  );
+                  return null;
+                });
 
             if (currentUser != null) {
-              Logger.debug('Token is valid, user authenticated',
-                  tag: 'AuthProvider');
               Logger.debug(
-                  'Current user: ${currentUser.firstName} ${currentUser.lastName}, Phone: ${currentUser.phone}',
-                  tag: 'AuthProvider');
+                'Token is valid, user authenticated',
+                tag: 'AuthProvider',
+              );
+              Logger.debug(
+                'Current user: ${currentUser.firstName} ${currentUser.lastName}, Phone: ${currentUser.phone}',
+                tag: 'AuthProvider',
+              );
               _user = currentUser;
               _status = AuthStatus.authenticated;
               notifyListeners();
               _reconcilePushAndInAppAfterAuth();
             } else {
               Logger.debug(
-                  'Token verification failed, but keeping user logged in with stored data',
-                  tag: 'AuthProvider');
+                'Token verification failed, but keeping user logged in with stored data',
+                tag: 'AuthProvider',
+              );
             }
           } else {
-            Logger.debug('Offline, using stored user data',
-                tag: 'AuthProvider');
+            Logger.debug(
+              'Offline, using stored user data',
+              tag: 'AuthProvider',
+            );
           }
         } catch (e) {
           Logger.debug(
-              'Background token verification error: $e, using stored user',
-              tag: 'AuthProvider',
-              error: e);
+            'Background token verification error: $e, using stored user',
+            tag: 'AuthProvider',
+            error: e,
+          );
           // Keep using stored user on error
         }
       } else {
-        Logger.debug('User not logged in or no stored user',
-            tag: 'AuthProvider');
+        Logger.debug(
+          'User not logged in or no stored user',
+          tag: 'AuthProvider',
+        );
         _status = AuthStatus.unauthenticated;
         _setLoading(false);
       }
     } catch (e) {
-      Logger.error('Error during initialization: $e',
-          tag: 'AuthProvider', error: e);
+      Logger.error(
+        'Error during initialization: $e',
+        tag: 'AuthProvider',
+        error: e,
+      );
       // On error, try to use stored user data to keep user logged in
       // This prevents auto-logout on network errors or temporary issues
       try {
@@ -152,8 +173,9 @@ class AuthProvider with ChangeNotifier {
 
         if (isLoggedIn && storedUser != null) {
           Logger.warning(
-              'Error occurred but keeping user logged in with stored data',
-              tag: 'AuthProvider');
+            'Error occurred but keeping user logged in with stored data',
+            tag: 'AuthProvider',
+          );
           _user = storedUser;
           _status = AuthStatus.authenticated;
           _reconcilePushAndInAppAfterAuth();
@@ -162,8 +184,11 @@ class AuthProvider with ChangeNotifier {
           _status = AuthStatus.unauthenticated;
         }
       } catch (fallbackError) {
-        Logger.error('Fallback also failed: $fallbackError',
-            tag: 'AuthProvider', error: fallbackError);
+        Logger.error(
+          'Fallback also failed: $fallbackError',
+          tag: 'AuthProvider',
+          error: fallbackError,
+        );
         _setError('Failed to initialize authentication: $e');
         _status = AuthStatus.unauthenticated;
       } finally {
@@ -186,45 +211,59 @@ class AuthProvider with ChangeNotifier {
   // in-app list was not re-hydrated from storage after new login.
   /// Register FCM token with backend (once [user_data] exists) and reload in-app notification list.
   void _reconcilePushAndInAppAfterAuth() {
-    unawaited(Future(() async {
-      try {
-        await PushNotificationService().syncFcmTokenToBackendForCurrentUser();
-        await InAppNotificationProvider.instance.loadNotifications();
-      } catch (e, stackTrace) {
-        Logger.debug(
-          'Post-auth push / in-app reconcile: $e',
-          tag: 'AuthProvider',
-          error: e,
-          stackTrace: stackTrace,
-        );
-      }
-    }));
+    unawaited(
+      Future(() async {
+        try {
+          await PushNotificationService().syncFcmTokenToBackendForCurrentUser();
+          await InAppNotificationProvider.instance.loadNotifications();
+        } catch (e, stackTrace) {
+          Logger.debug(
+            'Post-auth push / in-app reconcile: $e',
+            tag: 'AuthProvider',
+            error: e,
+            stackTrace: stackTrace,
+          );
+        }
+      }),
+    );
   }
 
   /// Login user
   Future<AuthResponse> login(LoginRequest request) async {
     _setLoading(true);
     _clearError();
+    final int? previousUserId = _user?.id;
 
     try {
       final response = await AuthService.login(request);
 
       if (response.success && response.user != null) {
-        _user = response.user;
+        final newUser = response.user!;
+        // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — no explicit cache clear on login switch.
+        // if (response.success && response.user != null) {
+        //   _user = response.user;
+        final bool switchedAccount =
+            previousUserId != null && previousUserId != newUser.id;
+        if (switchedAccount) {
+          await AuthSessionCacheService.clearAllSessionCaches();
+        }
+        _user = newUser;
         _status = AuthStatus.authenticated;
         // PROFESSIONAL FIX: Update cached token immediately after login
         // This ensures token is available synchronously for subsequent API calls
         if (response.token != null) {
           _cachedToken = response.token;
           Logger.info(
-              'AuthProvider.login - Token cached after successful login',
-              tag: 'AuthProvider');
+            'AuthProvider.login - Token cached after successful login',
+            tag: 'AuthProvider',
+          );
         } else {
           // Fallback: Load token from storage if not in response
           _cachedToken = await AuthService.getStoredToken();
           Logger.info(
-              'AuthProvider.login - Token loaded from storage (not in response)',
-              tag: 'AuthProvider');
+            'AuthProvider.login - Token loaded from storage (not in response)',
+            tag: 'AuthProvider',
+          );
         }
         notifyListeners();
         // Old Code: `notifyListeners()` only; backend never got FCM token after fresh login.
@@ -249,26 +288,35 @@ class AuthProvider with ChangeNotifier {
   Future<AuthResponse> register(RegisterRequest request) async {
     _setLoading(true);
     _clearError();
+    final int? previousUserId = _user?.id;
 
     try {
       final response = await AuthService.register(request);
 
       if (response.success && response.user != null) {
-        _user = response.user;
+        final newUser = response.user!;
+        final bool switchedAccount =
+            previousUserId != null && previousUserId != newUser.id;
+        if (switchedAccount) {
+          await AuthSessionCacheService.clearAllSessionCaches();
+        }
+        _user = newUser;
         _status = AuthStatus.authenticated;
         // PROFESSIONAL FIX: Update cached token after registration
         // This ensures token is available synchronously for subsequent API calls
         if (response.token != null) {
           _cachedToken = response.token;
           Logger.info(
-              'AuthProvider.register - Token cached after successful registration',
-              tag: 'AuthProvider');
+            'AuthProvider.register - Token cached after successful registration',
+            tag: 'AuthProvider',
+          );
         } else {
           // Fallback: Load token from storage if not in response
           _cachedToken = await AuthService.getStoredToken();
           Logger.info(
-              'AuthProvider.register - Token loaded from storage (not in response)',
-              tag: 'AuthProvider');
+            'AuthProvider.register - Token loaded from storage (not in response)',
+            tag: 'AuthProvider',
+          );
         }
         notifyListeners();
         // Old Code: `notifyListeners()` only; same FCM registration gap as login.
@@ -406,21 +454,34 @@ class AuthProvider with ChangeNotifier {
     try {
       // Get user ID before clearing
       final userId = _user?.id.toString();
-      
+
       await AuthService.logout();
+      // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — logout did not clear cart / product cache.
+      await AuthSessionCacheService.clearAllSessionCaches();
       _user = null;
       _cachedToken = null; // Clear cached token
-      _pointsBalanceNonDowngradeUntil = null;
-      _lastAppliedPointsBalance = 0;
+      // Old Code: 35s non-downgrade guard reset (guard disabled).
+      // _pointsBalanceNonDowngradeUntil = null;
+      // _lastAppliedPointsBalance = 0;
       _status = AuthStatus.unauthenticated;
       _clearError();
-      
+
       // PROFESSIONAL FIX: Clear notification tracking on logout
       // This ensures clean state when user switches accounts
       if (userId != null) {
         MissedNotificationRecoveryService.clearTrackingForUser(userId);
       }
-      
+
+      await PointProvider.instance
+          .handleAuthStateChange(isAuthenticated: false, userId: null)
+          .catchError((Object e) {
+            Logger.warning(
+              'Logout: PointProvider.handleAuthStateChange failed: $e',
+              tag: 'AuthProvider',
+              error: e,
+            );
+          });
+
       notifyListeners();
     } catch (e) {
       _setError('Logout failed: $e');
@@ -429,68 +490,55 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
-  /// Refresh user data
+  /// Refresh user data (serialized with point-balance mutations via [PointBalanceSyncLock]).
   Future<void> refreshUser() async {
     if (!isAuthenticated) return;
 
-    try {
-      Logger.info('Refreshing user data...', tag: 'AuthProvider');
-      // PROFESSIONAL FIX: Refresh cached token before getting user data
-      // This ensures token is up-to-date after user switch
-      _cachedToken = await AuthService.getStoredToken();
-      if (_cachedToken == null) {
-        Logger.warning('No token found in storage during refresh',
-            tag: 'AuthProvider');
-      }
-
-      final currentUser = await AuthService.getCurrentUser();
-      if (currentUser != null) {
-        Logger.info(
-            'Refreshed user data - Name: ${currentUser.firstName} ${currentUser.lastName}, Phone: ${currentUser.phone}',
-            tag: 'AuthProvider');
-        _user = currentUser;
-
-        // Non-downgrade: do not overwrite points with lower API value right after
-        // poll win / push snapshot (server read replicas or meta lag).
-        final now = DateTime.now();
-        if (_pointsBalanceNonDowngradeUntil != null &&
-            now.isBefore(_pointsBalanceNonDowngradeUntil!) &&
-            _lastAppliedPointsBalance > 0) {
-          final apiBalance = _extractPointsFromCustomFields(
-              currentUser.customFields);
-          if (apiBalance < _lastAppliedPointsBalance) {
-            Logger.info(
-                'AuthProvider: preserving applied balance $_lastAppliedPointsBalance (API returned $apiBalance)',
-                tag: 'AuthProvider');
-            final patched =
-                Map<String, String>.from(currentUser.customFields);
-            final balanceStr = _lastAppliedPointsBalance.toString();
-            patched['points_balance'] = balanceStr;
-            patched['my_points'] = balanceStr;
-            patched['my_point'] = balanceStr;
-            _user = currentUser.copyWith(customFields: patched);
-          }
-        }
-
-        // Ensure token is still cached after refresh
+    await PointBalanceSyncLock.run(() async {
+      try {
+        Logger.info('Refreshing user data...', tag: 'AuthProvider');
+        // PROFESSIONAL FIX: Refresh cached token before getting user data
+        // This ensures token is up-to-date after user switch
+        _cachedToken = await AuthService.getStoredToken();
         if (_cachedToken == null) {
-          _cachedToken = await AuthService.getStoredToken();
+          Logger.warning(
+            'No token found in storage during refresh',
+            tag: 'AuthProvider',
+          );
         }
-        notifyListeners();
-        Logger.info('Notified listeners of user data update',
-            tag: 'AuthProvider');
-      } else {
-        Logger.warning('Failed to get current user, but keeping user logged in',
-            tag: 'AuthProvider');
-        // Don't logout on refresh failure - user might still be authenticated
-        // Only logout if explicitly called or during initialization
+
+        final currentUser = await AuthService.getCurrentUser();
+        if (currentUser != null) {
+          Logger.info(
+            'Refreshed user data - Name: ${currentUser.firstName} ${currentUser.lastName}, Phone: ${currentUser.phone}',
+            tag: 'AuthProvider',
+          );
+          _user = currentUser;
+
+          // Ensure token is still cached after refresh
+          if (_cachedToken == null) {
+            _cachedToken = await AuthService.getStoredToken();
+          }
+          notifyListeners();
+          Logger.info(
+            'Notified listeners of user data update',
+            tag: 'AuthProvider',
+          );
+        } else {
+          Logger.warning(
+            'Failed to get current user, but keeping user logged in',
+            tag: 'AuthProvider',
+          );
+        }
+      } catch (e) {
+        Logger.error(
+          'Error refreshing user data: $e',
+          tag: 'AuthProvider',
+          error: e,
+        );
+        _setError('Failed to refresh user data: $e');
       }
-    } catch (e) {
-      Logger.error('Error refreshing user data: $e',
-          tag: 'AuthProvider', error: e);
-      _setError('Failed to refresh user data: $e');
-      // Don't logout on refresh error - user might still be authenticated
-    }
+    });
   }
 
   /*
@@ -505,6 +553,8 @@ class AuthProvider with ChangeNotifier {
     String source = 'auth_canonical',
     bool emitBroadcast = false,
     PointProvider? pointProvider,
+    BigInt? snapshotSequence,
+    DateTime? snapshotObservedAt,
   }) async {
     await CanonicalPointBalanceSync.apply(
       userId: userId,
@@ -513,6 +563,8 @@ class AuthProvider with ChangeNotifier {
       emitBroadcast: emitBroadcast,
       authProvider: this,
       pointProvider: pointProvider,
+      snapshotSequence: snapshotSequence,
+      snapshotObservedAt: snapshotObservedAt,
     );
   }
 
@@ -523,32 +575,80 @@ class AuthProvider with ChangeNotifier {
   /// - App should update instantly without requiring a manual refresh.
   /// - FCM payload already includes `currentBalance`, so we can update UI immediately,
   ///   then let `refreshUser()` reconcile from server in the background.
-  void applyPointsBalanceSnapshot(int currentBalance) {
-    if (!isAuthenticated || _user == null) return;
+  ///
+  /// Patches user meta + [PointProvider] under [PointBalanceSyncLock] (FIFO with [loadBalance]).
+  ///
+  /// Returns `false` when [PointProvider] rejects a **downgrading** snapshot (stale server).
+  Future<bool> applyPointsBalanceSnapshot(
+    int currentBalance, {
+    String? expectedUserId,
+    BigInt? snapshotSequence,
+    DateTime? snapshotObservedAt,
+  }) async {
+    return PointBalanceSyncLock.run(() async {
+      if (!isAuthenticated || _user == null) return false;
 
+      final userId = _user!.id.toString();
+      if (expectedUserId != null &&
+          expectedUserId.isNotEmpty &&
+          expectedUserId != userId) {
+        Logger.warning(
+          'AuthProvider.applyPointsBalanceSnapshot aborted: session user mismatch '
+          '(session=$userId snapshotTarget=$expectedUserId)',
+          tag: 'AuthProvider',
+        );
+        return false;
+      }
+      final accepted = PointProvider.instance
+          .applyRemoteBalanceSnapshotUnlocked(
+            userId: userId,
+            currentBalance: currentBalance,
+            snapshotSequence: snapshotSequence,
+            snapshotObservedAt: snapshotObservedAt,
+          );
+      if (!accepted) {
+        Logger.info(
+          'AuthProvider.applyPointsBalanceSnapshot skipped (stale remote '
+          '$currentBalance vs PointProvider memory)',
+          tag: 'AuthProvider',
+        );
+        return false;
+      }
+
+      final patched = Map<String, String>.from(_user!.customFields);
+      final balanceStr = currentBalance.toString();
+      patched['points_balance'] = balanceStr;
+      patched['my_points'] = balanceStr;
+      patched['my_point'] = balanceStr;
+
+      _user = _user!.copyWith(customFields: patched);
+      notifyListeners();
+      return true;
+    });
+  }
+
+  /// Patches `points_balance` / `my_points` / `my_point` from the ledger SSOT without
+  /// calling back into [PointProvider]. Safe while [PointBalanceSyncLock] is held.
+  void mirrorLedgerBalanceToUserMeta(int currentBalance) {
+    if (!isAuthenticated || _user == null) return;
     final patched = Map<String, String>.from(_user!.customFields);
     final balanceStr = currentBalance.toString();
-
-    // Keep multiple keys in sync because different screens use different fields.
     patched['points_balance'] = balanceStr;
     patched['my_points'] = balanceStr;
     patched['my_point'] = balanceStr;
-
     _user = _user!.copyWith(customFields: patched);
-    _lastAppliedPointsBalance = currentBalance;
-    // Extended window: poll win + deferred loadBalance (4s) + slow API/meta sync.
-    _pointsBalanceNonDowngradeUntil =
-        DateTime.now().add(const Duration(seconds: 35));
     notifyListeners();
   }
 
-  /// Current points balance from user custom fields (used by MyPointWidget and poll win fallback).
+  /// User-meta points (legacy / diagnostics). **Do not use for Home My PNP** — use
+  /// [PointProvider.currentBalance] only; this getter remains for rare fallbacks.
   int get userPointsBalance =>
       _user != null ? _extractPointsFromCustomFields(_user!.customFields) : 0;
 
   /// Extract numeric points from user custom fields (my_point, my_points, points_balance).
   int _extractPointsFromCustomFields(Map<String, String> customFields) {
-    final raw = customFields['my_point'] ??
+    final raw =
+        customFields['my_point'] ??
         customFields['my_points'] ??
         customFields['points_balance'] ??
         customFields['My Point Value'];
@@ -565,14 +665,18 @@ class AuthProvider with ChangeNotifier {
   /// This is useful after user switch or when token might be stale
   Future<void> ensureTokenSynchronized() async {
     if (_cachedToken == null && _user != null) {
-      Logger.info('Token is null but user exists, loading from storage...',
-          tag: 'AuthProvider');
+      Logger.info(
+        'Token is null but user exists, loading from storage...',
+        tag: 'AuthProvider',
+      );
       _cachedToken = await AuthService.getStoredToken();
       if (_cachedToken != null) {
         Logger.info('Token synchronized from storage', tag: 'AuthProvider');
       } else {
-        Logger.warning('Token not found in storage even though user exists',
-            tag: 'AuthProvider');
+        Logger.warning(
+          'Token not found in storage even though user exists',
+          tag: 'AuthProvider',
+        );
       }
     }
   }
@@ -592,8 +696,9 @@ class AuthProvider with ChangeNotifier {
   void _clearError() {
     _errorMessage = null;
     if (_status == AuthStatus.error) {
-      _status =
-          _user != null ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+      _status = _user != null
+          ? AuthStatus.authenticated
+          : AuthStatus.unauthenticated;
     }
   }
 }

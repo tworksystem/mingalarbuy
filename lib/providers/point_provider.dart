@@ -1,16 +1,19 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import '../models/point_transaction.dart';
 import '../services/point_service.dart';
 import '../services/point_notification_manager.dart';
 import '../utils/logger.dart';
 import '../services/connectivity_service.dart';
+import '../services/point_balance_sync_lock.dart';
 import '../services/point_sync_telemetry.dart';
+import 'auth_provider.dart';
 
 /// Point provider for managing point state
 /// Handles point balance, transactions, and UI updates
 /// Uses singleton pattern to ensure same instance across the app
-class PointProvider with ChangeNotifier {
+class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   // Singleton instance
   static PointProvider? _instance;
   static PointProvider get instance {
@@ -19,11 +22,13 @@ class PointProvider with ChangeNotifier {
   }
 
   PointProvider._internal() {
+    WidgetsBinding.instance.addObserver(this);
     _initialize();
     _syncSubscription = PointSyncTelemetry.events.listen(_handleSyncEvent);
     // Context-free earn/cache updates still reach Home My PNP.
-    _pointBroadcastSubscription =
-        PointService.pointSyncBroadcast.listen(_onPointSyncBroadcast);
+    _pointBroadcastSubscription = PointService.pointSyncBroadcast.listen(
+      _onPointSyncBroadcast,
+    );
   }
 
   /// Applies balance from [PointService.pointSyncBroadcast] (e.g. poll win emit).
@@ -87,9 +92,34 @@ class PointProvider with ChangeNotifier {
   // Used by UI to avoid showing duplicate "balance change" modals.
   DateTime? _lastPushBalanceSnapshotAt;
 
-  /// After poll win / push snapshot, do not let [loadBalance] overwrite with a
-  /// lower API value until this time (server read replicas / meta lag).
+  /*
+  Old Code: blocked loadBalance from applying a lower API balance for 35s after snapshot.
   DateTime? _balanceNonDowngradeUntil;
+  */
+
+  /// Active My PNP balance-sync / shimmer leases (paired with [beginBalanceSync]/[endBalanceSync]).
+  final Map<String, bool> _activeSyncLeases = {};
+
+  /// Auto-expires a lease when [endBalanceSync]/`setSyncingBalance(false)` never arrives.
+  final Map<String, Timer> _balanceSyncLeaseWatchdogs = {};
+
+  static const Duration _balanceSyncLeaseSafety = Duration(seconds: 30);
+
+  /// Last accepted optional server ordering hints for remote snapshots (FCM/poll payloads).
+  BigInt? _lastAcceptedRemoteSnapshotSequence;
+  DateTime? _lastAcceptedRemoteSnapshotObservedAt;
+
+  /// Monotonic suffix so every lease id is unique (avoids double-[begin] collisions).
+  int _balanceSyncLeaseSeq = 0;
+
+  /// Refcount for any in-flight balance-sync UI (leases + legacy [setSyncingBalance] pairs).
+  int _syncActiveCount = 0;
+
+  /// Stack of synthetic lease ids created by [setSyncingBalance](true) for strict LIFO pairing.
+  final List<String> _legacyBoolLeaseStack = [];
+
+  /// After the first 3 poll-win ledger polls fail to exceed the floor, My PNP shows a stricter label.
+  bool _extendedPollWinSyncLabel = false;
 
   /// True after the first successful balance hydrate for this session (API or cache).
   /// Used so UI does not treat "0 → server balance" on cold start as points earned.
@@ -113,6 +143,136 @@ class PointProvider with ChangeNotifier {
   String get formattedBalance => _balance?.formattedBalance ?? '0 points';
   DateTime? get lastPushBalanceSnapshotAt => _lastPushBalanceSnapshotAt;
   String? get syncNoticeMessage => _syncNoticeMessage;
+  bool get isSyncingBalance => _syncActiveCount > 0;
+
+  /// Shimmer caption during [isSyncingBalance]: stricter copy after 3 failed ledger polls.
+  String get balanceSyncLoadingSubtitle =>
+      _extendedPollWinSyncLabel ? 'Synchronizing Points...' : 'Updating...';
+
+  bool get balanceSyncUsesExtendedPollWinUi => _extendedPollWinSyncLabel;
+
+  void _scheduleBalanceSyncLeaseWatchdog(String leaseId) {
+    _balanceSyncLeaseWatchdogs.remove(leaseId)?.cancel();
+    _balanceSyncLeaseWatchdogs[leaseId] = Timer(_balanceSyncLeaseSafety, () {
+      _expireBalanceSyncLease(
+        leaseId,
+        reason: 'watchdog ${_balanceSyncLeaseSafety.inSeconds}s',
+      );
+    });
+  }
+
+  /// If [leaseId] is missing or watchdog already tore it down, no-op except timer cleanup.
+  void _expireBalanceSyncLease(String leaseId, {required String reason}) {
+    final timer = _balanceSyncLeaseWatchdogs.remove(leaseId);
+    timer?.cancel();
+    if (!_activeSyncLeases.containsKey(leaseId)) {
+      return;
+    }
+    Logger.warning(
+      'Balance-sync lease expired ($reason): leaseId=$leaseId '
+      '(was count=$_syncActiveCount)',
+      tag: 'PointProvider',
+    );
+    _activeSyncLeases.remove(leaseId);
+    _legacyBoolLeaseStack.remove(leaseId);
+    _syncActiveCount = (_syncActiveCount - 1).clamp(0, 0x7fffffff);
+    if (_syncActiveCount == 0) {
+      _extendedPollWinSyncLabel = false;
+    }
+    notifyListeners();
+  }
+
+  /// Starts a balance-sync UI session (My PNP shimmer). Pair with [endBalanceSync] in `finally`.
+  /// Prefer this over [setSyncingBalance] for multi-tenant parallel flows (poll + vote, etc.).
+  String beginBalanceSync([String? debugTag]) {
+    final id = '${debugTag ?? 'sync'}__${_balanceSyncLeaseSeq++}';
+    _activeSyncLeases[id] = true;
+    _syncActiveCount++;
+    _scheduleBalanceSyncLeaseWatchdog(id);
+    notifyListeners();
+    return id;
+  }
+
+  /// Ends a session started by [beginBalanceSync]. Unknown or duplicate [leaseId] is a no-op.
+  void endBalanceSync(String leaseId) {
+    _balanceSyncLeaseWatchdogs.remove(leaseId)?.cancel();
+    if (!_activeSyncLeases.containsKey(leaseId)) {
+      Logger.warning(
+        'endBalanceSync: unknown or duplicate leaseId=$leaseId '
+        '(active=${_activeSyncLeases.length}, count=$_syncActiveCount)',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+    _activeSyncLeases.remove(leaseId);
+    _syncActiveCount = (_syncActiveCount - 1).clamp(0, 0x7fffffff);
+    if (_syncActiveCount == 0) {
+      _extendedPollWinSyncLabel = false;
+    }
+    notifyListeners();
+  }
+
+  /// Legacy paired shimmer toggle. Prefer [beginBalanceSync]/[endBalanceSync] at call sites.
+  /// Each `true` pushes a lease; each `false` pops one — unmatched `false` is ignored (guard).
+  void setSyncingBalance(bool value) {
+    if (value) {
+      final id = '__legacy__${_balanceSyncLeaseSeq++}';
+      _activeSyncLeases[id] = true;
+      _legacyBoolLeaseStack.add(id);
+      _syncActiveCount++;
+      _scheduleBalanceSyncLeaseWatchdog(id);
+      notifyListeners();
+      return;
+    }
+    if (_legacyBoolLeaseStack.isEmpty) {
+      Logger.warning(
+        'setSyncingBalance(false) unmatched — ignored '
+        '(count=$_syncActiveCount, leases=${_activeSyncLeases.length})',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+    final id = _legacyBoolLeaseStack.removeLast();
+    _balanceSyncLeaseWatchdogs.remove(id)?.cancel();
+    _activeSyncLeases.remove(id);
+    _syncActiveCount = (_syncActiveCount - 1).clamp(0, 0x7fffffff);
+    if (_syncActiveCount == 0) {
+      _extendedPollWinSyncLabel = false;
+    }
+    notifyListeners();
+  }
+
+  void _resetBalanceSyncUiState() {
+    for (final t in _balanceSyncLeaseWatchdogs.values) {
+      t.cancel();
+    }
+    _balanceSyncLeaseWatchdogs.clear();
+    _activeSyncLeases.clear();
+    _legacyBoolLeaseStack.clear();
+    _syncActiveCount = 0;
+    _extendedPollWinSyncLabel = false;
+  }
+
+  /// After Doze / deep sleep, Dart timers may fire very late; balance-sync shimmer can
+  /// remain stuck. On [AppLifecycleState.resumed], tear down orphaned leases/watchdogs.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      return;
+    }
+    if (_syncActiveCount == 0 &&
+        _balanceSyncLeaseWatchdogs.isEmpty &&
+        _activeSyncLeases.isEmpty) {
+      return;
+    }
+    Logger.info(
+      'AppLifecycle resumed: resetting balance-sync leases & watchdogs '
+      '(deep sleep / doze recovery; was count=$_syncActiveCount)',
+      tag: 'PointProvider',
+    );
+    _resetBalanceSyncUiState();
+    notifyListeners();
+  }
 
   /// Whether the first balance sync for this login session has finished (server or cache).
   bool get hasCompletedSessionInitialBalanceLoad =>
@@ -125,8 +285,11 @@ class PointProvider with ChangeNotifier {
       // No user yet; cached balance is loaded on-demand per userId
       _setLoading(false);
     } catch (e) {
-      Logger.error('Error initializing point provider: $e',
-          tag: 'PointProvider', error: e);
+      Logger.error(
+        'Error initializing point provider: $e',
+        tag: 'PointProvider',
+        error: e,
+      );
       _setLoading(false);
     }
   }
@@ -142,8 +305,9 @@ class PointProvider with ChangeNotifier {
       // PROFESSIONAL FIX: If user changed, immediately clear old data and reset flags
       if (_currentUserId != null && _currentUserId != userId) {
         Logger.info(
-            'User account changed from $_currentUserId to $userId, clearing point cache',
-            tag: 'PointProvider');
+          'User account changed from $_currentUserId to $userId, clearing point cache',
+          tag: 'PointProvider',
+        );
         // Clear old user's data immediately
         _balance = null;
         _transactions = [];
@@ -153,7 +317,10 @@ class PointProvider with ChangeNotifier {
         _hasLoadedForCurrentUser = false;
         _lastTransactionsHash = null;
         _lastPushBalanceSnapshotAt = null;
-        _balanceNonDowngradeUntil = null;
+        _lastAcceptedRemoteSnapshotSequence = null;
+        _lastAcceptedRemoteSnapshotObservedAt = null;
+        // _balanceNonDowngradeUntil = null; // Old Code (field removed)
+        _resetBalanceSyncUiState();
         _sessionInitialBalanceLoadComplete = false;
         notifyListeners(); // Notify UI immediately that data is cleared
       }
@@ -164,8 +331,9 @@ class PointProvider with ChangeNotifier {
             _currentUserId != null && _currentUserId != userId;
         _currentUserId = userId;
         Logger.info(
-            'User authenticated, loading point balance for user: $userId',
-            tag: 'PointProvider');
+          'User authenticated, loading point balance for user: $userId',
+          tag: 'PointProvider',
+        );
         final bool forceRefreshOnLoad =
             isUserSwitching || !_hasLoadedForCurrentUser;
         if (forceRefreshOnLoad) {
@@ -180,8 +348,9 @@ class PointProvider with ChangeNotifier {
         _hasLoadedForCurrentUser = true;
       } else {
         Logger.info(
-            'Point balance already loaded for user $userId, skipping reload',
-            tag: 'PointProvider');
+          'Point balance already loaded for user $userId, skipping reload',
+          tag: 'PointProvider',
+        );
       }
     } else {
       // User logged out - clear state
@@ -195,12 +364,16 @@ class PointProvider with ChangeNotifier {
       _totalTransactionPages = 1;
       _lastTransactionsHash = null;
       _lastPushBalanceSnapshotAt = null;
-      _balanceNonDowngradeUntil = null;
+      _lastAcceptedRemoteSnapshotSequence = null;
+      _lastAcceptedRemoteSnapshotObservedAt = null;
+      // _balanceNonDowngradeUntil = null; // Old Code (field removed)
+      _resetBalanceSyncUiState();
       _sessionInitialBalanceLoadComplete = false;
       notifyListeners();
       Logger.info(
-          'User logged out (previous user: $previousUserId), cleared point data',
-          tag: 'PointProvider');
+        'User logged out (previous user: $previousUserId), cleared point data',
+        tag: 'PointProvider',
+      );
     }
   }
 
@@ -216,7 +389,7 @@ class PointProvider with ChangeNotifier {
     }
   }
 
-  /// Load point balance for user
+  /// Load point balance for user (serialized with canonical balance applies).
   /// If forceRefresh is true, will reload even if already loaded for this user
   /// PROFESSIONAL FIX: Validates user ID and clears old data on user change
   Future<void> loadBalance(
@@ -224,18 +397,169 @@ class PointProvider with ChangeNotifier {
     bool forceRefresh = false,
     bool notifyLoading = true,
   }) async {
+    await PointBalanceSyncLock.run(() async {
+      await _loadBalanceUnlocked(
+        userId,
+        forceRefresh: forceRefresh,
+        notifyLoading: notifyLoading,
+      );
+    });
+  }
+
+  /// Poll-win path: up to **5** server reads (1s apart) while [isSyncingBalance] stays true
+  /// at the call site, until the **ledger** reports a balance strictly greater than
+  /// [priorBalanceExclusive]. Prevents stale GET /points from overwriting canonical UI.
+  ///
+  /// After 3 failed attempts, [balanceSyncLoadingSubtitle] switches to
+  /// "Synchronizing Points...". If all 5 attempts fail, sets [syncNoticeMessage].
+  /// Call-site [beginBalanceSync] (or paired [setSyncingBalance]) owns shimmer teardown — this
+  /// method does **not** decrement the sync refcount (avoids double-[false] vs outer `finally`).
+  ///
+  /// [shouldContinue]: when non-null and returns `false`, stops polling early (e.g. widget
+  /// disposed / user left the poll). Skips [syncNoticeMessage], [refreshUserCallback], and the
+  /// follow-up [loadTransactions] so background work and SnackBars do not surprise the user.
+  Future<void> refreshPointStateAfterPollWin({
+    required String userId,
+    required int priorBalanceExclusive,
+    Future<void> Function()? refreshUserCallback,
+    bool Function()? shouldContinue,
+  }) async {
+    Logger.info(
+      'PointProvider.refreshPointStateAfterPollWin userId=$userId '
+      'priorExclusive=$priorBalanceExclusive',
+      tag: 'PointProvider',
+    );
+
+    var serverConfirmed = false;
+    var pollingCancelled = false;
+    await PointBalanceSyncLock.run(() async {
+      for (var attempt = 0; attempt < 5; attempt++) {
+        if (shouldContinue != null && !shouldContinue()) {
+          pollingCancelled = true;
+          _extendedPollWinSyncLabel = false;
+          Logger.info(
+            'Poll win smart poll: aborted before attempt ${attempt + 1} '
+            '(shouldContinue returned false)',
+            tag: 'PointProvider',
+          );
+          notifyListeners();
+          break;
+        }
+        if (attempt > 0) {
+          await Future<void>.delayed(const Duration(seconds: 1));
+        }
+        if (shouldContinue != null && !shouldContinue()) {
+          pollingCancelled = true;
+          _extendedPollWinSyncLabel = false;
+          Logger.info(
+            'Poll win smart poll: aborted after delay before attempt ${attempt + 1}',
+            tag: 'PointProvider',
+          );
+          notifyListeners();
+          break;
+        }
+        if (attempt >= 3) {
+          _extendedPollWinSyncLabel = true;
+          notifyListeners();
+        }
+        final applied = await _loadBalanceUnlocked(
+          userId,
+          forceRefresh: true,
+          notifyLoading: false,
+          pollWinStaleFloorExclusive: priorBalanceExclusive,
+        );
+        if (shouldContinue != null && !shouldContinue()) {
+          pollingCancelled = true;
+          _extendedPollWinSyncLabel = false;
+          Logger.info(
+            'Poll win smart poll: aborted after load attempt ${attempt + 1}',
+            tag: 'PointProvider',
+          );
+          notifyListeners();
+          break;
+        }
+        if (applied) {
+          serverConfirmed = true;
+          _extendedPollWinSyncLabel = false;
+          Logger.info(
+            'Poll win smart poll: ledger confirmed increase on attempt ${attempt + 1} '
+            '(balance=$currentBalance)',
+            tag: 'PointProvider',
+          );
+          break;
+        }
+      }
+      if (!serverConfirmed && !pollingCancelled) {
+        Logger.warning(
+          'Poll win smart poll: ledger never exceeded prior=$priorBalanceExclusive '
+          'after 5 attempts; keeping in-memory balance=${_balance?.currentBalance}',
+          tag: 'PointProvider',
+        );
+        _extendedPollWinSyncLabel = false;
+        _syncNoticeMessage =
+            'Syncing takes longer than usual. Please check back in a moment.';
+      }
+
+      final refreshUser = refreshUserCallback;
+      if (!pollingCancelled && refreshUser != null) {
+        try {
+          await refreshUser();
+        } catch (e, st) {
+          Logger.error(
+            'refreshPointStateAfterPollWin refreshUser failed: $e',
+            tag: 'PointProvider',
+            error: e,
+            stackTrace: st,
+          );
+        }
+      }
+    });
+
+    if (!pollingCancelled) {
+      unawaited(
+        loadTransactions(
+          userId,
+          page: 1,
+          perPage: 20,
+          forceRefresh: true,
+          rangeDays: 90,
+        ).catchError((Object e, StackTrace st) {
+          Logger.error(
+            'refreshPointStateAfterPollWin loadTransactions failed: $e',
+            tag: 'PointProvider',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
+    }
+  }
+
+  /// Core balance fetch; must be invoked only from inside [PointBalanceSyncLock.run]
+  /// **or** from [loadBalance] / [refreshPointStateAfterPollWin] wrappers (which acquire the lock).
+  ///
+  /// Returns `true` when a **fresh online** [PointService.getPointBalance] result was applied
+  /// to [_balance] (including normal loads). Returns `false` when the poll-win floor rejected
+  /// a stale snapshot, on cache/offline paths, or on errors.
+  Future<bool> _loadBalanceUnlocked(
+    String userId, {
+    bool forceRefresh = false,
+    bool notifyLoading = true,
+    int? pollWinStaleFloorExclusive,
+  }) async {
+    var appliedServerSnapshot = false;
     // First successful hydrate for this session (startup / login sync), not an in-session earn.
     final bool isInitialLoad = !_sessionInitialBalanceLoadComplete;
     Logger.info(
-      'PointProvider.loadBalance start: userId=$userId, forceRefresh=$forceRefresh, '
+      'PointProvider._loadBalanceUnlocked start: userId=$userId, forceRefresh=$forceRefresh, '
       'isConnected=${_connectivityService.isConnected}, currentUserId=$_currentUserId, '
-      'localBalance=${_balance?.currentBalance}',
+      'localBalance=${_balance?.currentBalance}, pollWinFloor=$pollWinStaleFloorExclusive',
       tag: 'PointProvider',
     );
     if (forceRefresh) {
       Logger.debug(
         'Forcing balance refresh due to user switch or explicit request '
-        '(loadBalance forceRefresh=true, userId=$userId)',
+        '(_loadBalanceUnlocked forceRefresh=true, userId=$userId)',
         tag: 'PointProvider',
       );
       // Force path must invalidate "already loaded" guard before any fetch.
@@ -247,18 +571,21 @@ class PointProvider with ChangeNotifier {
     // CRITICAL: Always reload if userId doesn't match, even if balance exists
     if (!forceRefresh && _balance != null) {
       if (_currentUserId == userId && _hasLoadedForCurrentUser) {
-        Logger.info('Balance already loaded for user $userId, skipping',
-            tag: 'PointProvider');
+        Logger.info(
+          'Balance already loaded for user $userId, skipping',
+          tag: 'PointProvider',
+        );
         if (isInitialLoad) {
           _sessionInitialBalanceLoadComplete = true;
         }
-        return;
+        return false;
       } else if (_currentUserId != null && _currentUserId != userId) {
         // User ID mismatch - this should not happen if handleAuthStateChange is called correctly
         // But handle it gracefully by clearing and reloading
         Logger.warning(
-            'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
-            tag: 'PointProvider');
+          'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
+          tag: 'PointProvider',
+        );
         _balance = null;
         _hasLoadedForCurrentUser = false;
       }
@@ -267,8 +594,9 @@ class PointProvider with ChangeNotifier {
     // If userId changed, clear old data first (defensive check)
     if (_currentUserId != null && _currentUserId != userId) {
       Logger.info(
-          'User changed from $_currentUserId to $userId, clearing old point balance',
-          tag: 'PointProvider');
+        'User changed from $_currentUserId to $userId, clearing old point balance',
+        tag: 'PointProvider',
+      );
       _balance = null;
       _hasLoadedForCurrentUser = false;
     }
@@ -277,65 +605,66 @@ class PointProvider with ChangeNotifier {
     _clearError();
     _currentUserId = userId;
 
+    /*
+    Old Code: no session-level shimmer during first online fetch; cache fallback
+    could call notifyListeners immediately and cause balance flicker vs API.
+    */
+    // New Code: first-session online hydrate — My PNP shimmer until API finishes or errors.
+    var raisedSessionApiShimmer = false;
+    // Prefer debounced cache paint after a failed initial online fetch (avoids digit jump).
+    final bool immediateCacheNotifyAfterOnlineAttempt =
+        !(isInitialLoad && _connectivityService.isConnected);
+
     try {
+      if (isInitialLoad &&
+          _connectivityService.isConnected &&
+          pollWinStaleFloorExclusive == null) {
+        raisedSessionApiShimmer = true;
+        setSyncingBalance(true);
+      }
+
       // Try to load from API if online
       // OPTIMIZED: Use cached connectivity service
       if (_connectivityService.isConnected) {
-        // Load balance from API first (source of truth)
         final balance = await PointService.getPointBalance(
           userId,
           cacheBypassTimestampMs: DateTime.now().millisecondsSinceEpoch,
+          persistToStorage: pollWinStaleFloorExclusive == null,
         );
         if (balance != null) {
-          // PROFESSIONAL FIX: Don't overwrite with a LOWER balance when we recently
-          // applied a poll/push snapshot. Prevents stale API from undoing a poll win.
-          final now = DateTime.now();
-          final lastSnapshot = _lastPushBalanceSnapshotAt;
-          final isRecentSnapshot = lastSnapshot != null &&
-              now.difference(lastSnapshot).inSeconds < 8;
-          final guardUntil = _balanceNonDowngradeUntil;
-          final guardActive = guardUntil != null && !now.isAfter(guardUntil);
-          final currentFromSnapshot = _balance?.currentBalance ?? 0;
-          final bool snapshotWouldPreferLocal =
-              (isRecentSnapshot || guardActive) &&
-                  currentFromSnapshot > 0 &&
-                  balance.currentBalance < currentFromSnapshot;
-          // Safety check: even during forceRefresh, do not downgrade to a lower API
-          // value while snapshot guard window is active (likely stale read).
-          final bool keepLocalSnapshotBecauseStaleApi =
-              snapshotWouldPreferLocal;
-
-          if (keepLocalSnapshotBecauseStaleApi) {
+          /*
+          Old Code: always trust API balance from getPointBalance (no floor).
+          _balance = balance;
+          */
+          if (pollWinStaleFloorExclusive != null &&
+              balance.currentBalance <= pollWinStaleFloorExclusive) {
             Logger.info(
-              'Keeping applied snapshot balance $currentFromSnapshot '
-              '(API returned ${balance.currentBalance}, forceRefresh=$forceRefresh)',
+              'PointProvider: poll-win smart poll — API returned ${balance.currentBalance} '
+              '(<= floor $pollWinStaleFloorExclusive); not applying stale ledger to memory '
+              '(keeping ${_balance?.currentBalance})',
               tag: 'PointProvider',
             );
           } else {
-            if (forceRefresh && snapshotWouldPreferLocal) {
-              Logger.info(
-                'Forcing balance refresh due to user switch or explicit request — '
-                'applying API balance ${balance.currentBalance} '
-                '(snapshot guard bypassed; local snapshot was $currentFromSnapshot)',
-                tag: 'PointProvider',
-              );
-            }
             _balance = balance;
+            appliedServerSnapshot = true;
+            AuthProvider().mirrorLedgerBalanceToUserMeta(
+              balance.currentBalance,
+            );
+            if (pollWinStaleFloorExclusive != null) {
+              await PointService.persistFetchedBalance(balance);
+            }
             Logger.info(
               'Point balance loaded from API: ${balance.currentBalance} points',
               tag: 'PointProvider',
             );
+            _hasLoadedForCurrentUser = true;
+            _debounceTimer?.cancel();
+            notifyListeners();
           }
-          _hasLoadedForCurrentUser = true;
-          // Balance must hit My PNP immediately after API read (do not wait for transactions
-          // or debounce — poll-win UX depends on this).
-          _debounceTimer?.cancel();
-          notifyListeners();
         } else {
           if (forceRefresh) {
-            // Force refresh must trust server as source of truth; do not reuse stale cache.
             Logger.error(
-              'PointProvider.loadBalance forceRefresh API returned null. '
+              'PointProvider._loadBalanceUnlocked forceRefresh API returned null. '
               'Clearing in-memory balance and skipping cache fallback for userId=$userId',
               tag: 'PointProvider',
             );
@@ -346,13 +675,13 @@ class PointProvider with ChangeNotifier {
             notifyListeners();
           } else {
             Logger.warning(
-              'PointProvider.loadBalance API returned null, entering cache fallback '
+              'PointProvider._loadBalanceUnlocked API returned null, entering cache fallback '
               'for userId=$userId',
               tag: 'PointProvider',
             );
             await _loadCachedBalance(
               userId: userId,
-              preferImmediateNotify: isInitialLoad,
+              preferImmediateNotify: immediateCacheNotifyAfterOnlineAttempt,
             );
           }
         }
@@ -364,11 +693,15 @@ class PointProvider with ChangeNotifier {
         );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error loading point balance: $e',
-          tag: 'PointProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error loading point balance: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       if (forceRefresh) {
         Logger.error(
-          'PointProvider.loadBalance forceRefresh threw error, skipping cache fallback '
+          'PointProvider._loadBalanceUnlocked forceRefresh threw error, skipping cache fallback '
           'and clearing balance for userId=$userId',
           tag: 'PointProvider',
         );
@@ -380,21 +713,25 @@ class PointProvider with ChangeNotifier {
       } else {
         _setError('Failed to load point balance');
         Logger.warning(
-          'PointProvider.loadBalance catch branch entering cache fallback '
+          'PointProvider._loadBalanceUnlocked catch branch entering cache fallback '
           'for userId=$userId',
           tag: 'PointProvider',
         );
         await _loadCachedBalance(
           userId: userId,
-          preferImmediateNotify: isInitialLoad,
+          preferImmediateNotify: immediateCacheNotifyAfterOnlineAttempt,
         );
       }
     } finally {
+      if (raisedSessionApiShimmer) {
+        setSyncingBalance(false);
+      }
       _setLoading(false, notify: notifyLoading);
       if (_balance != null && isInitialLoad) {
         _sessionInitialBalanceLoadComplete = true;
       }
     }
+    return appliedServerSnapshot;
   }
 
   /// Centralized point-state refresh flow used by Home, point history, and
@@ -473,8 +810,9 @@ class PointProvider with ChangeNotifier {
     String? userId,
     Future<void> Function()? refreshUserCallback,
   }) async {
-    final effectiveUserId =
-        (userId != null && userId.isNotEmpty) ? userId : _currentUserId;
+    final effectiveUserId = (userId != null && userId.isNotEmpty)
+        ? userId
+        : _currentUserId;
     if (effectiveUserId == null || effectiveUserId.isEmpty) {
       Logger.warning(
         'PointProvider.fetchPoints skipped: no userId available',
@@ -501,6 +839,7 @@ class PointProvider with ChangeNotifier {
         tag: 'PointProvider',
       );
       _optimisticRefs.clear();
+      _optimisticSnapshots.clear();
     }
     if (_optimisticRefs.contains(refId)) {
       Logger.info(
@@ -540,10 +879,9 @@ class PointProvider with ChangeNotifier {
     required String reason,
   }) {
     if (_optimisticSnapshots.isEmpty) return;
-    final snapshots = _optimisticSnapshots.values
-        .where((s) => s.userId == userId)
-        .toList()
-      ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
+    final snapshots =
+        _optimisticSnapshots.values.where((s) => s.userId == userId).toList()
+          ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
     if (snapshots.isEmpty) return;
 
     // Only rollback very recent optimistic mutations tied to sync timeout/failure.
@@ -617,13 +955,41 @@ class PointProvider with ChangeNotifier {
     );
   }
 
-  /// Apply point balance snapshot coming from push notification payload.
+  /// True when [snapshotSequence] or [snapshotObservedAt] is strictly newer than the
+  /// last accepted values (OR). Used to accept authoritative downgrades from another device.
+  bool _snapshotMetadataStrictlyNewerThanLast({
+    required BigInt? snapshotSequence,
+    required DateTime? snapshotObservedAt,
+    required BigInt? seqLast,
+    required DateTime? tsLast,
+  }) {
+    if (snapshotSequence != null) {
+      if (seqLast == null || snapshotSequence > seqLast) {
+        return true;
+      }
+    }
+    if (snapshotObservedAt != null) {
+      if (tsLast == null || snapshotObservedAt.isAfter(tsLast)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Apply point balance snapshot coming from push / canonical paths.
   ///
-  /// This provides instant UI updates (no manual refresh) while the app later
-  /// reconciles via `loadBalance()` / `loadTransactions()` as needed.
-  void applyRemoteBalanceSnapshot({
+  /// Call only while [PointBalanceSyncLock.run] already holds the queue (e.g. from
+  /// [AuthProvider.applyPointsBalanceSnapshot] or nested canonical work).
+  ///
+  /// Returns `false` when the snapshot is stale by sequence/time, or when a balance
+  /// **downgrade** would apply but neither [snapshotSequence] nor [snapshotObservedAt]
+  /// proves the snapshot is strictly newer than the last accepted metadata (avoids
+  /// lagging API ghosts while allowing another device’s spend to sync when metadata is fresh).
+  bool applyRemoteBalanceSnapshotUnlocked({
     required String userId,
     required int currentBalance,
+    BigInt? snapshotSequence,
+    DateTime? snapshotObservedAt,
   }) {
     // Defensive: handle user switching.
     if (_currentUserId != null && _currentUserId != userId) {
@@ -631,9 +997,68 @@ class PointProvider with ChangeNotifier {
       _transactions = [];
       _lastTransactionsHash = null;
       _hasLoadedForCurrentUser = false;
+      _lastAcceptedRemoteSnapshotSequence = null;
+      _lastAcceptedRemoteSnapshotObservedAt = null;
     }
 
     _currentUserId = userId;
+
+    final BigInt? seqLast = _lastAcceptedRemoteSnapshotSequence;
+    if (snapshotSequence != null && seqLast != null) {
+      if (snapshotSequence < seqLast) {
+        Logger.info(
+          'PointProvider.applyRemoteBalanceSnapshot: ignore stale sequence '
+          'seq=$snapshotSequence < lastSeq=$seqLast (userId=$userId)',
+          tag: 'PointProvider',
+        );
+        return false;
+      }
+    }
+
+    // Chaos guard: ledger `sequence_id` is authoritative; replica/wall-clock fields
+    // can be misordered. When sequence strictly increases, do not reject on time alone.
+    final bool sequenceStrictlyAheadOfLast =
+        snapshotSequence != null &&
+        seqLast != null &&
+        snapshotSequence > seqLast;
+
+    final DateTime? tsLast = _lastAcceptedRemoteSnapshotObservedAt;
+    if (!sequenceStrictlyAheadOfLast &&
+        snapshotObservedAt != null &&
+        tsLast != null) {
+      if (snapshotObservedAt.isBefore(tsLast)) {
+        Logger.info(
+          'PointProvider.applyRemoteBalanceSnapshot: ignore stale observation '
+          'time (${snapshotObservedAt.toIso8601String()} < '
+          '${tsLast.toIso8601String()}, userId=$userId)',
+          tag: 'PointProvider',
+        );
+        return false;
+      }
+    }
+
+    final int? memoryBalance = _balance?.currentBalance;
+    if (memoryBalance != null && currentBalance < memoryBalance) {
+      if (!_snapshotMetadataStrictlyNewerThanLast(
+        snapshotSequence: snapshotSequence,
+        snapshotObservedAt: snapshotObservedAt,
+        seqLast: seqLast,
+        tsLast: tsLast,
+      )) {
+        Logger.info(
+          'PointProvider.applyRemoteBalanceSnapshot: ignore downgrade '
+          'remote=$currentBalance < memory=$memoryBalance without newer metadata '
+          '(userId=$userId)',
+          tag: 'PointProvider',
+        );
+        return false;
+      }
+      Logger.info(
+        'PointProvider.applyRemoteBalanceSnapshot: accepting downgrade '
+        'remote=$currentBalance < memory=$memoryBalance (newer seq/time, userId=$userId)',
+        tag: 'PointProvider',
+      );
+    }
 
     final previous = _balance;
     _balance = PointBalance(
@@ -646,16 +1071,38 @@ class PointProvider with ChangeNotifier {
       pointsExpireAt: previous?.pointsExpireAt,
     );
 
-    // Prevent stale API overwrite: extend non-downgrade window on every remote snapshot.
     final DateTime snapshotClock = DateTime.now();
     _lastPushBalanceSnapshotAt = snapshotClock;
-    _balanceNonDowngradeUntil = snapshotClock.add(const Duration(seconds: 35));
+
+    if (snapshotSequence != null) {
+      _lastAcceptedRemoteSnapshotSequence = snapshotSequence;
+    }
+    if (snapshotObservedAt != null) {
+      _lastAcceptedRemoteSnapshotObservedAt = snapshotObservedAt;
+    }
+
     _hasLoadedForCurrentUser = true;
-    // Server-confirmed snapshot supersedes pending optimistic deltas.
     _optimisticSnapshots.removeWhere((_, s) => s.userId == userId);
-    // PROFESSIONAL FIX: Notify immediately so My PNP card and popup show same balance.
-    // Poll/push snapshots are user-critical; 300ms debounce caused balance to lag behind popup.
     notifyListeners();
+    AuthProvider().mirrorLedgerBalanceToUserMeta(currentBalance);
+    return true;
+  }
+
+  /// FIFO-serialized snapshot apply (same global queue as [loadBalance]).
+  Future<bool> applyRemoteBalanceSnapshot({
+    required String userId,
+    required int currentBalance,
+    BigInt? snapshotSequence,
+    DateTime? snapshotObservedAt,
+  }) async {
+    return PointBalanceSyncLock.run(() async {
+      return applyRemoteBalanceSnapshotUnlocked(
+        userId: userId,
+        currentBalance: currentBalance,
+        snapshotSequence: snapshotSequence,
+        snapshotObservedAt: snapshotObservedAt,
+      );
+    });
   }
 
   /// OPTIMIZED: Debounced notifyListeners to prevent excessive rebuilds
@@ -664,7 +1111,8 @@ class PointProvider with ChangeNotifier {
   void _notifyListenersDebounced({bool force = false}) {
     if (!force) {
       // Calculate hash of current balance AND transactions to detect changes
-      final currentHash = (_balance?.currentBalance.hashCode ?? 0) ^
+      final currentHash =
+          (_balance?.currentBalance.hashCode ?? 0) ^
           _transactions.length.hashCode ^
           (_transactions.isNotEmpty ? _transactions.first.id.hashCode : 0) ^
           (_transactions.isNotEmpty ? _transactions.first.status.hashCode : 0) ^
@@ -688,7 +1136,9 @@ class PointProvider with ChangeNotifier {
   /// PROFESSIONAL FIX: Also check status to detect when transactions change from pending to approved
   /// This ensures UI updates when transaction status changes (e.g., Lucky Box approval)
   bool _areTransactionsEqual(
-      List<PointTransaction> a, List<PointTransaction> b) {
+    List<PointTransaction> a,
+    List<PointTransaction> b,
+  ) {
     if (a.length != b.length) return false;
     for (int i = 0; i < a.length; i++) {
       // Check id, points, AND status to detect status changes (e.g., pending -> approved)
@@ -706,14 +1156,16 @@ class PointProvider with ChangeNotifier {
   /// but they do NOT affect balance until approved.
   /// Loads cached transactions first for immediate display, then refreshes from API
   /// PROFESSIONAL FIX: Validates user ID and clears old data on user change
-  Future<void> loadTransactions(String userId,
-      {int page = 1,
-      int perPage = 20,
-      bool forceRefresh = false,
-      int rangeDays = 90,
-      DateTime? dateFrom,
-      DateTime? dateTo,
-      bool notifyLoading = true}) async {
+  Future<void> loadTransactions(
+    String userId, {
+    int page = 1,
+    int perPage = 20,
+    bool forceRefresh = false,
+    int rangeDays = 90,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+    bool notifyLoading = true,
+  }) async {
     DateTime? effectiveFrom = dateFrom;
     DateTime? effectiveTo = dateTo;
     // Normalize reversed inputs defensively for API reliability.
@@ -726,8 +1178,9 @@ class PointProvider with ChangeNotifier {
     }
 
     Logger.info(
-        'PointProvider.loadTransactions called: userId=$userId, page=$page, perPage=$perPage, forceRefresh=$forceRefresh, currentUserId=$_currentUserId, hasTransactions=${_transactions.isNotEmpty}',
-        tag: 'PointProvider');
+      'PointProvider.loadTransactions called: userId=$userId, page=$page, perPage=$perPage, forceRefresh=$forceRefresh, currentUserId=$_currentUserId, hasTransactions=${_transactions.isNotEmpty}',
+      tag: 'PointProvider',
+    );
 
     // PROFESSIONAL FIX: Check if userId matches before skipping
     // If userId changed, we need to reload even if transactions exist
@@ -739,14 +1192,17 @@ class PointProvider with ChangeNotifier {
         _transactions.isNotEmpty &&
         _currentUserId != null) {
       if (_currentUserId == userId) {
-        Logger.info('Transactions already loaded for user $userId, skipping',
-            tag: 'PointProvider');
+        Logger.info(
+          'Transactions already loaded for user $userId, skipping',
+          tag: 'PointProvider',
+        );
         return;
       } else if (_currentUserId != null && _currentUserId != userId) {
         // User ID mismatch - clear old data
         Logger.warning(
-            'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
-            tag: 'PointProvider');
+          'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
+          tag: 'PointProvider',
+        );
         _transactions = [];
         _lastTransactionsHash = null;
         _currentTransactionsPage = 1;
@@ -758,8 +1214,9 @@ class PointProvider with ChangeNotifier {
     // If userId changed, clear old data first (defensive check)
     if (_currentUserId != null && _currentUserId != userId) {
       Logger.info(
-          'User changed from $_currentUserId to $userId, clearing old transactions',
-          tag: 'PointProvider');
+        'User changed from $_currentUserId to $userId, clearing old transactions',
+        tag: 'PointProvider',
+      );
       _transactions = [];
       _currentTransactionsPage = 1;
       _totalTransactionPages = 1;
@@ -785,40 +1242,51 @@ class PointProvider with ChangeNotifier {
       // This prevents showing stale cached data when user explicitly refreshes
       if (forceRefresh) {
         Logger.info(
-            'PointProvider - Force refresh requested, will load fresh data from API',
-            tag: 'PointProvider');
+          'PointProvider - Force refresh requested, will load fresh data from API',
+          tag: 'PointProvider',
+        );
         // Clear local transaction cache first to rebuild with latest schema/data.
         await PointService.clearTransactionsCache(userId);
       } else if (_transactions.isEmpty && !isLoadMoreRequest) {
         // Only load cached transactions if we don't have any AND not forcing refresh
         try {
-          final cachedTransactions =
-              await PointService.getCachedTransactions(userId);
+          final cachedTransactions = await PointService.getCachedTransactions(
+            userId,
+          );
           if (cachedTransactions.isNotEmpty) {
             // BEST PRACTICE: show cached transactions as-is (including pending)
             // so users don't see an empty history while approvals are pending.
-            cachedFilteredTransactions =
-                List<PointTransaction>.from(cachedTransactions);
+            cachedFilteredTransactions = List<PointTransaction>.from(
+              cachedTransactions,
+            );
 
             // CRITICAL FIX: Ensure cached transactions are sorted by date (newest first)
-            cachedFilteredTransactions
-                .sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            cachedFilteredTransactions.sort(
+              (a, b) => b.createdAt.compareTo(a.createdAt),
+            );
 
             // Only update if data is different
             if (!_areTransactionsEqual(
-                _transactions, cachedFilteredTransactions)) {
+              _transactions,
+              cachedFilteredTransactions,
+            )) {
               _transactions = cachedFilteredTransactions;
               _currentUserId = userId;
               _notifyListenersDebounced(
-                  force: true); // Force immediate update for cached data
+                force: true,
+              ); // Force immediate update for cached data
               Logger.info(
-                  'Loaded ${_transactions.length} cached transactions for immediate display (newest: ${_transactions.isNotEmpty ? _transactions.first.createdAt.toString() : "N/A"})',
-                  tag: 'PointProvider');
+                'Loaded ${_transactions.length} cached transactions for immediate display (newest: ${_transactions.isNotEmpty ? _transactions.first.createdAt.toString() : "N/A"})',
+                tag: 'PointProvider',
+              );
             }
           }
         } catch (e) {
-          Logger.warning('Error loading cached transactions: $e',
-              tag: 'PointProvider', error: e);
+          Logger.warning(
+            'Error loading cached transactions: $e',
+            tag: 'PointProvider',
+            error: e,
+          );
           // Continue to load from API
         }
       }
@@ -838,8 +1306,9 @@ class PointProvider with ChangeNotifier {
       _totalTransactionPages = historyResult.totalPages;
 
       Logger.info(
-          'PointProvider - API returned ${transactions.length} transactions before filtering',
-          tag: 'PointProvider');
+        'PointProvider - API returned ${transactions.length} transactions before filtering',
+        tag: 'PointProvider',
+      );
 
       // CRITICAL FIX: Ensure transactions are sorted by date (newest first)
       // API might return transactions in any order, so we must sort them
@@ -851,13 +1320,19 @@ class PointProvider with ChangeNotifier {
         final newest = sortedTransactions.first;
         final oldest = sortedTransactions.last;
         Logger.info(
-            'PointProvider - Transaction date range: Newest: ${newest.createdAt.toString()} (${newest.id}), Oldest: ${oldest.createdAt.toString()} (${oldest.id})',
-            tag: 'PointProvider');
+          'PointProvider - Transaction date range: Newest: ${newest.createdAt.toString()} (${newest.id}), Oldest: ${oldest.createdAt.toString()} (${oldest.id})',
+          tag: 'PointProvider',
+        );
         final now = DateTime.now();
         final newestDiff = newest.createdAt.difference(now).inDays;
         Logger.info(
-            'PointProvider - Newest transaction is $newestDiff days ${newestDiff > 0 ? "in the future" : newestDiff < 0 ? "ago" : "today"}',
-            tag: 'PointProvider');
+          'PointProvider - Newest transaction is $newestDiff days ${newestDiff > 0
+              ? "in the future"
+              : newestDiff < 0
+              ? "ago"
+              : "today"}',
+          tag: 'PointProvider',
+        );
       }
 
       // BEST PRACTICE: show ALL transactions (including pending) in history.
@@ -865,10 +1340,11 @@ class PointProvider with ChangeNotifier {
       var filteredTransactions = sortedTransactions;
 
       // Preserve already-known poll details if API row is temporarily missing them.
-      filteredTransactions = PointService.mergeTransactionsPreservingPollDetails(
-        existing: _transactions,
-        incoming: filteredTransactions,
-      );
+      filteredTransactions =
+          PointService.mergeTransactionsPreservingPollDetails(
+            existing: _transactions,
+            incoming: filteredTransactions,
+          );
 
       if (isLoadMoreRequest) {
         // Append additional pages while preserving existing enriched rows.
@@ -882,16 +1358,17 @@ class PointProvider with ChangeNotifier {
       }
 
       Logger.info(
-          'PointProvider - After filtering: ${filteredTransactions.length} transactions',
-          tag: 'PointProvider');
+        'PointProvider - After filtering: ${filteredTransactions.length} transactions',
+        tag: 'PointProvider',
+      );
 
       // CRITICAL FIX: Always update transactions if they're different OR if we got new data from API
       // This ensures UI updates even if the list appears "equal" but came from a fresh API call
       // Also ensure we update if transactions list is empty (to show empty state)
       final shouldUpdate =
           !_areTransactionsEqual(_transactions, filteredTransactions) ||
-              forceRefresh ||
-              _transactions.isEmpty != filteredTransactions.isEmpty;
+          forceRefresh ||
+          _transactions.isEmpty != filteredTransactions.isEmpty;
 
       if (shouldUpdate) {
         // CRITICAL FIX: Ensure filtered transactions are sorted by date (newest first)
@@ -903,34 +1380,44 @@ class PointProvider with ChangeNotifier {
         _currentUserId = userId;
         _notifyListenersDebounced(force: true); // Force immediate update
         Logger.info(
-            'PointProvider - Updated transactions list: ${_transactions.length} transactions (${sortedTransactions.length} total from API)',
-            tag: 'PointProvider');
+          'PointProvider - Updated transactions list: ${_transactions.length} transactions (${sortedTransactions.length} total from API)',
+          tag: 'PointProvider',
+        );
         if (_transactions.isNotEmpty) {
           Logger.info(
-              'PointProvider - Newest transaction: ${_transactions.first.createdAt.toString()} (ID: ${_transactions.first.id}), Oldest: ${_transactions.last.createdAt.toString()} (ID: ${_transactions.last.id})',
-              tag: 'PointProvider');
+            'PointProvider - Newest transaction: ${_transactions.first.createdAt.toString()} (ID: ${_transactions.first.id}), Oldest: ${_transactions.last.createdAt.toString()} (ID: ${_transactions.last.id})',
+            tag: 'PointProvider',
+          );
         }
       } else {
         Logger.info(
-            'PointProvider - Transactions unchanged, skipping UI update',
-            tag: 'PointProvider');
+          'PointProvider - Transactions unchanged, skipping UI update',
+          tag: 'PointProvider',
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error loading point transactions: $e',
-          tag: 'PointProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error loading point transactions: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       // Surface actionable error to UI when available (e.g., 401/403/500),
       // so the page doesn't look like a "silent empty history".
       final message = e.toString().replaceFirst('Exception: ', '').trim();
       _setError(
-          message.isNotEmpty ? message : 'Failed to load point transactions');
+        message.isNotEmpty ? message : 'Failed to load point transactions',
+      );
       // If API fails but we have cached transactions, keep showing them
       if (_transactions.isEmpty) {
         try {
-          final cachedTransactions =
-              await PointService.getCachedTransactions(userId);
+          final cachedTransactions = await PointService.getCachedTransactions(
+            userId,
+          );
           if (cachedTransactions.isNotEmpty) {
-            final fallbackTransactions =
-                List<PointTransaction>.from(cachedTransactions);
+            final fallbackTransactions = List<PointTransaction>.from(
+              cachedTransactions,
+            );
 
             // Only update if different
             if (!_areTransactionsEqual(_transactions, fallbackTransactions)) {
@@ -938,23 +1425,26 @@ class PointProvider with ChangeNotifier {
               _currentUserId = userId;
               _notifyListenersDebounced(force: true);
               Logger.info(
-                  'Loaded ${_transactions.length} cached transactions as fallback after API error',
-                  tag: 'PointProvider');
+                'Loaded ${_transactions.length} cached transactions as fallback after API error',
+                tag: 'PointProvider',
+              );
             }
           } else {
             // No cached transactions either - ensure UI is notified of empty state
             Logger.warning(
-                'No transactions found: API failed and no cached transactions available',
-                tag: 'PointProvider');
+              'No transactions found: API failed and no cached transactions available',
+              tag: 'PointProvider',
+            );
             _transactions = [];
             _currentUserId = userId;
             _notifyListenersDebounced(force: true);
           }
         } catch (cacheError) {
           Logger.error(
-              'Error loading cached transactions as fallback: $cacheError',
-              tag: 'PointProvider',
-              error: cacheError);
+            'Error loading cached transactions as fallback: $cacheError',
+            tag: 'PointProvider',
+            error: cacheError,
+          );
           // Even if cache fails, ensure UI is notified
           _transactions = [];
           _currentUserId = userId;
@@ -1034,20 +1524,13 @@ class PointProvider with ChangeNotifier {
 
         // Phase 1: Non-blocking reconcile. Optimistic balance update already notified UI.
         unawaited(
-          loadBalance(
-            userId,
-            forceRefresh: true,
-            notifyLoading: false,
-          ),
+          loadBalance(userId, forceRefresh: true, notifyLoading: false),
         );
-        unawaited(
-          loadTransactions(
-            userId,
-            notifyLoading: false,
-          ),
+        unawaited(loadTransactions(userId, notifyLoading: false));
+        Logger.info(
+          'Points earned successfully: $points points',
+          tag: 'PointProvider',
         );
-        Logger.info('Points earned successfully: $points points',
-            tag: 'PointProvider');
 
         // Notify user about points earned (explicit API success — not cold-start hydrate).
         if (_balance != null) {
@@ -1085,8 +1568,12 @@ class PointProvider with ChangeNotifier {
 
       return success;
     } catch (e, stackTrace) {
-      Logger.error('Error earning points: $e',
-          tag: 'PointProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error earning points: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       _setError('Failed to earn points');
       return false;
     } finally {
@@ -1123,8 +1610,10 @@ class PointProvider with ChangeNotifier {
         // Reload balance and transactions
         await loadBalance(userId);
         await loadTransactions(userId);
-        Logger.info('Points redeemed successfully: $points points',
-            tag: 'PointProvider');
+        Logger.info(
+          'Points redeemed successfully: $points points',
+          tag: 'PointProvider',
+        );
 
         // Notify user about points redeemed
         if (_balance != null) {
@@ -1148,8 +1637,12 @@ class PointProvider with ChangeNotifier {
 
       return success;
     } catch (e, stackTrace) {
-      Logger.error('Error redeeming points: $e',
-          tag: 'PointProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error redeeming points: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       _setError('Failed to redeem points');
       return false;
     } finally {
@@ -1176,8 +1669,10 @@ class PointProvider with ChangeNotifier {
       }
       return null;
     } catch (e) {
-      Logger.warning('Error extracting engagement data from orderId: $e',
-          tag: 'PointProvider');
+      Logger.warning(
+        'Error extracting engagement data from orderId: $e',
+        tag: 'PointProvider',
+      );
       return null;
     }
   }
@@ -1203,8 +1698,9 @@ class PointProvider with ChangeNotifier {
     bool preferImmediateNotify = false,
   }) async {
     try {
-      final id =
-          (userId != null && userId.isNotEmpty) ? userId : _currentUserId;
+      final id = (userId != null && userId.isNotEmpty)
+          ? userId
+          : _currentUserId;
       if (id == null || id.isEmpty) return;
 
       final cached = await PointService.getCachedBalance(id);
@@ -1224,8 +1720,11 @@ class PointProvider with ChangeNotifier {
         );
       }
     } catch (e) {
-      Logger.error('Error loading cached balance: $e',
-          tag: 'PointProvider', error: e);
+      Logger.error(
+        'Error loading cached balance: $e',
+        tag: 'PointProvider',
+        error: e,
+      );
     }
   }
 
@@ -1257,7 +1756,8 @@ class PointProvider with ChangeNotifier {
     if (status != null && status >= 500) {
       return 'Server error. Please try again later.';
     }
-    final bool timeoutLike = lowerError.contains('timeout') ||
+    final bool timeoutLike =
+        lowerError.contains('timeout') ||
         lowerError.contains('timed out') ||
         lowerReason.contains('timeout') ||
         lowerReason.contains('timed out');
@@ -1278,6 +1778,7 @@ class PointProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _debounceTimer?.cancel();
     _syncSubscription?.cancel();
     _pointBroadcastSubscription?.cancel();

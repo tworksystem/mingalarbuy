@@ -8,13 +8,13 @@ import '../services/canonical_point_balance_sync.dart';
 import '../utils/logger.dart';
 
 /// Service to recover missed notifications for poll wins
-/// 
+///
 /// PROBLEM:
 /// - User votes on poll, then uninstalls app
 /// - Poll determines winner → backend credits points
 /// - FCM notification fails (app uninstalled)
 /// - User reinstalls app → balance correct but no notification
-/// 
+///
 /// SOLUTION:
 /// - On app launch/login, check recent transactions (last 30 days)
 /// - Detect poll winner transactions that haven't been "notified"
@@ -24,12 +24,12 @@ class MissedNotificationRecoveryService {
   static const String _notifiedTransactionsKey = 'notified_transaction_ids';
 
   /// Check for missed poll winner notifications and recreate them
-  /// 
+  ///
   /// Should be called:
   /// - On app first launch after installation
   /// - On user login
   /// - When app returns from background after long absence
-  /// 
+  ///
   /// @param userId Current authenticated user ID
   /// @param forceCheck If true, will check even if recently checked
   static Future<int> checkAndRecoverMissedNotifications(
@@ -44,23 +44,29 @@ class MissedNotificationRecoveryService {
         final lastCheckStr = prefs.getString('${_lastCheckKey}_$userId');
         if (lastCheckStr != null) {
           final lastCheck = DateTime.parse(lastCheckStr);
-          final hoursSinceLastCheck =
-              DateTime.now().difference(lastCheck).inHours;
+          final hoursSinceLastCheck = DateTime.now()
+              .difference(lastCheck)
+              .inHours;
           if (hoursSinceLastCheck < 6) {
             Logger.info(
-                'Skipping missed notification check (last checked $hoursSinceLastCheck hours ago)',
-                tag: 'MissedNotificationRecovery');
+              'Skipping missed notification check (last checked $hoursSinceLastCheck hours ago)',
+              tag: 'MissedNotificationRecovery',
+            );
             return 0;
           }
         }
       }
 
-      Logger.info('Checking for missed poll winner notifications for user: $userId',
-          tag: 'MissedNotificationRecovery');
+      Logger.info(
+        'Checking for missed poll winner notifications for user: $userId',
+        tag: 'MissedNotificationRecovery',
+      );
 
       // Load recent transactions (last 30 days)
-      final allTransactions = await PointService.getAllPointTransactions(userId);
-      
+      final allTransactions = await PointService.getAllPointTransactions(
+        userId,
+      );
+
       // Filter to recent transactions (last 30 days)
       final thirtyDaysAgo = DateTime.now().subtract(const Duration(days: 30));
       final recentTransactions = allTransactions.where((txn) {
@@ -68,7 +74,8 @@ class MissedNotificationRecoveryService {
       }).toList();
 
       // Get list of transaction IDs that have already been notified
-      final notifiedIds = prefs.getStringList('${_notifiedTransactionsKey}_$userId') ?? [];
+      final notifiedIds =
+          prefs.getStringList('${_notifiedTransactionsKey}_$userId') ?? [];
       final notifiedIdsSet = Set<String>.from(notifiedIds);
 
       // Find poll winner transactions that haven't been notified
@@ -86,15 +93,21 @@ class MissedNotificationRecoveryService {
       }
 
       if (missedWins.isEmpty) {
-        Logger.info('No missed poll winner notifications found',
-            tag: 'MissedNotificationRecovery');
+        Logger.info(
+          'No missed poll winner notifications found',
+          tag: 'MissedNotificationRecovery',
+        );
         await prefs.setString(
-            '${_lastCheckKey}_$userId', DateTime.now().toIso8601String());
+          '${_lastCheckKey}_$userId',
+          DateTime.now().toIso8601String(),
+        );
         return 0;
       }
 
-      Logger.info('Found ${missedWins.length} missed poll winner notification(s)',
-          tag: 'MissedNotificationRecovery');
+      Logger.info(
+        'Found ${missedWins.length} missed poll winner notification(s)',
+        tag: 'MissedNotificationRecovery',
+      );
 
       /*
       Old Code:
@@ -104,7 +117,10 @@ class MissedNotificationRecoveryService {
       // New Code: One live balance read so recreated notifications + Home My PNP match ledger.
       String? balanceLabelForMissedRecovery;
       try {
-        final live = await PointService.getPointBalance(userId);
+        final live = await PointService.getPointBalance(
+          userId,
+          persistToStorage: false,
+        );
         if (live != null) {
           balanceLabelForMissedRecovery = live.currentBalance.toString();
           /*
@@ -143,7 +159,8 @@ class MissedNotificationRecoveryService {
 
           // Generate notification title and body
           final notificationTitle = "Congratulations! You're the Winner! 🏆";
-          final notificationBody = txn.description ??
+          final notificationBody =
+              txn.description ??
               'Your selection matched the winning result. ${txn.points} PNP has been credited to your balance. Keep playing to win more!';
 
           // Create in-app notification with transaction ID
@@ -166,40 +183,42 @@ class MissedNotificationRecoveryService {
           */
 
           // New Code: Pass live balance label when available so notification payload matches My PNP.
-          final wasCreated = await InAppNotificationService().createPointNotification(
-            type: 'engagement_points',
-            title: notificationTitle,
-            body: notificationBody,
-            points: txn.points.toString(),
-            currentBalance: balanceLabelForMissedRecovery,
-            transactionId: txn.id,
-            eventOccurredAt: txn.createdAt,
-            additionalData: {
-              'itemType': 'poll',
-              'itemTitle': pollTitle,
-            },
-          );
+          final wasCreated = await InAppNotificationService()
+              .createPointNotification(
+                type: 'engagement_points',
+                title: notificationTitle,
+                body: notificationBody,
+                points: txn.points.toString(),
+                currentBalance: balanceLabelForMissedRecovery,
+                transactionId: txn.id,
+                eventOccurredAt: txn.createdAt,
+                additionalData: {'itemType': 'poll', 'itemTitle': pollTitle},
+              );
 
           // PROFESSIONAL FIX: Mark as notified regardless of whether notification was created
           // This prevents infinite recreation attempts for the same transaction
           // Even if duplicate prevention blocked it, we still mark it to avoid rechecking
           notifiedIdsSet.add(txn.id);
-          
+
           if (wasCreated) {
             recreatedCount++;
             Logger.info(
-                'Recreated notification for missed poll win: ${txn.id} (${txn.points} points)',
-                tag: 'MissedNotificationRecovery');
+              'Recreated notification for missed poll win: ${txn.id} (${txn.points} points)',
+              tag: 'MissedNotificationRecovery',
+            );
           } else {
             Logger.info(
-                'Notification already exists for transaction: ${txn.id}, marked as notified',
-                tag: 'MissedNotificationRecovery');
+              'Notification already exists for transaction: ${txn.id}, marked as notified',
+              tag: 'MissedNotificationRecovery',
+            );
           }
         } catch (e, stackTrace) {
-          Logger.error('Error recreating notification for transaction ${txn.id}: $e',
-              tag: 'MissedNotificationRecovery',
-              error: e,
-              stackTrace: stackTrace);
+          Logger.error(
+            'Error recreating notification for transaction ${txn.id}: $e',
+            tag: 'MissedNotificationRecovery',
+            error: e,
+            stackTrace: stackTrace,
+          );
           // Still mark as notified to avoid infinite retry
           notifiedIdsSet.add(txn.id);
         }
@@ -235,28 +254,35 @@ class MissedNotificationRecoveryService {
         updatedNotifiedIds.removeRange(0, updatedNotifiedIds.length - 100);
       }
       await prefs.setStringList(
-          '${_notifiedTransactionsKey}_$userId', updatedNotifiedIds);
+        '${_notifiedTransactionsKey}_$userId',
+        updatedNotifiedIds,
+      );
 
       // Update last check timestamp
       await prefs.setString(
-          '${_lastCheckKey}_$userId', DateTime.now().toIso8601String());
+        '${_lastCheckKey}_$userId',
+        DateTime.now().toIso8601String(),
+      );
 
       Logger.info(
-          'Missed notification recovery completed: $recreatedCount notification(s) recreated',
-          tag: 'MissedNotificationRecovery');
+        'Missed notification recovery completed: $recreatedCount notification(s) recreated',
+        tag: 'MissedNotificationRecovery',
+      );
 
       return recreatedCount;
     } catch (e, stackTrace) {
-      Logger.error('Error in missed notification recovery: $e',
-          tag: 'MissedNotificationRecovery',
-          error: e,
-          stackTrace: stackTrace);
+      Logger.error(
+        'Error in missed notification recovery: $e',
+        tag: 'MissedNotificationRecovery',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return 0;
     }
   }
 
   /// Check if transaction is a poll winner transaction
-  /// 
+  ///
   /// Criteria:
   /// - Type is 'earn' (winner gets points)
   /// - Status is 'approved'
@@ -275,31 +301,36 @@ class MissedNotificationRecoveryService {
 
     // Check description for winner keywords
     final description = txn.description?.toLowerCase() ?? '';
-    if (!description.contains('winner') && 
-        !description.contains('poll winner reward')) return false;
+    if (!description.contains('winner') &&
+        !description.contains('poll winner reward'))
+      return false;
 
     return true;
   }
 
   /// Extract poll title from transaction description
-  /// 
+  ///
   /// Format examples:
   /// - "Poll winner reward: Myanmar Premier League Champion 2025 (+8000 points)"
   /// - "Poll winner reward (+5000 points)"
-  /// 
+  ///
   /// @param description Transaction description
   /// @return Extracted poll title or "Poll"
   static String _extractPollTitle(String description) {
     if (description.isEmpty) return 'Poll';
 
     // Try to extract from "Poll winner reward: TITLE (+XXX points)"
-    final match = RegExp(r'Poll winner reward:\s*(.+?)\s*\(').firstMatch(description);
+    final match = RegExp(
+      r'Poll winner reward:\s*(.+?)\s*\(',
+    ).firstMatch(description);
     if (match != null && match.group(1) != null) {
       return match.group(1)!.trim();
     }
 
     // Try simpler pattern "TITLE (+XXX points)"
-    final simpleMatch = RegExp(r'(.+?)\s*\(\+\d+\s*points?\)').firstMatch(description);
+    final simpleMatch = RegExp(
+      r'(.+?)\s*\(\+\d+\s*points?\)',
+    ).firstMatch(description);
     if (simpleMatch != null && simpleMatch.group(1) != null) {
       final title = simpleMatch.group(1)!.trim();
       if (title.toLowerCase() != 'poll winner reward') {
@@ -311,37 +342,45 @@ class MissedNotificationRecoveryService {
   }
 
   /// Mark a transaction as notified (called by other services)
-  /// 
+  ///
   /// This should be called when:
   /// - FCM notification is successfully received
   /// - In-app notification is created from poll winner popup
   /// - Modal popup is shown
   static Future<void> markTransactionAsNotified(
-      String userId, String transactionId) async {
+    String userId,
+    String transactionId,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final notifiedIds =
           prefs.getStringList('${_notifiedTransactionsKey}_$userId') ?? [];
-      
+
       if (!notifiedIds.contains(transactionId)) {
         notifiedIds.add(transactionId);
-        
+
         // Keep only recent IDs (last 100)
         if (notifiedIds.length > 100) {
           notifiedIds.removeRange(0, notifiedIds.length - 100);
         }
-        
+
         await prefs.setStringList(
-            '${_notifiedTransactionsKey}_$userId', notifiedIds);
-        
-        Logger.info('Transaction marked as notified: $transactionId',
-            tag: 'MissedNotificationRecovery');
+          '${_notifiedTransactionsKey}_$userId',
+          notifiedIds,
+        );
+
+        Logger.info(
+          'Transaction marked as notified: $transactionId',
+          tag: 'MissedNotificationRecovery',
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error marking transaction as notified: $e',
-          tag: 'MissedNotificationRecovery',
-          error: e,
-          stackTrace: stackTrace);
+      Logger.error(
+        'Error marking transaction as notified: $e',
+        tag: 'MissedNotificationRecovery',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -351,13 +390,17 @@ class MissedNotificationRecoveryService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('${_lastCheckKey}_$userId');
       await prefs.remove('${_notifiedTransactionsKey}_$userId');
-      Logger.info('Cleared notification tracking for user: $userId',
-          tag: 'MissedNotificationRecovery');
+      Logger.info(
+        'Cleared notification tracking for user: $userId',
+        tag: 'MissedNotificationRecovery',
+      );
     } catch (e, stackTrace) {
-      Logger.error('Error clearing notification tracking: $e',
-          tag: 'MissedNotificationRecovery',
-          error: e,
-          stackTrace: stackTrace);
+      Logger.error(
+        'Error clearing notification tracking: $e',
+        tag: 'MissedNotificationRecovery',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 

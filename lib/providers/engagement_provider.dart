@@ -207,8 +207,14 @@ class EngagementProvider with ChangeNotifier {
   final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
   final Map<String, Map<String, int?>> _pollSessionReceiptCache =
       <String, Map<String, int?>>{};
+  /*
+  OLD CODE:
   final Map<int, Map<String, int?>> _pollLastVoteDetailedBets =
       <int, Map<String, int?>>{};
+  */
+  // NEW CODE: Same composite key scheme as [pollReceiptCacheKey] (pollId + session).
+  final Map<String, Map<String, int?>> _pollLastVoteDetailedBetsByReceiptKey =
+      <String, Map<String, int?>>{};
   final Map<int, int> _pollInteractionTouchedAtMs = <int, int>{};
   bool _interactionCacheHydrated = false;
   /*
@@ -228,12 +234,143 @@ class EngagementProvider with ChangeNotifier {
   bool get isAutoPollPaused => _isAutoPollPaused;
 
   String _cacheKeyForUser(int userId) => '$_feedCacheKeyPrefix$userId';
+
+  /*
+  OLD CODE:
   String pollUserLocalUnitStorageKey(
     int engagementItemId,
     String optionUniqueId,
-  ) => '$engagementItemId|$optionUniqueId';
+  ) =>
+      '$engagementItemId|$optionUniqueId';
+  */
+  // NEW CODE: Session segment prevents cross-round unit bleed for AUTO_RUN.
+  String _normalizedSessionBucket(String sessionId) =>
+      sessionId.trim().isEmpty ? 'default' : sessionId.trim();
+
+  String pollUserLocalUnitStorageKey(
+    int engagementItemId,
+    String sessionId,
+    String optionUniqueId,
+  ) =>
+      '${engagementItemId}|${_normalizedSessionBucket(sessionId)}|$optionUniqueId';
+
+  /// First path segment must be numeric poll id (`12_session...` avoids `123` ambiguity).
+  int? _pollIdFromReceiptCompositeKey(String key) {
+    final idx = key.indexOf('_');
+    if (idx <= 0) {
+      return int.tryParse(key);
+    }
+    return int.tryParse(key.substring(0, idx));
+  }
+
   String pollReceiptCacheKey(int pollId, String sessionId) =>
       '${pollId}_${sessionId.isEmpty ? 'default' : sessionId}';
+
+  void _evictStalePollScopedCachesExcept(int pollId, String sessionRaw) {
+    final keep = pollReceiptCacheKey(pollId, sessionRaw);
+    final keepBucket = _normalizedSessionBucket(sessionRaw);
+    _pollLastVoteDetailedBetsByReceiptKey.removeWhere((k, _) {
+      final pid = _pollIdFromReceiptCompositeKey(k);
+      return pid == pollId && k != keep;
+    });
+    _pollSessionReceiptCache.removeWhere((k, _) {
+      final pid = _pollIdFromReceiptCompositeKey(k);
+      return pid == pollId && k != keep;
+    });
+    _pollUserLocalUnitOverlay.removeWhere((k, _) {
+      final parts = k.split('|');
+      if (parts.isEmpty) return false;
+      final pid = int.tryParse(parts[0]);
+      if (pid != pollId) return false;
+      if (parts.length >= 3) {
+        return parts[1] != keepBucket;
+      }
+      if (parts.length == 2) {
+        return keepBucket != 'default';
+      }
+      return false;
+    });
+  }
+
+  bool _persistedVoteReceiptExistsForPollSession(int pollId, String sessionId) {
+    final key = pollReceiptCacheKey(pollId, sessionId);
+    if ((_pollLastVoteDetailedBetsByReceiptKey[key]?.isNotEmpty) ?? false) {
+      return true;
+    }
+    if ((_pollSessionReceiptCache[key]?.isNotEmpty) ?? false) {
+      return true;
+    }
+    final bucket = _normalizedSessionBucket(sessionId);
+    final scopedPrefix = '${pollId}|$bucket|';
+    if (_pollUserLocalUnitOverlay.keys.any((k) => k.startsWith(scopedPrefix))) {
+      return true;
+    }
+    if (bucket == 'default') {
+      return _pollUserLocalUnitOverlay.keys.any((k) {
+        if (!k.startsWith('$pollId|')) return false;
+        return k.split('|').length == 2;
+      });
+    }
+    return false;
+  }
+
+  EngagementItem _cloneItemClearingStaleCachedInteraction(EngagementItem item) {
+    return EngagementItem(
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      mediaUrl: item.mediaUrl,
+      content: item.content,
+      rewardPoints: item.rewardPoints,
+      quizData: item.quizData,
+      hasInteracted: false,
+      userAnswer: null,
+      userBetAmount: null,
+      userBetUnitsPerOption: null,
+      rotationDurationSeconds: item.rotationDurationSeconds,
+      interactionCount: item.interactionCount,
+      pollVotingSchedule: item.pollVotingSchedule,
+      pollResult: item.pollResult,
+    );
+  }
+
+  /// After disk feed hydrate: strip AUTO_RUN votes that disagree with prefs session receipts.
+  List<EngagementItem> _validateCachedPollInteractionsAgainstPrefs(
+    List<EngagementItem> items,
+  ) {
+    return items.map((item) {
+      if (item.type != EngagementType.poll) return item;
+      final pollMode = (item.pollVotingSchedule?['poll_mode'] ?? '')
+          .toString()
+          .toLowerCase();
+      if (pollMode != 'auto_run') return item;
+
+      final hasVoteSurface =
+          item.hasInteracted ||
+          (item.userAnswer != null && item.userAnswer!.trim().isNotEmpty);
+      if (!hasVoteSurface) return item;
+
+      final sid = (item.pollVotingSchedule?['current_session_id'] ?? '')
+          .toString()
+          .trim();
+
+      /*
+      OLD CODE:
+      UI could eagerly render cached snapshot without reconciling receipts.
+      */
+      // NEW CODE: No authoritative session-scoped receipts → discard embedded vote UX.
+      if (sid.isEmpty ||
+          !_persistedVoteReceiptExistsForPollSession(item.id, sid)) {
+        app_logger.Logger.info(
+          'AUTO_RUN cached feed vote stripped (poll=${item.id}, session="$sid"): '
+          'prefs session receipts missing / ambiguous',
+          tag: 'EngagementProvider',
+        );
+        return _cloneItemClearingStaleCachedInteraction(item);
+      }
+      return item;
+    }).toList();
+  }
 
   String _toUserFriendlyError(String? raw) {
     // Old Code: provider used raw service error directly in UI.
@@ -269,16 +406,30 @@ class EngagementProvider with ChangeNotifier {
     int? userId,
   }) async {
     if (isAuthenticated && userId != null) {
+      // Capture account switch BEFORE mutating _currentUserId so loadFeed gets
+      // forceRefresh + bypass merge flags right.
+      final bool switched = _currentUserId != null && _currentUserId != userId;
+
       // PROFESSIONAL FIX: If user changed, immediately clear old data and reset flags
-      if (_currentUserId != null && _currentUserId != userId) {
+      // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — only [switched] block (same condition as before).
+      // if (_currentUserId != null && _currentUserId != userId) {
+      if (switched) {
+        final outgoingUserId = _currentUserId!;
         app_logger.Logger.info(
           'User account changed from $_currentUserId to $userId, clearing engagement cache',
           tag: 'EngagementProvider',
         );
         // Stop polling for old user
         _stopPolling();
-        // Clear old user's data immediately
-        _items = [];
+
+        // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန်
+        // _items.clear();
+        // await _clearFeedCacheForUser(outgoingUserId);
+
+        // NEW CODE: Clear completely including vote receipts
+        _items.clear();
+        await _clearFeedCacheForUser(outgoingUserId);
+        await clearAllInteractionCaches(); // Fix cross-user cache bleeding
         _error = null;
         _hasLoadedForCurrentUser = false;
         notifyListeners(); // Notify UI immediately that data is cleared
@@ -291,11 +442,15 @@ class EngagementProvider with ChangeNotifier {
           'User authenticated, loading engagement feed for user: $userId',
           tag: 'EngagementProvider',
         );
-        // PROFESSIONAL FIX: Force refresh when user changes to ensure fresh data
+        // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် —
+        // await loadFeed(
+        //   userId: userId,
+        //   forceRefresh: _currentUserId != userId,
+        // );
         await loadFeed(
           userId: userId,
-          forceRefresh:
-              _currentUserId != userId, // Force refresh if user changed
+          forceRefresh: switched,
+          bypassLocalInteractionMerge: switched,
         );
         _hasLoadedForCurrentUser = true;
       } else {
@@ -310,7 +465,20 @@ class EngagementProvider with ChangeNotifier {
       _stopPolling();
       _currentUserId = null;
       _hasLoadedForCurrentUser = false;
-      _items = [];
+
+      // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန်
+      // _items.clear();
+      // if (previousUserId != null) {
+      //   await _clearFeedCacheForUser(previousUserId);
+      // }
+
+      // NEW CODE:
+      _items.clear();
+      if (previousUserId != null) {
+        await _clearFeedCacheForUser(previousUserId);
+      }
+      await clearAllInteractionCaches(); // Fix cross-user cache bleeding on logout
+
       _error = null;
       notifyListeners();
       app_logger.Logger.info(
@@ -326,6 +494,10 @@ class EngagementProvider with ChangeNotifier {
     required int userId,
     String? token, // Optional - kept for backward compatibility
     bool forceRefresh = false,
+
+    /// When true (e.g. account switch), skip merge with previous items and
+    /// do not hydrate from [persistentSnapshotByItemId] — server list only.
+    bool bypassLocalInteractionMerge = false,
   }) async {
     await ensureInteractionCacheHydrated();
     // If forcing refresh, always reload even if loading
@@ -415,13 +587,29 @@ class EngagementProvider with ChangeNotifier {
           tag: 'EngagementProvider',
         );
       } else {
-        final persistentSnapshotByItemId =
-            await _buildPersistentInteractionSnapshotByItemId(userId);
-        _items = _mergeWithPreviousInteractionState(
-          previousItems: previousItems,
-          fetchedItems: fetchedItems,
-          persistentSnapshotByItemId: persistentSnapshotByItemId,
-        );
+        // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — always merge with persistent snapshot.
+        // final persistentSnapshotByItemId =
+        //     await _buildPersistentInteractionSnapshotByItemId(userId);
+        // _items = _mergeWithPreviousInteractionState(
+        //   previousItems: previousItems,
+        //   fetchedItems: fetchedItems,
+        //   persistentSnapshotByItemId: persistentSnapshotByItemId,
+        // );
+        if (bypassLocalInteractionMerge) {
+          _items = List<EngagementItem>.from(fetchedItems);
+          app_logger.Logger.info(
+            'loadFeed: bypassing local interaction merge (account switch)',
+            tag: 'EngagementProvider',
+          );
+        } else {
+          final persistentSnapshotByItemId =
+              await _buildPersistentInteractionSnapshotByItemId(userId);
+          _items = _mergeWithPreviousInteractionState(
+            previousItems: previousItems,
+            fetchedItems: fetchedItems,
+            persistentSnapshotByItemId: persistentSnapshotByItemId,
+          );
+        }
       }
 
       // Old Code:
@@ -490,7 +678,22 @@ class EngagementProvider with ChangeNotifier {
         final decoded = jsonDecode(localUnitsRaw);
         if (decoded is Map) {
           decoded.forEach((k, v) {
-            final key = k.toString();
+            var key = k.toString();
+            /*
+            OLD CODE:
+              final parsed = ...
+              if (parsed != null && parsed > 0) {
+                _pollUserLocalUnitOverlay[key] = parsed;
+              }
+            */
+            // NEW CODE: migrate legacy `pollId|optionId` → `pollId|default|optionId`
+            final parts = key.split('|');
+            if (parts.length == 2) {
+              final pid = int.tryParse(parts[0]);
+              if (pid != null) {
+                key = pollUserLocalUnitStorageKey(pid, '', parts[1]);
+              }
+            }
             final parsed = v is num ? v.toInt() : int.tryParse(v.toString());
             if (parsed != null && parsed > 0) {
               _pollUserLocalUnitOverlay[key] = parsed;
@@ -529,9 +732,14 @@ class EngagementProvider with ChangeNotifier {
       if (lastVoteRaw != null && lastVoteRaw.isNotEmpty) {
         final decoded = jsonDecode(lastVoteRaw);
         if (decoded is Map) {
-          decoded.forEach((pollIdKey, mapRaw) {
+          decoded.forEach((storageKeyRaw, mapRaw) {
+            if (mapRaw is! Map) return;
+            /*
+            OLD CODE:
             final pollId = int.tryParse(pollIdKey.toString());
-            if (pollId == null || mapRaw is! Map) return;
+            if (pollId == null ...) { ... map into _pollLastVoteDetailedBets[pollId] }
+            */
+            // NEW CODE: Storage keys are composite `pollReceiptCacheKey` strings, legacy int-only migrated.
             final parsedMap = <String, int?>{};
             mapRaw.forEach((optionLabel, value) {
               if (value == null) {
@@ -545,8 +753,18 @@ class EngagementProvider with ChangeNotifier {
                 parsedMap[optionLabel.toString()] = parsed;
               }
             });
-            if (parsedMap.isNotEmpty) {
-              _pollLastVoteDetailedBets[pollId] = parsedMap;
+            if (parsedMap.isEmpty) return;
+
+            final keyStr = storageKeyRaw.toString();
+            if (RegExp(r'^\d+$').hasMatch(keyStr)) {
+              final pollId = int.parse(keyStr);
+              _pollLastVoteDetailedBetsByReceiptKey[pollReceiptCacheKey(
+                    pollId,
+                    '',
+                  )] =
+                  parsedMap;
+            } else {
+              _pollLastVoteDetailedBetsByReceiptKey[keyStr] = parsedMap;
             }
           });
         }
@@ -582,13 +800,25 @@ class EngagementProvider with ChangeNotifier {
 
   int? getPollUserLocalUnitOverride(
     int engagementItemId,
+    String sessionId,
     String optionUniqueId,
   ) {
-    final raw =
-        _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(
-          engagementItemId,
-          optionUniqueId,
-        )];
+    /*
+    OLD CODE:
+    final raw = _pollUserLocalUnitOverlay[
+      pollUserLocalUnitStorageKey(engagementItemId, optionUniqueId)];
+    */
+    // NEW CODE: Scoped overlay + backward read for unmigrated legacy two-segment keys.
+    final scoped = pollUserLocalUnitStorageKey(
+      engagementItemId,
+      sessionId,
+      optionUniqueId,
+    );
+    var raw = _pollUserLocalUnitOverlay[scoped];
+    if (raw == null) {
+      final legacy = '${engagementItemId}|$optionUniqueId';
+      raw = _pollUserLocalUnitOverlay[legacy];
+    }
     if (raw != null && raw > 0) {
       _touchPollInteraction(engagementItemId);
     }
@@ -597,13 +827,24 @@ class EngagementProvider with ChangeNotifier {
 
   Future<void> setPollUserLocalUnitOverride(
     int engagementItemId,
+    String sessionId,
     String optionUniqueId,
     int units,
   ) async {
     if (units <= 0) return;
     await ensureInteractionCacheHydrated();
+    /*
+    OLD CODE:
     _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(
           engagementItemId,
+          optionUniqueId,
+        )] = units;
+    */
+    // NEW CODE: Evict receipts for OTHER sessions whenever this interaction updates.
+    _evictStalePollScopedCachesExcept(engagementItemId, sessionId);
+    _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(
+          engagementItemId,
+          sessionId,
           optionUniqueId,
         )] =
         units;
@@ -628,6 +869,13 @@ class EngagementProvider with ChangeNotifier {
   ) async {
     await ensureInteractionCacheHydrated();
     if (receiptMap.isEmpty) return;
+    /*
+    OLD CODE:
+    _pollSessionReceiptCache[pollReceiptCacheKey(pollId, sessionId)] =
+        Map<String, int?>.from(receiptMap);
+    */
+    // NEW CODE
+    _evictStalePollScopedCachesExcept(pollId, sessionId);
     _pollSessionReceiptCache[pollReceiptCacheKey(pollId, sessionId)] =
         Map<String, int?>.from(receiptMap);
     _touchPollInteraction(pollId);
@@ -640,15 +888,31 @@ class EngagementProvider with ChangeNotifier {
     String sessionId,
   ) async {
     await ensureInteractionCacheHydrated();
-    _pollSessionReceiptCache.remove(pollReceiptCacheKey(pollId, sessionId));
+    final rk = pollReceiptCacheKey(pollId, sessionId);
+    /*
+    OLD CODE:
+    _pollSessionReceiptCache.remove(rk);
     _pollLastVoteDetailedBets.remove(pollId);
     _pollInteractionTouchedAtMs.remove(pollId);
+    */
+    // NEW CODE: Clear only scoped receipt + mirrored last-vote shard.
+    _pollSessionReceiptCache.remove(rk);
+    _pollLastVoteDetailedBetsByReceiptKey.remove(rk);
     unawaited(_persistInteractionCaches());
     notifyListeners();
   }
 
-  Map<String, int?>? getPollLastVoteDetailedBets(int pollId) {
+  Map<String, int?>? getPollLastVoteDetailedBets(int pollId, String sessionId) {
+    /*
+    OLD CODE:
     final v = _pollLastVoteDetailedBets[pollId];
+    */
+    // NEW CODE
+    final v =
+        _pollLastVoteDetailedBetsByReceiptKey[pollReceiptCacheKey(
+          pollId,
+          sessionId,
+        )];
     if (v != null && v.isNotEmpty) {
       _touchPollInteraction(pollId);
     }
@@ -656,34 +920,56 @@ class EngagementProvider with ChangeNotifier {
   }
 
   bool hasPersistentInteractionRecordForItem(int itemId) {
-    final hasLastVote =
-        _pollLastVoteDetailedBets.containsKey(itemId) &&
-        (_pollLastVoteDetailedBets[itemId]?.isNotEmpty ?? false);
-    if (hasLastVote) return true;
-
+    /*
+    OLD CODE:
+        _pollLastVoteDetailedBets.containsKey(itemId) ...
+        prefix matches on int-keyed map...
+    */
+    // NEW CODE: Normal / non-session polls — any scoped payload under poll id suffices.
+    if (_pollLastVoteDetailedBetsByReceiptKey.keys.any((k) {
+      final pid = _pollIdFromReceiptCompositeKey(k);
+      return pid == itemId &&
+          (_pollLastVoteDetailedBetsByReceiptKey[k]?.isNotEmpty ?? false);
+    })) {
+      return true;
+    }
     final prefixByItemId = '$itemId|';
     final hasLocalUnitOverlay = _pollUserLocalUnitOverlay.keys.any(
       (k) => k.startsWith(prefixByItemId),
     );
     if (hasLocalUnitOverlay) return true;
 
-    final prefixByPollSession = '${itemId}_';
-    final hasSessionReceipt = _pollSessionReceiptCache.keys.any(
-      (k) => k.startsWith(prefixByPollSession),
-    );
-    return hasSessionReceipt;
+    return _pollSessionReceiptCache.keys.any((k) {
+      final pid = _pollIdFromReceiptCompositeKey(k);
+      return pid == itemId;
+    });
   }
 
   Future<void> setPollLastVoteDetailedBets(
     int pollId,
+    String sessionId,
     Map<String, int?> detailedBets,
   ) async {
     await ensureInteractionCacheHydrated();
+    final rk = pollReceiptCacheKey(pollId, sessionId);
+    /*
+    OLD CODE:
     if (detailedBets.isEmpty) {
       _pollLastVoteDetailedBets.remove(pollId);
       _pollInteractionTouchedAtMs.remove(pollId);
     } else {
-      _pollLastVoteDetailedBets[pollId] = Map<String, int?>.from(detailedBets);
+      _pollLastVoteDetailedBets[pollId] = Map.from(detailedBets);
+      _touchPollInteraction(pollId);
+    }
+    */
+    // NEW CODE
+    if (detailedBets.isEmpty) {
+      _pollLastVoteDetailedBetsByReceiptKey.remove(rk);
+    } else {
+      _evictStalePollScopedCachesExcept(pollId, sessionId);
+      _pollLastVoteDetailedBetsByReceiptKey[rk] = Map<String, int?>.from(
+        detailedBets,
+      );
       _touchPollInteraction(pollId);
     }
     unawaited(_persistInteractionCaches());
@@ -702,6 +988,8 @@ class EngagementProvider with ChangeNotifier {
         _pollSessionReceiptCacheKey,
         jsonEncode(_pollSessionReceiptCache),
       );
+      /*
+      OLD CODE:
       final lastVotesAsStringKeyed = <String, Map<String, int?>>{};
       _pollLastVoteDetailedBets.forEach((k, v) {
         lastVotesAsStringKeyed[k.toString()] = v;
@@ -709,6 +997,12 @@ class EngagementProvider with ChangeNotifier {
       await prefs.setString(
         _pollLastVoteDetailedBetsKey,
         jsonEncode(lastVotesAsStringKeyed),
+      );
+      */
+      // NEW CODE: Keys already composite (pollId_sessionId).
+      await prefs.setString(
+        _pollLastVoteDetailedBetsKey,
+        jsonEncode(_pollLastVoteDetailedBetsByReceiptKey),
       );
       final touchedAsStringKeyed = <String, int>{};
       _pollInteractionTouchedAtMs.forEach((k, v) {
@@ -726,6 +1020,41 @@ class EngagementProvider with ChangeNotifier {
         stackTrace: st,
       );
     }
+  }
+
+  /// Returns false when merging local caches would cross round/session boundaries for polls.
+  bool _sessionsAllowRecoveringLocalPollVote(
+    EngagementItem fresh,
+    EngagementItem source,
+  ) {
+    if (fresh.type != EngagementType.poll) return true;
+
+    final pollMode = (fresh.pollVotingSchedule?['poll_mode'] ?? '')
+        .toString()
+        .toLowerCase();
+    final fs = (fresh.pollVotingSchedule?['current_session_id'] ?? '')
+        .toString()
+        .trim();
+    final ss = (source.pollVotingSchedule?['current_session_id'] ?? '')
+        .toString()
+        .trim();
+
+    /*
+    OLD CODE relied on NON-empty deltas only (`sessionBoundaryChanged`).
+    EMPTY vs REAL session combos could still splice votes incorrectly.
+    */
+    // NEW CODE
+    if (pollMode == 'auto_run') {
+      if (fs.isEmpty || ss.isEmpty) {
+        return false;
+      }
+      return fs == ss;
+    }
+
+    if (fs.isNotEmpty && ss.isNotEmpty && fs != ss) {
+      return false;
+    }
+    return true;
   }
 
   List<EngagementItem> _mergeWithPreviousInteractionState({
@@ -756,18 +1085,45 @@ class EngagementProvider with ChangeNotifier {
           fresh.userAnswer != null && fresh.userAnswer!.trim().isNotEmpty;
       final lostUserAnswer = hadUserAnswerBefore && !hasUserAnswerNow;
 
+      /*
+      OLD CODE:
       final hasPersistentLocalRecordForItem =
           hasPersistentInteractionRecordForItem(fresh.id);
       final previousSessionId = source.pollVotingSchedule?['current_session_id']
           ?.toString();
       final freshSessionId = fresh.pollVotingSchedule?['current_session_id']
           ?.toString();
-      final sessionBoundaryChanged =
-          previousSessionId != null &&
-          previousSessionId.isNotEmpty &&
-          freshSessionId != null &&
-          freshSessionId.isNotEmpty &&
-          previousSessionId != freshSessionId;
+      final sessionBoundaryChanged = ...
+      if (sessionBoundaryChanged) { return fresh; }
+      */
+      // NEW CODE: Session-first for polls (AUTO_RUN strict; others lenient unless both disagree).
+      if (!_sessionsAllowRecoveringLocalPollVote(fresh, source)) {
+        app_logger.Logger.info(
+          'Skipping local interaction recovery for item ${fresh.id}: '
+          'sessions not aligned for merge',
+          tag: 'EngagementProvider',
+        );
+        return fresh;
+      }
+
+      final pollMode = fresh.type == EngagementType.poll
+          ? (fresh.pollVotingSchedule?['poll_mode'] ?? '')
+                .toString()
+                .toLowerCase()
+          : '';
+      final freshSessionTrimmed = fresh.type == EngagementType.poll
+          ? (fresh.pollVotingSchedule?['current_session_id'] ?? '')
+                .toString()
+                .trim()
+          : '';
+
+      final bool hasPersistentLocalRecordForItem =
+          pollMode == 'auto_run' && fresh.type == EngagementType.poll
+          ? _persistedVoteReceiptExistsForPollSession(
+              fresh.id,
+              freshSessionTrimmed,
+            )
+          : hasPersistentInteractionRecordForItem(fresh.id);
 
       final shouldRecoverFromLocal =
           lostInteractionFlag ||
@@ -776,16 +1132,6 @@ class EngagementProvider with ChangeNotifier {
               (!fresh.hasInteracted ||
                   (fresh.userAnswer == null ||
                       fresh.userAnswer!.trim().isEmpty)));
-
-      if (sessionBoundaryChanged) {
-        app_logger.Logger.info(
-          'Skipping local interaction recovery for poll ${fresh.id} '
-          'due to session boundary change '
-          '($previousSessionId -> $freshSessionId)',
-          tag: 'EngagementProvider',
-        );
-        return fresh;
-      }
 
       if (!shouldRecoverFromLocal) {
         return fresh;
@@ -840,14 +1186,25 @@ class EngagementProvider with ChangeNotifier {
     });
 
     void removePoll(int pollId) {
+      /*
+      OLD CODE:
       _pollLastVoteDetailedBets.remove(pollId);
-      _pollInteractionTouchedAtMs.remove(pollId);
+      ...
       _pollSessionReceiptCache.removeWhere(
-        (sessionKey, _) => sessionKey.startsWith('${pollId}_'),
-      );
-      _pollUserLocalUnitOverlay.removeWhere(
-        (overlayKey, _) => overlayKey.startsWith('$pollId|'),
-      );
+          (sessionKey, _) => sessionKey.startsWith('${pollId}_'));
+      */
+      // NEW CODE: Avoid naive `startsWith('$pollId_')` pitfalls (poll 12 vs 123).
+      _pollLastVoteDetailedBetsByReceiptKey.removeWhere((k, _) {
+        return _pollIdFromReceiptCompositeKey(k) == pollId;
+      });
+      _pollInteractionTouchedAtMs.remove(pollId);
+      _pollSessionReceiptCache.removeWhere((k, _) {
+        return _pollIdFromReceiptCompositeKey(k) == pollId;
+      });
+      _pollUserLocalUnitOverlay.removeWhere((overlayKey, _) {
+        final pid = int.tryParse(overlayKey.split('|').first);
+        return pid == pollId;
+      });
     }
 
     for (final pollId in expiredPollIds) {
@@ -868,6 +1225,30 @@ class EngagementProvider with ChangeNotifier {
         retainedPollIds.length - _maxRetainedPollInteractionEntries;
     for (var i = 0; i < overflowCount; i++) {
       removePoll(retainedPollIds[i]);
+    }
+  }
+
+  // NEW CODE: Clear all persistent interaction caches during user switch/logout
+  Future<void> clearAllInteractionCaches() async {
+    _pollUserLocalUnitOverlay.clear();
+    _pollSessionReceiptCache.clear();
+    _pollLastVoteDetailedBetsByReceiptKey.clear();
+    _pollInteractionTouchedAtMs.clear();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_pollLocalUnitOverlayKey);
+      await prefs.remove(_pollSessionReceiptCacheKey);
+      await prefs.remove(_pollLastVoteDetailedBetsKey);
+      await prefs.remove(_pollInteractionTouchedAtMsKey);
+      app_logger.Logger.info(
+        'Cleared all persistent interaction caches for User Switch/Logout',
+        tag: 'EngagementProvider',
+      );
+    } catch (e) {
+      app_logger.Logger.warning(
+        'Failed to clear persistent interaction caches: $e',
+        tag: 'EngagementProvider',
+      );
     }
   }
 
@@ -927,6 +1308,14 @@ class EngagementProvider with ChangeNotifier {
     _error = null;
     notifyListeners();
     await _loadCachedFeedForUser(userId, notify: true);
+    /*
+    OLD CODE:
+    unawaited(loadFeed(userId: userId, token: token, forceRefresh: true));
+    */
+    // NEW CODE: Reconcile AUTO_RUN snapshots with authoritative prefs before painting votes.
+    await ensureInteractionCacheHydrated();
+    _items = _validateCachedPollInteractionsAgainstPrefs(_items);
+    notifyListeners();
     unawaited(loadFeed(userId: userId, token: token, forceRefresh: true));
   }
 
@@ -1169,13 +1558,28 @@ class EngagementProvider with ChangeNotifier {
 
   /// Clear all data
   void clear() {
+    final cacheUserId = _currentUserId;
     _stopPolling();
-    _items = [];
+
+    // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန်
+    // _items.clear();
+    // _error = null;
+    // ...
+    // if (cacheUserId != null) {
+    //   unawaited(_clearFeedCacheForUser(cacheUserId));
+    // }
+
+    // NEW CODE:
+    _items.clear();
     _error = null;
     _isLoading = false;
     _isAutoPollPaused = false;
     _currentUserId = null;
     _hasLoadedForCurrentUser = false;
+    if (cacheUserId != null) {
+      unawaited(_clearFeedCacheForUser(cacheUserId));
+    }
+    unawaited(clearAllInteractionCaches()); // Fix cross-user cache bleeding
     _notifyListenersDebounced();
   }
 

@@ -40,13 +40,13 @@ class OfflineQueueItem {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'type': type.toString(),
-        'data': data,
-        'createdAt': createdAt.toIso8601String(),
-        'retryCount': retryCount,
-        'errorMessage': errorMessage,
-      };
+    'id': id,
+    'type': type.toString(),
+    'data': data,
+    'createdAt': createdAt.toIso8601String(),
+    'retryCount': retryCount,
+    'errorMessage': errorMessage,
+  };
 
   factory OfflineQueueItem.fromJson(Map<String, dynamic> json) {
     return OfflineQueueItem(
@@ -98,7 +98,7 @@ class OfflineQueueService extends ChangeNotifier {
   Timer? _syncTimer;
   bool _isSyncing = false;
   bool _isInitialized = false;
-  
+
   // Callback for order creation (set by OrderProvider)
   Future<dynamic> Function({
     required String userId,
@@ -111,9 +111,17 @@ class OfflineQueueService extends ChangeNotifier {
     double discount,
     String? notes,
     Map<String, dynamic>? metadata,
-  })? _orderCreationCallback;
+  })?
+  _orderCreationCallback;
 
   Future<bool> Function(Map<String, dynamic> payload)? _pointAdjustmentCallback;
+
+  /*
+  Old Code: no UI balance refresh after queued point replay succeeded (server updated,
+  local PointProvider could stay stale until another screen refresh).
+  */
+  /// Optional: e.g. [PointProvider.loadBalance] after a queued point adjustment succeeds.
+  Future<void> Function(String userId)? _pointAdjustmentSyncedListener;
 
   // Getters
   List<OfflineQueueItem> get queue => List.unmodifiable(_queue);
@@ -124,7 +132,10 @@ class OfflineQueueService extends ChangeNotifier {
   /// Initialize offline queue service
   Future<void> initialize() async {
     if (_isInitialized) {
-      Logger.info('OfflineQueueService already initialized', tag: 'OfflineQueue');
+      Logger.info(
+        'OfflineQueueService already initialized',
+        tag: 'OfflineQueue',
+      );
       return;
     }
 
@@ -139,11 +150,17 @@ class OfflineQueueService extends ChangeNotifier {
       _startSyncTimer();
 
       _isInitialized = true;
-      Logger.info('OfflineQueueService initialized - ${_queue.length} items in queue',
-          tag: 'OfflineQueue');
+      Logger.info(
+        'OfflineQueueService initialized - ${_queue.length} items in queue',
+        tag: 'OfflineQueue',
+      );
     } catch (e, stackTrace) {
-      Logger.error('Failed to initialize OfflineQueueService: $e',
-          tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to initialize OfflineQueueService: $e',
+        tag: 'OfflineQueue',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -171,8 +188,10 @@ class OfflineQueueService extends ChangeNotifier {
     await _saveQueueToStorage();
     notifyListeners();
 
-    Logger.info('Added item to offline queue: ${type.toString()}',
-        tag: 'OfflineQueue');
+    Logger.info(
+      'Added item to offline queue: ${type.toString()}',
+      tag: 'OfflineQueue',
+    );
 
     // Try to sync immediately if online
     if (ConnectivityService().isConnected) {
@@ -188,7 +207,10 @@ class OfflineQueueService extends ChangeNotifier {
     await _saveQueueToStorage();
     notifyListeners();
 
-    Logger.info('Removed item from offline queue: $itemId', tag: 'OfflineQueue');
+    Logger.info(
+      'Removed item from offline queue: $itemId',
+      tag: 'OfflineQueue',
+    );
   }
 
   /// Sync queue when online
@@ -200,8 +222,10 @@ class OfflineQueueService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      Logger.info('Starting queue sync - ${_queue.length} items',
-          tag: 'OfflineQueue');
+      Logger.info(
+        'Starting queue sync - ${_queue.length} items',
+        tag: 'OfflineQueue',
+      );
 
       final itemsToProcess = List<OfflineQueueItem>.from(_queue);
       final List<String> processedIds = [];
@@ -212,6 +236,12 @@ class OfflineQueueService extends ChangeNotifier {
           final success = await _processQueueItem(item);
           if (success) {
             processedIds.add(item.id);
+            if (item.type == OfflineQueueItemType.pointAdjustment) {
+              final uid = _userIdFromPointAdjustmentData(item.data);
+              if (uid != null && uid.isNotEmpty) {
+                _invokePointAdjustmentSyncedListener(uid);
+              }
+            }
           } else {
             // Increment retry count
             final updatedItem = item.copyWith(retryCount: item.retryCount + 1);
@@ -224,29 +254,40 @@ class OfflineQueueService extends ChangeNotifier {
             if (updatedItem.retryCount >= _maxRetries) {
               failedIds.add(item.id);
               Logger.warning(
-                  'Item failed after $_maxRetries retries: ${item.id}',
-                  tag: 'OfflineQueue');
+                'Item failed after $_maxRetries retries: ${item.id}',
+                tag: 'OfflineQueue',
+              );
             }
           }
         } catch (e, stackTrace) {
-          Logger.error('Error processing queue item: ${item.id}',
-              tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+          Logger.error(
+            'Error processing queue item: ${item.id}',
+            tag: 'OfflineQueue',
+            error: e,
+            stackTrace: stackTrace,
+          );
           failedIds.add(item.id);
         }
       }
 
       // Remove processed and failed items
-      _queue.removeWhere((item) =>
-          processedIds.contains(item.id) || failedIds.contains(item.id));
+      _queue.removeWhere(
+        (item) => processedIds.contains(item.id) || failedIds.contains(item.id),
+      );
       await _saveQueueToStorage();
       notifyListeners();
 
       Logger.info(
-          'Queue sync completed - Processed: ${processedIds.length}, Failed: ${failedIds.length}, Remaining: ${_queue.length}',
-          tag: 'OfflineQueue');
+        'Queue sync completed - Processed: ${processedIds.length}, Failed: ${failedIds.length}, Remaining: ${_queue.length}',
+        tag: 'OfflineQueue',
+      );
     } catch (e, stackTrace) {
-      Logger.error('Error syncing queue: $e',
-          tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error syncing queue: $e',
+        tag: 'OfflineQueue',
+        error: e,
+        stackTrace: stackTrace,
+      );
     } finally {
       _isSyncing = false;
       notifyListeners();
@@ -257,9 +298,11 @@ class OfflineQueueService extends ChangeNotifier {
   /// This delegates to appropriate handlers based on item type
   Future<bool> _processQueueItem(OfflineQueueItem item) async {
     try {
-      Logger.info('Processing queue item: ${item.type.toString()}',
-          tag: 'OfflineQueue');
-      
+      Logger.info(
+        'Processing queue item: ${item.type.toString()}',
+        tag: 'OfflineQueue',
+      );
+
       switch (item.type) {
         case OfflineQueueItemType.addToCart:
           return await _processAddToCart(item);
@@ -271,8 +314,10 @@ class OfflineQueueService extends ChangeNotifier {
           return await _processCreateOrder(item);
         case OfflineQueueItemType.pointAdjustment:
           if (_pointAdjustmentCallback == null) {
-            Logger.warning('Point adjustment callback not registered',
-                tag: 'OfflineQueue');
+            Logger.warning(
+              'Point adjustment callback not registered',
+              tag: 'OfflineQueue',
+            );
             return false;
           }
           return await _pointAdjustmentCallback!(item.data);
@@ -281,13 +326,19 @@ class OfflineQueueService extends ChangeNotifier {
         case OfflineQueueItemType.updateAddress:
         case OfflineQueueItemType.deleteAddress:
           // These are handled by their respective providers
-          Logger.info('Queue item type ${item.type} not yet implemented',
-              tag: 'OfflineQueue');
+          Logger.info(
+            'Queue item type ${item.type} not yet implemented',
+            tag: 'OfflineQueue',
+          );
           return true; // Skip for now
       }
     } catch (e, stackTrace) {
-      Logger.error('Error processing queue item: ${item.id}',
-          tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error processing queue item: ${item.id}',
+        tag: 'OfflineQueue',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -297,12 +348,14 @@ class OfflineQueueService extends ChangeNotifier {
     try {
       // Cart operations are local-only, so they're already persisted
       // This is mainly for future server-side cart sync if needed
-      Logger.info('Add to cart already processed locally',
-          tag: 'OfflineQueue');
+      Logger.info('Add to cart already processed locally', tag: 'OfflineQueue');
       return true;
     } catch (e) {
-      Logger.error('Error processing add to cart: $e',
-          tag: 'OfflineQueue', error: e);
+      Logger.error(
+        'Error processing add to cart: $e',
+        tag: 'OfflineQueue',
+        error: e,
+      );
       return false;
     }
   }
@@ -311,12 +364,17 @@ class OfflineQueueService extends ChangeNotifier {
   Future<bool> _processRemoveFromCart(OfflineQueueItem item) async {
     try {
       // Cart operations are local-only, so they're already persisted
-      Logger.info('Remove from cart already processed locally',
-          tag: 'OfflineQueue');
+      Logger.info(
+        'Remove from cart already processed locally',
+        tag: 'OfflineQueue',
+      );
       return true;
     } catch (e) {
-      Logger.error('Error processing remove from cart: $e',
-          tag: 'OfflineQueue', error: e);
+      Logger.error(
+        'Error processing remove from cart: $e',
+        tag: 'OfflineQueue',
+        error: e,
+      );
       return false;
     }
   }
@@ -325,12 +383,17 @@ class OfflineQueueService extends ChangeNotifier {
   Future<bool> _processUpdateCartQuantity(OfflineQueueItem item) async {
     try {
       // Cart operations are local-only, so they're already persisted
-      Logger.info('Update cart quantity already processed locally',
-          tag: 'OfflineQueue');
+      Logger.info(
+        'Update cart quantity already processed locally',
+        tag: 'OfflineQueue',
+      );
       return true;
     } catch (e) {
-      Logger.error('Error processing update cart quantity: $e',
-          tag: 'OfflineQueue', error: e);
+      Logger.error(
+        'Error processing update cart quantity: $e',
+        tag: 'OfflineQueue',
+        error: e,
+      );
       return false;
     }
   }
@@ -339,11 +402,12 @@ class OfflineQueueService extends ChangeNotifier {
   Future<bool> _processCreateOrder(OfflineQueueItem item) async {
     try {
       final data = item.data;
-      
+
       // Extract order data
       final userId = data['userId'] as String;
       final cartItemsJson = data['cartItems'] as List<dynamic>;
-      final shippingAddressJson = data['shippingAddress'] as Map<String, dynamic>;
+      final shippingAddressJson =
+          data['shippingAddress'] as Map<String, dynamic>;
       final billingAddressJson = data['billingAddress'] as Map<String, dynamic>;
       final paymentMethodStr = data['paymentMethod'] as String;
       final shippingCost = (data['shippingCost'] as num?)?.toDouble() ?? 0.0;
@@ -370,8 +434,10 @@ class OfflineQueueService extends ChangeNotifier {
       // Use callback to create order
       final orderCreationCallback = _orderCreationCallback;
       if (orderCreationCallback == null) {
-        Logger.error('Order creation callback not registered',
-            tag: 'OfflineQueue');
+        Logger.error(
+          'Order creation callback not registered',
+          tag: 'OfflineQueue',
+        );
         return false;
       }
 
@@ -390,17 +456,19 @@ class OfflineQueueService extends ChangeNotifier {
       );
 
       if (wooOrder == null) {
-        Logger.error('Failed to create order from queue',
-            tag: 'OfflineQueue');
+        Logger.error('Failed to create order from queue', tag: 'OfflineQueue');
         return false;
       }
 
-      Logger.info('Order created successfully from queue',
-          tag: 'OfflineQueue');
+      Logger.info('Order created successfully from queue', tag: 'OfflineQueue');
       return true;
     } catch (e, stackTrace) {
-      Logger.error('Error processing create order: $e',
-          tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error processing create order: $e',
+        tag: 'OfflineQueue',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -418,16 +486,61 @@ class OfflineQueueService extends ChangeNotifier {
       double discount,
       String? notes,
       Map<String, dynamic>? metadata,
-    }) callback,
+    })
+    callback,
   ) {
     _orderCreationCallback = callback;
     Logger.info('Order creation callback registered', tag: 'OfflineQueue');
   }
 
   void setPointAdjustmentCallback(
-      Future<bool> Function(Map<String, dynamic> payload) callback) {
+    Future<bool> Function(Map<String, dynamic> payload) callback,
+  ) {
     _pointAdjustmentCallback = callback;
     Logger.info('Point adjustment callback registered', tag: 'OfflineQueue');
+  }
+
+  /// Register once (e.g. from [PointService.registerOfflineQueueHandler]) to refresh UI balance.
+  void setPointAdjustmentSyncedListener(
+    Future<void> Function(String userId)? listener,
+  ) {
+    _pointAdjustmentSyncedListener = listener;
+    Logger.info(
+      'Point adjustment post-sync listener ${listener == null ? "cleared" : "registered"}',
+      tag: 'OfflineQueue',
+    );
+  }
+
+  String? _userIdFromPointAdjustmentData(Map<String, dynamic> data) {
+    final top = data['user_id']?.toString().trim();
+    if (top != null && top.isNotEmpty) return top;
+    final tx = data['transaction'];
+    if (tx is Map<String, dynamic>) {
+      final u =
+          tx['userId']?.toString().trim() ?? tx['user_id']?.toString().trim();
+      if (u != null && u.isNotEmpty) return u;
+    } else if (tx is Map) {
+      final m = Map<String, dynamic>.from(tx);
+      final u =
+          m['userId']?.toString().trim() ?? m['user_id']?.toString().trim();
+      if (u != null && u.isNotEmpty) return u;
+    }
+    return null;
+  }
+
+  void _invokePointAdjustmentSyncedListener(String userId) {
+    final listener = _pointAdjustmentSyncedListener;
+    if (listener == null) return;
+    unawaited(
+      listener(userId).catchError((Object e, StackTrace st) {
+        Logger.warning(
+          'Point adjustment post-sync listener failed: $e',
+          tag: 'OfflineQueue',
+          error: e,
+          stackTrace: st,
+        );
+      }),
+    );
   }
 
   /// Reset retry state for queued point adjustments after endpoint/auth fixes.
@@ -484,15 +597,24 @@ class OfflineQueueService extends ChangeNotifier {
         _queue.clear();
         _queue.addAll(
           queueData
-              .map((item) => OfflineQueueItem.fromJson(item as Map<String, dynamic>))
+              .map(
+                (item) =>
+                    OfflineQueueItem.fromJson(item as Map<String, dynamic>),
+              )
               .toList(),
         );
-        Logger.info('Loaded ${_queue.length} items from offline queue',
-            tag: 'OfflineQueue');
+        Logger.info(
+          'Loaded ${_queue.length} items from offline queue',
+          tag: 'OfflineQueue',
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error loading queue from storage: $e',
-          tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error loading queue from storage: $e',
+        tag: 'OfflineQueue',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -500,11 +622,17 @@ class OfflineQueueService extends ChangeNotifier {
   Future<void> _saveQueueToStorage() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final queueJson = json.encode(_queue.map((item) => item.toJson()).toList());
+      final queueJson = json.encode(
+        _queue.map((item) => item.toJson()).toList(),
+      );
       await prefs.setString(_queueKey, queueJson);
     } catch (e, stackTrace) {
-      Logger.error('Error saving queue to storage: $e',
-          tag: 'OfflineQueue', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error saving queue to storage: $e',
+        tag: 'OfflineQueue',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -524,4 +652,3 @@ class OfflineQueueService extends ChangeNotifier {
     super.dispose();
   }
 }
-

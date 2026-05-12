@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -12,6 +14,7 @@ import '../services/poll_winner_popup_service.dart';
 import '../services/canonical_point_balance_sync.dart';
 import '../theme/app_theme.dart';
 import '../utils/logger.dart' as app_logger;
+import '../utils/poll_display_helpers.dart';
 
 /// Interactive Engagement Carousel Widget
 class EngagementCarousel extends StatefulWidget {
@@ -58,7 +61,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         (rawVotingStatus == null || rawVotingStatus.toString().isEmpty)
         ? 'unknown'
         : rawVotingStatus.toString().toLowerCase();
-    return '${item.id}_${sessionId}_${startedAt}_${votingStatus}';
+    return '${item.id}_${sessionId}_${startedAt}_$votingStatus';
   }
 
   bool _isInHandoverBuffer(String key) {
@@ -73,11 +76,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     for (final item in items) {
       if (item.type != EngagementType.poll) continue;
       final schedule = item.pollVotingSchedule;
-      final seconds = schedule != null && schedule['seconds_until_close'] is int
-          ? (schedule['seconds_until_close'] as int)
-          : (schedule != null && schedule['seconds_until_close'] is num
-                ? (schedule['seconds_until_close'] as num).toInt()
-                : 0);
+      final serverEndsAtUtc = resolvePollEndsAtUtc(schedule);
+      final seconds = resolvePollSecondsRemaining(
+        schedule: schedule,
+        endsAtUtc: serverEndsAtUtc,
+      );
       if (seconds > 0 && seconds <= 10) {
         validKeys.add(_pollSessionKey(item));
       }
@@ -686,6 +689,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 
   /// Interaction count badge shown in top-right corner of each card
   Widget _buildInteractionCountBadge(EngagementItem item) {
+    /*
+    Old Code:
     if (item.interactionCount <= 0) return const SizedBox.shrink();
     return Positioned(
       top: 12,
@@ -710,6 +715,40 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 color: Colors.white,
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    */
+    // New Code: Poll card now renders a unified top strip
+    // (Duration | Total Value | Users), so disable the legacy top-right badge for polls.
+    if (item.type == EngagementType.poll) return const SizedBox.shrink();
+    if (item.interactionCount <= 0) return const SizedBox.shrink();
+    return Positioned(
+      top: 12,
+      right: 12,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.5),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white.withOpacity(0.3), width: 1),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.people_outline, color: Colors.white, size: 12),
+            const SizedBox(width: 4),
+            Text(
+              item.interactionCount >= 1000
+                  ? '${(item.interactionCount / 1000).toStringAsFixed(1)}k'
+                  : item.interactionCount.toString(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ],
@@ -1248,8 +1287,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
             ? (schedule['seconds_until_close'] as num).toInt()
             : 0);
     */
-    final DateTime? serverEndsAtUtc = _resolvePollEndsAtUtc(schedule);
-    final int secondsUntilClose = _resolveServerAnchoredSeconds(
+    final DateTime? serverEndsAtUtc = resolvePollEndsAtUtc(schedule);
+    final int secondsUntilClose = resolvePollSecondsRemaining(
       schedule: schedule,
       endsAtUtc: serverEndsAtUtc,
     );
@@ -1794,6 +1833,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
           fit: StackFit.expand,
           children: [
             cardContent,
+            /*
+            Old Code:
             Positioned(
               top: 10,
               left: 10,
@@ -1846,6 +1887,88 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                             });
                           },
                         ),
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey<String>('poll_timer_none'),
+                      ),
+              ),
+            ),
+            */
+            Positioned(
+              top: 10,
+              left: 10,
+              right: 10,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 500),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                layoutBuilder: (currentChild, previousChildren) {
+                  return Stack(
+                    alignment: Alignment.topLeft,
+                    children: [
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  );
+                },
+                transitionBuilder: (Widget child, Animation<double> animation) {
+                  final slideAnimation = Tween<Offset>(
+                    begin: const Offset(0, -0.08),
+                    end: Offset.zero,
+                  ).animate(animation);
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: slideAnimation,
+                      child: child,
+                    ),
+                  );
+                },
+                child: showPermanentTimer
+                    ? /* Old Code:
+                        IgnorePointer(
+                          key: ValueKey<String>('badge_$sessionKey'),
+                          child: _PermanentPollTimer(
+                            key: ValueKey<String>(
+                              'timer_${item.id}_${votingStatus}_$sessionKey',
+                            ),
+                            item: item,
+                            initialSeconds: secondsUntilClose,
+                            serverEndsAtUtc: serverEndsAtUtc,
+                            debugLabel: 'poll_${item.id}_$sessionKey',
+                            onReachedHandover: () {
+                              if (!mounted) return;
+                              if (_forcedOverlaySessionKeys.contains(
+                                sessionKey,
+                              )) {
+                                return;
+                              }
+                              setState(() {
+                                _forcedOverlaySessionKeys.add(sessionKey);
+                                _handoverTriggeredAt[sessionKey] =
+                                    DateTime.now();
+                              });
+                            },
+                          ),
+                        ),
+                        */ _PermanentPollTimer(
+                        key: ValueKey<String>(
+                          'timer_${item.id}_${votingStatus}_$sessionKey',
+                        ),
+                        item: item,
+                        initialSeconds: secondsUntilClose,
+                        serverEndsAtUtc: serverEndsAtUtc,
+                        debugLabel: 'poll_${item.id}_$sessionKey',
+                        onReachedHandover: () {
+                          if (!mounted) return;
+                          if (_forcedOverlaySessionKeys.contains(sessionKey)) {
+                            return;
+                          }
+                          setState(() {
+                            _forcedOverlaySessionKeys.add(sessionKey);
+                            _handoverTriggeredAt[sessionKey] = DateTime.now();
+                          });
+                        },
                       )
                     : const SizedBox.shrink(
                         key: ValueKey<String>('poll_timer_none'),
@@ -2441,10 +2564,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     return html.replaceAll(exp, '').trim();
   }
 
+  // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — replaced by [resolvePollEndsAtUtc] / [resolvePollSecondsRemaining].
+  /*
   DateTime? _resolvePollEndsAtUtc(Map<String, dynamic>? schedule) {
     if (schedule == null) return null;
-    final raw =
-        schedule['ends_at'] ??
+    final raw = schedule['ends_at'] ??
         schedule['poll_actual_end_at'] ??
         schedule['end_time'];
     final text = raw?.toString().trim();
@@ -2457,23 +2581,27 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     required Map<String, dynamic>? schedule,
     required DateTime? endsAtUtc,
   }) {
-    if (endsAtUtc != null) {
-      final diff = endsAtUtc.difference(DateTime.now().toUtc()).inSeconds;
-      return diff < 0 ? 0 : diff;
-    }
     final rawSeconds = schedule?['seconds_until_close'];
-    if (rawSeconds is int) return rawSeconds < 0 ? 0 : rawSeconds;
+    if (rawSeconds is int) {
+      return rawSeconds < 0 ? 0 : rawSeconds;
+    }
     if (rawSeconds is num) {
       final v = rawSeconds.toInt();
       return v < 0 ? 0 : v;
     }
+    if (endsAtUtc != null) {
+      final diff = endsAtUtc.difference(DateTime.now().toUtc()).inSeconds;
+      return diff < 0 ? 0 : diff;
+    }
     return 0;
   }
+  */
 }
 
 /// Always-visible compact timer badge for poll duration.
 /// Separate from [_PollCountdownOverlay], which remains last-10-seconds only.
 class _PermanentPollTimer extends StatefulWidget {
+  final EngagementItem item;
   final int initialSeconds;
   final DateTime? serverEndsAtUtc;
   final String? debugLabel;
@@ -2481,6 +2609,7 @@ class _PermanentPollTimer extends StatefulWidget {
 
   const _PermanentPollTimer({
     super.key,
+    required this.item,
     required this.initialSeconds,
     this.serverEndsAtUtc,
     this.debugLabel,
@@ -2495,29 +2624,48 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   late int _secondsLeft;
   Timer? _timer;
   bool _didNotifyHandover = false;
+  bool _didLogUnitValueAudit = false;
+  /* Old Code:
+  final ScrollController _optionTotalsScrollController = ScrollController();
+
+  void _scrollOptionTotalsByDragDelta(double deltaDx) {
+    final c = _optionTotalsScrollController;
+    if (!c.hasClients) return;
+    final lower = c.position.minScrollExtent;
+    final upper = c.position.maxScrollExtent;
+    final next = math.min(upper, math.max(lower, c.offset - deltaDx));
+    c.jumpTo(next);
+  }
+  */
 
   int _clampSeconds(int value) => value < 0 ? 0 : value;
 
   int _serverAnchoredSeconds() {
-    final anchor = widget.serverEndsAtUtc;
-    if (anchor == null) return _clampSeconds(widget.initialSeconds);
-    final diff = anchor.difference(DateTime.now().toUtc()).inSeconds;
-    return _clampSeconds(diff);
+    final fromInitial = _clampSeconds(widget.initialSeconds);
+    if (fromInitial > 0) return fromInitial;
+    final ends = widget.serverEndsAtUtc;
+    if (ends != null) {
+      final diff = ends.difference(DateTime.now().toUtc()).inSeconds;
+      return _clampSeconds(diff);
+    }
+    return 0;
   }
 
   void _startOrRefreshTimer() {
     _timer?.cancel();
     _didNotifyHandover = false;
     if (_secondsLeft <= 0) return;
+    if (_secondsLeft <= 10) {
+      if (!_didNotifyHandover) {
+        _didNotifyHandover = true;
+        widget.onReachedHandover?.call();
+      }
+      return;
+    }
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      final nextFromServer = _serverAnchoredSeconds();
       setState(() {
-        /*
-        Old Code:
         _secondsLeft = _clampSeconds(_secondsLeft - 1);
-        */
-        _secondsLeft = nextFromServer;
       });
       if (_secondsLeft <= 10) {
         if (!_didNotifyHandover) {
@@ -2535,6 +2683,354 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
     return '$mm:$ss';
   }
 
+  String _formatCompactNumber(num value) {
+    final absValue = value.abs();
+    if (absValue >= 1000000000) {
+      final v = value / 1000000000;
+      return v >= 10 ? '${v.toStringAsFixed(0)}B' : '${v.toStringAsFixed(1)}B';
+    }
+    if (absValue >= 1000000) {
+      final v = value / 1000000;
+      return v >= 10 ? '${v.toStringAsFixed(0)}M' : '${v.toStringAsFixed(1)}M';
+    }
+    if (absValue >= 1000) {
+      final v = value / 1000;
+      return v >= 10 ? '${v.toStringAsFixed(0)}k' : '${v.toStringAsFixed(1)}k';
+    }
+    return value.toStringAsFixed(0);
+  }
+
+  num? _parseLooseNum(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is num) return raw.isFinite ? raw : null;
+    final normalized = raw
+        .toString()
+        .trim()
+        // Defensive normalization for API payloads like "1,200" or " 1200 ".
+        .replaceAll(',', '');
+    if (normalized.isEmpty) return null;
+    final parsed = num.tryParse(normalized);
+    if (parsed == null || !parsed.isFinite) return null;
+    return parsed;
+  }
+
+  /*
+  Old Code:
+  int? _asPositiveInt(dynamic raw) {
+    if (raw is int) return raw >= 0 ? raw : null;
+    if (raw is num) {
+      final v = raw.toInt();
+      return v >= 0 ? v : null;
+    }
+    return null;
+  }
+
+  int? _resolveTotalVotes() {
+    final result = widget.item.pollResult;
+    final directVotes = _asPositiveInt(result?['total_votes']);
+    if (directVotes != null) return directVotes;
+    final voteCounts = result?['vote_counts'];
+    if (voteCounts is Map) {
+      var sum = 0;
+      voteCounts.forEach((_, value) {
+        final v = _asPositiveInt(value);
+        if (v != null) sum += v;
+      });
+      return sum;
+    }
+    return null;
+  }
+
+  int _resolveUnitValue() {
+    final schedule = widget.item.pollVotingSchedule;
+    final scheduleBase = _asPositiveInt(schedule?['poll_base_cost']);
+    if (scheduleBase != null && scheduleBase > 0) return scheduleBase;
+    final quizBase = _asPositiveInt(widget.item.quizData?.pollBaseCost);
+    if (quizBase != null && quizBase > 0) return quizBase;
+    if (widget.item.rewardPoints > 0) return widget.item.rewardPoints;
+    return 0;
+  }
+
+  int? _resolveTotalValue() {
+    final schedule = widget.item.pollVotingSchedule;
+    final result = widget.item.pollResult;
+    final direct = _asPositiveInt(result?['total_value']) ??
+        _asPositiveInt(result?['total_bet_pnp']) ??
+        _asPositiveInt(schedule?['total_value']) ??
+        _asPositiveInt(schedule?['total_bet_pnp']);
+    if (direct != null) return direct;
+    final totalVotes = _resolveTotalVotes();
+    final unitValue = _resolveUnitValue();
+    if (totalVotes == null || unitValue <= 0) return null;
+    return totalVotes * unitValue;
+  }
+  */
+
+  int _toNonNegativeInt(dynamic raw) {
+    final parsed = _parseLooseNum(raw);
+    if (parsed == null) return 0;
+    final v = parsed.toInt();
+    return v >= 0 ? v : 0;
+  }
+
+  Iterable<String> _safeKeys(dynamic raw) {
+    if (raw is Map) {
+      return raw.keys.map((k) => k.toString());
+    }
+    return const <String>[];
+  }
+
+  void _collectNumericCandidates(
+    dynamic raw,
+    Set<String> targetKeys,
+    List<({String path, int value})> out, {
+    String path = r'$',
+    bool includeNonPositive = false,
+  }) {
+    if (raw is Map) {
+      raw.forEach((key, value) {
+        final keyStr = key.toString();
+        final nextPath = '$path.$keyStr';
+        if (targetKeys.contains(keyStr.toLowerCase())) {
+          final parsed = _toNonNegativeInt(value);
+          if (includeNonPositive || parsed > 0) {
+            out.add((path: nextPath, value: parsed));
+          }
+        }
+        _collectNumericCandidates(
+          value,
+          targetKeys,
+          out,
+          path: nextPath,
+          includeNonPositive: includeNonPositive,
+        );
+      });
+      return;
+    }
+    if (raw is List) {
+      for (var i = 0; i < raw.length; i++) {
+        _collectNumericCandidates(
+          raw[i],
+          targetKeys,
+          out,
+          path: '$path[$i]',
+          includeNonPositive: includeNonPositive,
+        );
+      }
+    }
+  }
+
+  void _printAuditPayloadJson(Map<String, dynamic> itemMap) {
+    try {
+      final payload = jsonEncode(itemMap);
+      // Use print (not debugPrint) so terminal log has a copy-friendly full payload line.
+      print('[TotalValueAudit][PAYLOAD_JSON_BEGIN] item_id=${widget.item.id}');
+      print('[TotalValueAudit][PAYLOAD_JSON]$payload');
+      print('[TotalValueAudit][PAYLOAD_JSON_END] item_id=${widget.item.id}');
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed to print TotalValueAudit payload: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
+  int? _resolveUnitValue() {
+    try {
+      final itemMap = widget.item.toDebugMap();
+      final quizDataMap = itemMap['quiz_data'];
+      final scheduleMap = itemMap['poll_voting_schedule'];
+      final pollResultMap = itemMap['poll_result'];
+      final mode =
+          (widget.item.pollVotingSchedule?['poll_mode'] ??
+                  quizDataMap?['poll_mode'])
+              ?.toString()
+              .toLowerCase();
+      final isAutoRun = mode == 'auto_run';
+
+      if (!_didLogUnitValueAudit) {
+        _didLogUnitValueAudit = true;
+        debugPrint('[TotalValueAudit] item_id=${widget.item.id}');
+        _printAuditPayloadJson(itemMap);
+        debugPrint(
+          '[TotalValueAudit] root_keys=${_safeKeys(itemMap).join(', ')}',
+        );
+        if (quizDataMap != null) {
+          debugPrint(
+            '[TotalValueAudit] quiz_data_keys=${_safeKeys(quizDataMap).join(', ')}',
+          );
+        }
+        if (scheduleMap != null) {
+          debugPrint(
+            '[TotalValueAudit] poll_voting_schedule_keys=${_safeKeys(scheduleMap).join(', ')}',
+          );
+        }
+        if (pollResultMap != null) {
+          debugPrint(
+            '[TotalValueAudit] poll_result_keys=${_safeKeys(pollResultMap).join(', ')}',
+          );
+        }
+      }
+
+      final knownUnitKeys = <String>{
+        'unit_value',
+        'bet_amount_step',
+        'bet_amount',
+        'cost',
+        'pnp_per_vote',
+        'poll_base_cost',
+        'interaction_value',
+      };
+
+      final candidates = <({String path, int value})>[];
+      _collectNumericCandidates(itemMap, knownUnitKeys, candidates);
+      if (candidates.isNotEmpty) {
+        final best = candidates.first;
+        debugPrint(
+          '[TotalValueAudit] resolved_unit_value=${best.value} source=${best.path}',
+        );
+        return best.value;
+      }
+      final zeroOrInvalidCandidates = <({String path, int value})>[];
+      _collectNumericCandidates(
+        itemMap,
+        knownUnitKeys,
+        zeroOrInvalidCandidates,
+        includeNonPositive: true,
+      );
+      if (zeroOrInvalidCandidates.isNotEmpty) {
+        final auditSummary = zeroOrInvalidCandidates
+            .take(10)
+            .map((entry) => '${entry.path}=${entry.value}')
+            .join(', ');
+        debugPrint(
+          '[TotalValueAudit] candidate_keys_found_but_non_positive: $auditSummary',
+        );
+      }
+
+      // Auto-run specific pass: inspect scheduling/config values for hidden nested unit fields.
+      if (isAutoRun && scheduleMap is Map) {
+        final autoRunCandidates = <({String path, int value})>[];
+        _collectNumericCandidates(
+          scheduleMap,
+          <String>{
+            'unit_value',
+            'bet_amount_step',
+            'pnp_per_vote',
+            'cost',
+            'per_vote_cost',
+            'vote_cost',
+          },
+          autoRunCandidates,
+          path: r'$.poll_voting_schedule',
+        );
+        if (autoRunCandidates.isNotEmpty) {
+          final best = autoRunCandidates.first;
+          debugPrint(
+            '[TotalValueAudit] resolved_auto_run_unit=${best.value} source=${best.path}',
+          );
+          return best.value;
+        }
+      }
+
+      debugPrint(
+        '[TotalValueAudit] unit value not found for item_id=${widget.item.id}',
+      );
+      return null;
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'Failed resolving unit value: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+        stackTrace: st,
+      );
+      return null;
+    }
+  }
+
+  /*
+  Old Code:
+  int _voteCountForPollOptionIndex(int index) {
+    final voteCountsRaw = widget.item.pollResult?['vote_counts'];
+    if (voteCountsRaw is! Map) return 0;
+    dynamic raw = voteCountsRaw[index];
+    raw ??= voteCountsRaw[index.toString()];
+    return _toNonNegativeInt(raw);
+  }
+  */
+
+  /// Per-option vote-weighted totals: `"A : N, B : N"`. `'--'` if unit/options missing
+  /// or backend has not sent [poll_result.vote_counts] yet (e.g. voting still open).
+  String _optionWisePnpSummaryLine() {
+    try {
+      final unitValue = _resolveUnitValue();
+      // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — manual vote_counts loop only.
+      // if (unitValue == null || unitValue <= 0) return '--';
+      // ... vote_counts × unit ...
+      return formatPollOptionAmountsSummaryLine(
+        widget.item,
+        unitValue: unitValue,
+      );
+    } catch (_) {
+      return '--';
+    }
+  }
+
+  Widget _buildCompactBadge({
+    required IconData icon,
+    required String value,
+    required String semanticLabel,
+    bool allowEllipsis = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.28), width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: Colors.white),
+          const SizedBox(width: 4),
+          if (allowEllipsis)
+            Flexible(
+              child: Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
+                ),
+                semanticsLabel: semanticLabel,
+              ),
+            )
+          else
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.visible,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
+              ),
+              semanticsLabel: semanticLabel,
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2549,27 +3045,23 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   @override
   void didUpdateWidget(covariant _PermanentPollTimer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final nextServer = _serverAnchoredSeconds();
     final next = _clampSeconds(widget.initialSeconds);
     final prev = _clampSeconds(oldWidget.initialSeconds);
     if (next <= 10) {
-      _secondsLeft = nextServer;
+      _secondsLeft = next;
       _timer?.cancel();
+      if (next >= 1 && next <= 10 && !_didNotifyHandover) {
+        _didNotifyHandover = true;
+        widget.onReachedHandover?.call();
+      }
       return;
     }
-    final anchorChanged = oldWidget.serverEndsAtUtc != widget.serverEndsAtUtc;
-    if (next != prev || anchorChanged) {
-      /*
-      Old Code:
-      // Guard against delayed parent refresh spikes (e.g. 10 -> 100) within same session widget.
-      final looksLikeSpike = next > _secondsLeft && _secondsLeft <= 12;
-      if (looksLikeSpike) return;
-      */
-      // New Code: permit valid short-window resets; only skip massive jumps outside short window.
+    final nextChanged = next != prev;
+    if (nextChanged) {
       final looksLikeInvalidSpike =
-          nextServer > _secondsLeft + 90 && _secondsLeft > 12;
+          next > _secondsLeft + 90 && _secondsLeft > 12;
       if (looksLikeInvalidSpike) return;
-      _secondsLeft = nextServer;
+      _secondsLeft = next;
       app_logger.Logger.info(
         '[TimerSync] Re-seeding timer to server state: ${_secondsLeft}s (${widget.debugLabel ?? 'unknown'})',
         tag: 'EngagementCarousel',
@@ -2581,11 +3073,14 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   @override
   void dispose() {
     _timer?.cancel();
+    /* Old Code: _optionTotalsScrollController.dispose(); */
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    /*
+    Old Code:
     if (_secondsLeft <= 10) {
       return const SizedBox.shrink();
     }
@@ -2625,6 +3120,186 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
         ),
       ),
     );
+    */
+    if (_secondsLeft <= 10) {
+      return const SizedBox.shrink();
+    }
+    /*
+    Old Code:
+    final totalValue = _resolveTotalValue();
+    final totalValueLabel =
+        (totalValue != null && totalValue > 0)
+            ? _formatCompactNumber(totalValue)
+            : '--';
+    */
+    final optionTotalsLine = _optionWisePnpSummaryLine();
+    // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် —
+    // final userCountLabel = _formatCompactNumber(
+    //   widget.item.interactionCount > 0 ? widget.item.interactionCount : 0,
+    // );
+    final participation = resolvePollParticipationCount(widget.item);
+    final userCountLabel = participation != null
+        ? _formatCompactNumber(participation)
+        : '--';
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isVeryNarrow = constraints.maxWidth < 240;
+            final spacing = isVeryNarrow ? 4.0 : 6.0;
+            final containerHorizontalPadding = isVeryNarrow ? 4.0 : 6.0;
+
+            return Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: containerHorizontalPadding,
+                vertical: 4,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.22),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white.withOpacity(0.2),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: _buildCompactBadge(
+                      icon: Icons.timer_outlined,
+                      value: _formatMmSs(_secondsLeft),
+                      semanticLabel: 'Poll duration remaining',
+                      allowEllipsis: true,
+                    ),
+                  ),
+                  SizedBox(width: spacing),
+                  /*
+                  Old Code:
+                  Expanded(
+                    child: _buildCompactBadge(
+                      icon: Icons.payments_outlined,
+                      value: totalValueLabel,
+                      semanticLabel: 'Total Value',
+                      allowEllipsis: true,
+                    ),
+                  ),
+                  */
+                  /* Old Code:
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.center,
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: Text(
+                          optionTotalsLine,
+                          maxLines: 1,
+                          softWrap: false,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                          ),
+                          semanticsLabel:
+                              'Per-option poll vote totals in PNP',
+                        ),
+                      ),
+                    ),
+                  ),
+                  */
+                  /* Old Code:
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      child: Text(
+                        optionTotalsLine,
+                        maxLines: 1,
+                        softWrap: false,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.2,
+                        ),
+                        semanticsLabel: 'Per-option poll vote totals',
+                      ),
+                    ),
+                  ),
+                  */
+                  /*
+                  Old Code:
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragUpdate: (d) =>
+                          _scrollOptionTotalsByDragDelta(d.delta.dx),
+                      child: SingleChildScrollView(
+                        controller: _optionTotalsScrollController,
+                        scrollDirection: Axis.horizontal,
+                        physics: const NeverScrollableScrollPhysics(),
+                        clipBehavior: Clip.hardEdge,
+                        child: Text(
+                          optionTotalsLine,
+                          maxLines: 1,
+                          softWrap: false,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                          ),
+                          semanticsLabel: 'Per-option poll vote totals',
+                        ),
+                      ),
+                    ),
+                  ),
+                  */
+                  Expanded(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.center,
+                      child: Text(
+                        optionTotalsLine,
+                        maxLines: 1,
+                        softWrap: false,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.2,
+                        ),
+                        semanticsLabel: 'Per-option poll vote totals',
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: spacing),
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: _buildCompactBadge(
+                      icon: Icons.people_outline,
+                      value: userCountLabel,
+                      semanticLabel: 'User count',
+                      allowEllipsis: true,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 }
 
@@ -2650,12 +3325,44 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
   Timer? _timer;
   bool _hasTriggeredForceRefreshBurst = false;
 
+  static const int _overlayDisplayCap = 10;
+
+  int _clampOverlaySeconds(int value) => value < 0 ? 0 : value;
+
   int _serverAnchoredSeconds() {
-    final anchor = widget.serverEndsAtUtc;
-    if (anchor == null)
-      return widget.initialSeconds < 0 ? 0 : widget.initialSeconds;
-    final diff = anchor.difference(DateTime.now().toUtc()).inSeconds;
-    return diff < 0 ? 0 : diff;
+    // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — return _clampOverlaySeconds(widget.initialSeconds);
+    final fromInitial = _clampOverlaySeconds(widget.initialSeconds);
+    if (fromInitial > 0) return fromInitial;
+    final ends = widget.serverEndsAtUtc;
+    if (ends != null) {
+      final diff = ends.difference(DateTime.now().toUtc()).inSeconds;
+      return _clampOverlaySeconds(diff);
+    }
+    return 0;
+  }
+
+  /// Display-only: never show 120/88 in the last-10s overlay (defense in depth).
+  int get _overlayDisplaySeconds => math.min(_secondsLeft, _overlayDisplayCap);
+
+  void _cancelOverlayTimer() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  void _scheduleOverlayTick() {
+    _cancelOverlayTimer();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        if (_secondsLeft > 0) {
+          _secondsLeft--;
+        }
+        if (_secondsLeft <= 0) {
+          _triggerForceRefreshBurstOnTimerEnd();
+          _cancelOverlayTimer();
+        }
+      });
+    });
   }
 
   void _triggerForceRefreshBurstOnTimerEnd() {
@@ -2714,24 +3421,11 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
       '[TimerSync] start overlay timer (${widget.debugLabel ?? 'unknown'}) at ${_secondsLeft}s',
       tag: 'EngagementCarousel',
     );
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      setState(() {
-        /*
-        Old Code:
-        if (_secondsLeft > 1) {
-          _secondsLeft--;
-        */
-        final nextFromServer = _serverAnchoredSeconds();
-        if (nextFromServer > 1) {
-          _secondsLeft = nextFromServer;
-        } else {
-          _secondsLeft = nextFromServer;
-          _triggerForceRefreshBurstOnTimerEnd();
-          _timer?.cancel();
-        }
-      });
-    });
+    if (_secondsLeft > 0) {
+      _scheduleOverlayTick();
+    } else {
+      _triggerForceRefreshBurstOnTimerEnd();
+    }
   }
 
   @override
@@ -2740,34 +3434,28 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     final anchorChanged = oldWidget.serverEndsAtUtc != widget.serverEndsAtUtc;
     final seedChanged = oldWidget.initialSeconds != widget.initialSeconds;
     if (!anchorChanged && !seedChanged) return;
+    _cancelOverlayTimer();
     final reseeded = _serverAnchoredSeconds();
     app_logger.Logger.info(
-      '[TimerSync] Re-seeding timer to server state: ${reseeded}s (${widget.debugLabel ?? 'unknown'})',
+      '[TimerSync] Re-seeding overlay timer to server state: ${reseeded}s (${widget.debugLabel ?? 'unknown'})',
       tag: 'EngagementCarousel',
     );
     setState(() {
       _secondsLeft = reseeded;
+      if (reseeded > 0) {
+        _hasTriggeredForceRefreshBurst = false;
+      }
     });
-    if (_secondsLeft > 1 && (_timer == null || !_timer!.isActive)) {
-      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted) return;
-        setState(() {
-          final nextFromServer = _serverAnchoredSeconds();
-          if (nextFromServer > 1) {
-            _secondsLeft = nextFromServer;
-          } else {
-            _secondsLeft = nextFromServer;
-            _triggerForceRefreshBurstOnTimerEnd();
-            _timer?.cancel();
-          }
-        });
-      });
+    if (reseeded > 0) {
+      _scheduleOverlayTick();
+    } else {
+      _triggerForceRefreshBurstOnTimerEnd();
     }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _cancelOverlayTimer();
     super.dispose();
   }
 
@@ -2788,7 +3476,7 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    '$_secondsLeft',
+                    '${_overlayDisplaySeconds}',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 72,
@@ -2946,11 +3634,24 @@ String? pollUserChoiceDisplayLabel(EngagementItem item) {
 
 // --- Poll per-option unit overlay (client persistence when API omits keys 3+, etc.) ---
 
-/// Storage key: engagement item + stable option id string.
+String engagementItemPollScheduleSessionId(EngagementItem item) =>
+    (item.pollVotingSchedule?['current_session_id'] ?? '').toString();
+
+/*
+OLD CODE:
 String pollUserLocalUnitStorageKey(
   int engagementItemId,
   String optionUniqueId,
-) => '$engagementItemId|$optionUniqueId';
+) =>
+    '$engagementItemId|$optionUniqueId';
+*/
+/// Storage key: engagement item id + AUTO_RUN round + stable option id string.
+String pollUserLocalUnitStorageKey(
+  int engagementItemId,
+  String sessionId,
+  String optionUniqueId,
+) =>
+    '${engagementItemId}|${sessionId.trim().isEmpty ? 'default' : sessionId.trim()}|$optionUniqueId';
 
 /// Last-known units per option; synced from API when present, else from dialog edits.
 /// Survives widget rebuilds before feed returns full [user_bet_amount_per_option].
@@ -2964,6 +3665,7 @@ String pollUserLocalUnitStorageKey(
 void recordPollUserLocalUnitOverride(
   EngagementProvider engagementProvider,
   int engagementItemId,
+  String pollSessionId,
   String optionUniqueId,
   int units,
 ) {
@@ -2971,6 +3673,7 @@ void recordPollUserLocalUnitOverride(
   unawaited(
     engagementProvider.setPollUserLocalUnitOverride(
       engagementItemId,
+      pollSessionId,
       optionUniqueId,
       units,
     ),
@@ -2992,6 +3695,7 @@ String pollOptionUniqueId(List<dynamic> options, int idx) {
 int _resolvePollOptionUnits({
   required EngagementProvider engagementProvider,
   required int itemId,
+  required String pollSessionId,
   required List<dynamic> options,
   required int idx,
   required int? fromApi,
@@ -3006,11 +3710,12 @@ int _resolvePollOptionUnits({
   final uid = pollOptionUniqueId(options, idx);
   // Old Code:
   // final fromLocal =
-  //    _pollUserLocalUnitOverlay[pollUserLocalUnitStorageKey(itemId, uid)];
+  //    engagementProvider.getPollUserLocalUnitOverride(itemId, uid);
   //
-  // New Code:
+  // New Code: Session-scoped local units for AUTO_RUN.
   final fromLocal = engagementProvider.getPollUserLocalUnitOverride(
     itemId,
+    pollSessionId,
     uid,
   );
   if (fromLocal != null && fromLocal > 0) return fromLocal;
@@ -3036,6 +3741,7 @@ pollUserSeparatedBetStates(
   final allowUser = q?.allowUserAmount ?? true;
   final perMap = item.userBetUnitsPerOption;
   final int? declaredBet = item.userBetAmount;
+  final pollSessionId = engagementItemPollScheduleSessionId(item);
 
   // Isolated per-option units from API (index -> units).
   final isolatedUnitsByOption = <int, int>{};
@@ -3083,6 +3789,7 @@ pollUserSeparatedBetStates(
     final units = _resolvePollOptionUnits(
       engagementProvider: engagementProvider,
       itemId: item.id,
+      pollSessionId: pollSessionId,
       options: options,
       idx: idx,
       fromApi: fromApi,
@@ -4305,6 +5012,7 @@ class _PollDialogState extends State<_PollDialog> {
       _selectedIndices.clear();
       _isolatedUnitsByOption.clear();
       final perOption = widget.item.userBetUnitsPerOption;
+      final sess = engagementItemPollScheduleSessionId(widget.item);
       for (final part in raw.split(',')) {
         final idx = int.tryParse(part.trim());
         if (idx == null || idx < 0 || idx >= options.length) {
@@ -4314,12 +5022,13 @@ class _PollDialogState extends State<_PollDialog> {
         final k = pollOptionUniqueId(options, idx);
         final fromApi = perOption?[idx];
         // Old Code:
-        // final local = _pollUserLocalUnitOverlay[
-        //     pollUserLocalUnitStorageKey(widget.item.id, k)];
+        // final local = engagementProvider.getPollUserLocalUnitOverride(
+        //   widget.item.id, k);
         //
         // New Code:
         final local = engagementProvider.getPollUserLocalUnitOverride(
           widget.item.id,
+          sess,
           k,
         );
         final int u;
@@ -4328,6 +5037,7 @@ class _PollDialogState extends State<_PollDialog> {
           recordPollUserLocalUnitOverride(
             engagementProvider,
             widget.item.id,
+            sess,
             k,
             u,
           );
@@ -4370,6 +5080,7 @@ class _PollDialogState extends State<_PollDialog> {
       recordPollUserLocalUnitOverride(
         engagementProvider,
         widget.item.id,
+        engagementItemPollScheduleSessionId(widget.item),
         k,
         nextValue,
       );
@@ -4385,6 +5096,55 @@ class _PollDialogState extends State<_PollDialog> {
     return q.spentPerUnitPnpForPoll(
       engagementRewardPoints: widget.item.rewardPoints,
     );
+  }
+
+  int _resolvePollUnitValueForOptionTotal() {
+    final q = widget.item.quizData;
+    if (q == null) return 1000;
+    final step = q.betAmountStep;
+    if (step != null && step > 0) return step;
+    if (q.pollBaseCost > 0 && q.pollBaseCost < 1000) {
+      return q.pollBaseCost * 1000;
+    }
+    if (q.pollBaseCost > 0) return q.pollBaseCost;
+    return 1000;
+  }
+
+  int _toNonNegativeInt(dynamic raw) {
+    if (raw == null) return 0;
+    if (raw is int) return raw >= 0 ? raw : 0;
+    if (raw is num) {
+      final v = raw.toInt();
+      return v >= 0 ? v : 0;
+    }
+    final parsed = int.tryParse(raw.toString().trim().replaceAll(',', ''));
+    if (parsed == null || parsed < 0) return 0;
+    return parsed;
+  }
+
+  int _resolveVoteCountForOptionIndex(int index) {
+    final voteCountsRaw = widget.item.pollResult?['vote_counts'];
+    if (voteCountsRaw is! Map) return 0;
+    dynamic raw = voteCountsRaw[index];
+    raw ??= voteCountsRaw[index.toString()];
+    return _toNonNegativeInt(raw);
+  }
+
+  String _formatCompactNumber(num value) {
+    final absValue = value.abs();
+    if (absValue >= 1000000000) {
+      final v = value / 1000000000;
+      return v >= 10 ? '${v.toStringAsFixed(0)}B' : '${v.toStringAsFixed(1)}B';
+    }
+    if (absValue >= 1000000) {
+      final v = value / 1000000;
+      return v >= 10 ? '${v.toStringAsFixed(0)}M' : '${v.toStringAsFixed(1)}M';
+    }
+    if (absValue >= 1000) {
+      final v = value / 1000;
+      return v >= 10 ? '${v.toStringAsFixed(0)}k' : '${v.toStringAsFixed(1)}k';
+    }
+    return value.toStringAsFixed(0);
   }
 
   /*
@@ -4854,7 +5614,13 @@ class _PollDialogState extends State<_PollDialog> {
     for (final idx in selectedList) {
       final k = _optionKeyForIndex(idx);
       final u = _isolatedUnitsByOption[k] ?? 1;
-      recordPollUserLocalUnitOverride(engagementProvider, widget.item.id, k, u);
+      recordPollUserLocalUnitOverride(
+        engagementProvider,
+        widget.item.id,
+        engagementItemPollScheduleSessionId(widget.item),
+        k,
+        u,
+      );
       isolatedAmountPerOption[idx] = u;
     }
     await _submitVote(amountPerOption: isolatedAmountPerOption);
@@ -4983,6 +5749,12 @@ class _PollDialogState extends State<_PollDialog> {
                   widget.item.hasInteracted &&
                   userSelectedIndices.contains(index) &&
                   !isSelected;
+              final voteCount = _resolveVoteCountForOptionIndex(index);
+              final unitValue = _resolvePollUnitValueForOptionTotal();
+              final optionTotalAmount = voteCount * unitValue;
+              final formattedOptionTotal = _formatCompactNumber(
+                optionTotalAmount.toDouble(),
+              );
 
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -5040,7 +5812,8 @@ class _PollDialogState extends State<_PollDialog> {
                           child: Row(
                             children: [
                               Expanded(
-                                child: Text(
+                                child: /* Old Code:
+                                Text(
                                   pollData.options[index],
                                   style: TextStyle(
                                     fontSize: 15,
@@ -5048,6 +5821,31 @@ class _PollDialogState extends State<_PollDialog> {
                                         ? FontWeight.w600
                                         : FontWeight.normal,
                                   ),
+                                ),
+                                */ Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      pollData.options[index],
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: isSelected
+                                            ? FontWeight.w600
+                                            : FontWeight.normal,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Total: $formattedOptionTotal PNP',
+                                      style: TextStyle(
+                                        fontSize: 11.0,
+                                        fontWeight: FontWeight.w500,
+                                        color: isSelected
+                                            ? Theme.of(context).primaryColor
+                                            : Colors.grey[500],
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                               if (isUserPreviousSelection)
@@ -5143,6 +5941,27 @@ class _PollDialogState extends State<_PollDialog> {
         ),
       ),
     );
+  }
+
+  /// Server-reported balance after poll vote (`new_balance` / `current_balance`); no client math.
+  int? _serverBalanceFromPollSubmitResult(Map<String, dynamic> result) {
+    int? parseDyn(dynamic v) {
+      if (v == null) return null;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      final s = v.toString().trim().replaceAll(RegExp(r'[^0-9-]'), '');
+      if (s.isEmpty || s == '-') return null;
+      return int.tryParse(s);
+    }
+
+    final fromData = result['data'];
+    if (fromData is Map) {
+      final m = Map<String, dynamic>.from(fromData);
+      final nb = parseDyn(m['new_balance']) ?? parseDyn(m['current_balance']);
+      if (nb != null) return nb;
+    }
+    return parseDyn(result['new_balance']) ??
+        parseDyn(result['current_balance']);
   }
 
   Future<void> _submitVote({
@@ -5399,16 +6218,26 @@ class _PollDialogState extends State<_PollDialog> {
         tag: 'EngagementCarousel',
       );
 
-      final result = await engagementProvider.submitInteraction(
-        userId: currentUserId,
-        token: token,
-        itemId: widget.item.id,
-        answer: answerStr,
-        sessionId: sessionId,
-        selectedOptionIds: answer,
-        betAmount: amountPerOption == null ? (amount <= 0 ? 1 : amount) : null,
-        betAmountPerOption: amountPerOption,
+      final String balanceSyncLease = PointProvider.instance.beginBalanceSync(
+        'carousel_vote_${widget.item.id}',
       );
+      final Map<String, dynamic> result;
+      try {
+        result = await engagementProvider.submitInteraction(
+          userId: currentUserId,
+          token: token,
+          itemId: widget.item.id,
+          answer: answerStr,
+          sessionId: sessionId,
+          selectedOptionIds: answer,
+          betAmount: amountPerOption == null
+              ? (amount <= 0 ? 1 : amount)
+              : null,
+          betAmountPerOption: amountPerOption,
+        );
+      } finally {
+        PointProvider.instance.endBalanceSync(balanceSyncLease);
+      }
 
       if (!mounted) return;
 
@@ -5429,30 +6258,10 @@ class _PollDialogState extends State<_PollDialog> {
       }
 
       if (result['success'] == true) {
-        final int newBalance = balanceBefore - totalCost;
-
-        // ============================================================================
-        // CRITICAL: Points deducted from wp_twork_point_transactions (backend)
-        // Winner rewards will be added to SAME TABLE when poll is resolved
-        // Balance = SUM(type='earn') - SUM(type='redeem') from wp_twork_point_transactions
-        // ============================================================================
-
-        app_logger.Logger.info(
-          '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, Balance: $balanceBefore → $newBalance',
-          tag: 'EngagementCarousel',
-        );
-
         /*
-        // OLD CODE:
-        // Optimistic update: My PNP card updates instantly (no delay)
-        // AuthProvider().applyPointsBalanceSnapshot(newBalance);
-        // PointProvider.instance.applyRemoteBalanceSnapshot(
-        //   userId: currentUserId.toString(),
-        //   currentBalance: newBalance,
-        // );
-        */
-
-        // NEW FIX: Canonical sync after poll vote deduction.
+        Old Code:
+        // manual deduct canonical (balanceBefore - totalCost).
+        final int newBalance = balanceBefore - totalCost;
         unawaited(
           CanonicalPointBalanceSync.apply(
             userId: currentUserId.toString(),
@@ -5461,6 +6270,33 @@ class _PollDialogState extends State<_PollDialog> {
             emitBroadcast: false,
             pointProvider: pointProvider,
           ),
+        );
+        */
+
+        int? serverBal = _serverBalanceFromPollSubmitResult(result);
+        if (serverBal == null) {
+          await pointProvider.loadBalance(
+            currentUserId.toString(),
+            forceRefresh: true,
+          );
+          serverBal = pointProvider.currentBalance;
+        }
+
+        // ============================================================================
+        // CRITICAL: Points deducted on backend; canonical balance from API only.
+        // ============================================================================
+
+        app_logger.Logger.info(
+          '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, preSubmitEstimate=$balanceBefore, serverCanonical=$serverBal',
+          tag: 'EngagementCarousel',
+        );
+
+        await CanonicalPointBalanceSync.apply(
+          userId: currentUserId.toString(),
+          currentBalance: serverBal,
+          source: 'poll_vote_deduct_carousel',
+          emitBroadcast: false,
+          pointProvider: pointProvider,
         );
 
         // Show success feedback so user knows points were deducted
@@ -5488,7 +6324,7 @@ class _PollDialogState extends State<_PollDialog> {
               // loadBalance returns void, so we read the updated balance from the provider
               final refreshedBalance = pointProvider.currentBalance;
               app_logger.Logger.info(
-                'Balance refreshed after poll vote: $refreshedBalance (expected: $newBalance)',
+                'Balance refreshed after poll vote: $refreshedBalance (after submit canonical: $serverBal)',
                 tag: 'EngagementCarousel',
               );
             })

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,6 +13,7 @@ import '../utils/network_utils.dart';
 import 'point_sync_telemetry.dart';
 import 'offline_queue_service.dart';
 import 'secure_prefs.dart';
+import '../providers/point_provider.dart';
 
 /// Emitted when [PointService] mutates local point balance without UI context,
 /// so global listeners (e.g. [PointProvider]) can refresh Home "My PNP" in real time.
@@ -32,6 +34,10 @@ class PointSyncBroadcast {
 class PointService {
   static const String _balanceKey = 'user_point_balance';
   static const String _transactionsKey = 'user_point_transactions';
+
+  /// Above this UTF-16 length, JSON is decoded in a worker [Isolate] to reduce
+  /// main-isolate jank / ANR risk for huge transaction payloads.
+  static const int _jsonDecodeIsolateMinChars = 32768;
   static bool _queueRegistered = false;
   static final SecurePrefs _securePrefs = SecurePrefs.instance;
   static int? _lastPointBalanceStatusCode;
@@ -57,6 +63,15 @@ class PointService {
     _lastPointBalanceStatusCode = statusCode;
     _lastPointBalanceFailureMessage = reason;
     _lastPointBalanceUrl = url;
+  }
+
+  /// Parses large transaction JSON off the UI isolate when the body exceeds
+  /// [_jsonDecodeIsolateMinChars].
+  static Future<dynamic> _decodePointApiJsonString(String raw) async {
+    if (raw.length < _jsonDecodeIsolateMinChars) {
+      return json.decode(raw);
+    }
+    return Isolate.run(() => json.decode(raw));
   }
 
   // Broadcast stream for context-free sync (FCM helpers, isolates, future callers).
@@ -150,6 +165,82 @@ class PointService {
     return int.tryParse(v.toString()) ?? 0;
   }
 
+  /// Safe [num] → [int] for ledger fields (shields huge/out-of-range server values).
+  static int? _tryCoerceMandatoryBalanceNum(num v, String fieldKey) {
+    try {
+      return v.toInt();
+    } on RangeError catch (_) {
+      Logger.warning(
+        'Mandatory balance field "$fieldKey" numeric out of int range — refusing',
+        tag: 'PointService',
+      );
+      return null;
+    }
+  }
+
+  static bool _isRefusedNegativeMandatoryBalance(int value, String fieldKey) {
+    if (value >= 0) return false;
+    Logger.warning(
+      'Mandatory balance field "$fieldKey" is negative ($value) — refusing',
+      tag: 'PointService',
+    );
+    return true;
+  }
+
+  /// Authoritative ledger field: missing key ⇒ treat as unreadable payload (not zero).
+  static int? _tryParseMandatoryCurrentBalance(Map<String, dynamic> data) {
+    for (final key in const ['current_balance', 'currentBalance']) {
+      if (!data.containsKey(key)) continue;
+      final v = data[key];
+      if (v == null) {
+        Logger.warning(
+          'Mandatory balance field "$key" is null — refusing to coerce to 0',
+          tag: 'PointService',
+        );
+        return null;
+      }
+      if (v is num) {
+        final coerced = _tryCoerceMandatoryBalanceNum(v, key);
+        if (coerced == null) return null;
+        if (_isRefusedNegativeMandatoryBalance(coerced, key)) return null;
+        return coerced;
+      }
+      if (v is String) {
+        final parsed = int.tryParse(v.trim());
+        if (parsed != null) {
+          if (_isRefusedNegativeMandatoryBalance(parsed, key)) return null;
+          return parsed;
+        }
+        Logger.warning(
+          'Mandatory balance field "$key" not parseable as int: $v',
+          tag: 'PointService',
+        );
+        return null;
+      }
+      final parsed = int.tryParse(v.toString());
+      if (parsed != null) {
+        if (_isRefusedNegativeMandatoryBalance(parsed, key)) return null;
+        return parsed;
+      }
+      Logger.warning(
+        'Mandatory balance field "$key" not parseable as int: $v',
+        tag: 'PointService',
+      );
+      return null;
+    }
+    return null;
+  }
+
+  /// Backend may send malformed timestamps — never fail balance hydration on parse alone.
+  static DateTime _parseLastUpdatedOrNow(Object? raw) {
+    if (raw == null) return DateTime.now();
+    try {
+      return DateTime.parse(raw.toString());
+    } catch (_) {
+      return DateTime.now();
+    }
+  }
+
   /// Get WooCommerce authentication query parameters
   ///
   /// We send WooCommerce API credentials as query parameters instead of using
@@ -163,9 +254,13 @@ class PointService {
   }
 
   /// Get user's point balance from API
+  ///
+  /// When [persistToStorage] is false, the response is not written to disk
+  /// (used while poll-win smart polling may still see a stale ledger).
   static Future<PointBalance?> getPointBalance(
     String userId, {
     int? cacheBypassTimestampMs,
+    bool persistToStorage = true,
   }) async {
     try {
       // Use custom WordPress REST endpoint
@@ -237,19 +332,33 @@ class PointService {
           data = raw;
         }
 
+        final int? mandatoryBalance = _tryParseMandatoryCurrentBalance(data);
+        if (mandatoryBalance == null) {
+          Logger.error(
+            'Point balance response missing or invalid current_balance / currentBalance '
+            '— not applying (userId=$userId, keys=${data.keys.toList()})',
+            tag: 'PointService',
+          );
+          _recordPointBalanceFailure(
+            statusCode: responseStatus,
+            url: requestUrl,
+            reason: 'Missing or invalid current_balance in JSON',
+          );
+          return null;
+        }
+
         final balance = PointBalance(
           userId: userId,
-          currentBalance: _parseBalanceInt(data, 'current_balance'),
+          currentBalance: mandatoryBalance,
           lifetimeEarned: _parseBalanceInt(data, 'lifetime_earned'),
           lifetimeRedeemed: _parseBalanceInt(data, 'lifetime_redeemed'),
           lifetimeExpired: _parseBalanceInt(data, 'lifetime_expired'),
-          lastUpdated: data['last_updated'] != null
-              ? DateTime.parse(data['last_updated'].toString())
-              : DateTime.now(),
+          lastUpdated: _parseLastUpdatedOrNow(data['last_updated']),
         );
 
-        // Cache balance locally
-        await _saveBalanceToStorage(balance);
+        if (persistToStorage) {
+          await _saveBalanceToStorage(balance);
+        }
 
         Logger.info(
           'Point balance loaded from API: ${balance.currentBalance} points',
@@ -337,16 +446,54 @@ class PointService {
 
       Map<String, dynamic>? firstData;
       if (NetworkUtils.isValidDioResponse(firstResponse)) {
-        firstData = ApiService.responseAsJsonMap(firstResponse);
+        final Object? rd = firstResponse!.data;
+        if (rd is Map<String, dynamic>) {
+          firstData = rd;
+        } else if (rd is Map) {
+          firstData = Map<String, dynamic>.from(rd);
+        } else {
+          final bodyStr = ApiService.responseBodyString(firstResponse);
+          if (bodyStr.isNotEmpty) {
+            final Object? decoded = await _decodePointApiJsonString(bodyStr);
+            if (decoded is Map<String, dynamic>) {
+              firstData = decoded;
+            } else if (decoded is Map) {
+              firstData = Map<String, dynamic>.from(decoded);
+            }
+          }
+        }
       }
       if (firstData != null) {
         totalPages = firstData['total_pages'] as int? ?? 1;
         final firstTransactionsData =
             firstData['transactions'] as List<dynamic>? ?? [];
 
-        final firstTransactions = firstTransactionsData.map((item) {
-          return PointTransaction.fromJson(item as Map<String, dynamic>);
-        }).toList();
+        final firstTransactions = <PointTransaction>[];
+        for (final item in firstTransactionsData) {
+          try {
+            if (item is Map<String, dynamic>) {
+              firstTransactions.add(PointTransaction.fromJson(item));
+            } else if (item is Map) {
+              firstTransactions.add(
+                PointTransaction.fromJson(Map<String, dynamic>.from(item)),
+              );
+            } else {
+              Logger.warning(
+                'getAllPointTransactions page1: skip non-Map item '
+                '${item.runtimeType}',
+                tag: 'PointService',
+              );
+            }
+          } catch (e, stackTrace) {
+            Logger.error(
+              'getAllPointTransactions page1: transaction parse error: $e '
+              'item=$item',
+              tag: 'PointService',
+              error: e,
+              stackTrace: stackTrace,
+            );
+          }
+        }
 
         // CRITICAL FIX: Sort first page transactions by date (newest first)
         firstTransactions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -538,9 +685,10 @@ class PointService {
 
       if (NetworkUtils.isValidDioResponse(response)) {
         try {
-          final dynamic data = response!.data is Map || response.data is List
-              ? response.data
-              : json.decode(bodyStr);
+          final Object? rawPayload = response!.data;
+          final dynamic data = (rawPayload is Map || rawPayload is List)
+              ? rawPayload
+              : await _decodePointApiJsonString(bodyStr);
 
           // DEBUG: Log parsed data structure
           Logger.info(
@@ -851,7 +999,8 @@ class PointService {
         // Save transaction locally first
         await _saveTransactionToStorage(transaction);
 
-        // Update balance locally (only if transaction is approved)
+        /*
+        // Old Code: update balance locally when approved (manual cache += points; use API canonical instead).
         if (status == PointTransactionStatus.approved) {
           final currentBalance = await getCachedBalance(userId);
           if (currentBalance != null) {
@@ -866,6 +1015,7 @@ class PointService {
             await _saveBalanceToStorage(updatedBalance);
           }
         }
+        */
       }
 
       // Sync with backend
@@ -1702,9 +1852,17 @@ class PointService {
       final storedValue = prefs.getString('$_balanceKey$userId');
 
       if (storedValue != null) {
-        final decrypted =
-            await _securePrefs.maybeDecrypt(storedValue) ?? storedValue;
-        final balanceData = json.decode(decrypted);
+        final decrypted = await _securePrefs.maybeDecrypt(storedValue);
+        if (decrypted == null) {
+          await prefs.remove('$_balanceKey$userId');
+          Logger.warning(
+            'Cached point balance removed — decrypt failed or invalid ciphertext '
+            '(userId=$userId)',
+            tag: 'PointService',
+          );
+          return null;
+        }
+        final balanceData = json.decode(decrypted) as Map<String, dynamic>;
         return PointBalance.fromJson(balanceData);
       }
 
@@ -1728,14 +1886,41 @@ class PointService {
       final storedValue = prefs.getString('$_transactionsKey$userId');
 
       if (storedValue != null) {
-        final decrypted =
-            await _securePrefs.maybeDecrypt(storedValue) ?? storedValue;
+        final decrypted = await _securePrefs.maybeDecrypt(storedValue);
+        if (decrypted == null) {
+          await prefs.remove('$_transactionsKey$userId');
+          Logger.warning(
+            'Cached point transactions removed — decrypt failed or invalid ciphertext '
+            '(userId=$userId)',
+            tag: 'PointService',
+          );
+          return [];
+        }
         final transactionsData = json.decode(decrypted) as List<dynamic>;
-        final transactions = transactionsData
-            .map(
-              (item) => PointTransaction.fromJson(item as Map<String, dynamic>),
-            )
-            .toList();
+        final transactions = <PointTransaction>[];
+        for (final item in transactionsData) {
+          try {
+            if (item is Map<String, dynamic>) {
+              transactions.add(PointTransaction.fromJson(item));
+            } else if (item is Map) {
+              transactions.add(
+                PointTransaction.fromJson(Map<String, dynamic>.from(item)),
+              );
+            } else {
+              Logger.warning(
+                'Cached transaction row skipped (not a Map): ${item.runtimeType}',
+                tag: 'PointService',
+              );
+            }
+          } catch (e, stackTrace) {
+            Logger.error(
+              'Error parsing cached transaction row: $e',
+              tag: 'PointService',
+              error: e,
+              stackTrace: stackTrace,
+            );
+          }
+        }
 
         // CRITICAL FIX: Always sort by date (newest first) when loading from cache
         // This ensures consistent ordering even if cache was stored in wrong order
@@ -1858,6 +2043,26 @@ class PointService {
     }).toList();
   }
 
+  /// Same persisted semantics as disk: compare balance + lifetime stats + expiry.
+  /// [lastUpdated] is intentionally ignored — API rows often differ only by timestamps.
+  static bool cachedBalanceMatchesForPersistence(
+    PointBalance? cached,
+    PointBalance incoming,
+  ) {
+    if (cached == null) return false;
+    return cached.userId == incoming.userId &&
+        cached.currentBalance == incoming.currentBalance &&
+        cached.lifetimeEarned == incoming.lifetimeEarned &&
+        cached.lifetimeRedeemed == incoming.lifetimeRedeemed &&
+        cached.lifetimeExpired == incoming.lifetimeExpired &&
+        cached.pointsExpireAt == incoming.pointsExpireAt;
+  }
+
+  /// Persists a full [PointBalance] row from a trusted fetch (e.g. smart poll).
+  static Future<void> persistFetchedBalance(PointBalance balance) async {
+    await _saveBalanceToStorage(balance);
+  }
+
   /// Overwrite SharedPreferences balance so cold start matches canonical truth.
   static Future<void> saveCanonicalBalance({
     required String userId,
@@ -1874,6 +2079,14 @@ class PointService {
         lastUpdated: DateTime.now(),
         pointsExpireAt: existing?.pointsExpireAt,
       );
+      if (cachedBalanceMatchesForPersistence(existing, balance)) {
+        Logger.debug(
+          'saveCanonicalBalance: skip redundant write (balance=$currentBalance '
+          'userId=$userId)',
+          tag: 'PointService',
+        );
+        return;
+      }
       await _saveBalanceToStorage(balance);
       Logger.info(
         'Canonical balance persisted to disk: $currentBalance (userId=$userId)',
@@ -1892,6 +2105,15 @@ class PointService {
   /// Save balance to local storage
   static Future<void> _saveBalanceToStorage(PointBalance balance) async {
     try {
+      final existing = await getCachedBalance(balance.userId);
+      if (cachedBalanceMatchesForPersistence(existing, balance)) {
+        Logger.debug(
+          '_saveBalanceToStorage: skip redundant write (userId=${balance.userId}, '
+          'balance=${balance.currentBalance})',
+          tag: 'PointService',
+        );
+        return;
+      }
       final prefs = await SharedPreferences.getInstance();
       final balanceJson = json.encode(balance.toJson());
       final encrypted = await _securePrefs.encrypt(balanceJson);
@@ -2208,6 +2430,24 @@ class PointService {
     _queueRegistered = true;
     final queue = OfflineQueueService();
     queue.setPointAdjustmentCallback(_processQueuedPointAdjustment);
+    /*
+    Old Code: no listener — UI balance stayed stale until user navigated / pulled refresh
+    after offline point queue replay succeeded.
+    */
+    // New Code: silent force-refresh so My PNP matches server after each successful replay.
+    queue.setPointAdjustmentSyncedListener((String userId) async {
+      if (userId.isEmpty) return;
+      try {
+        await PointProvider.instance.loadBalance(userId, forceRefresh: true);
+      } catch (e, stackTrace) {
+        Logger.warning(
+          'Post offline point-queue balance refresh failed: $e',
+          tag: 'PointService',
+          error: e,
+          stackTrace: stackTrace,
+        );
+      }
+    });
     // Endpoint harmonization: revive previously failed point sync items so they
     // retry against the updated earn/redeem route flow.
     unawaited(queue.resetPointAdjustmentRetriesAndSync());

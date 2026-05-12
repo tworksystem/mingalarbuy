@@ -76,14 +76,22 @@ class SecurePrefs {
     return encrypter.decrypt(cipherText, iv: iv);
   }
 
-  /// Attempts to decrypt [payload], returning `null` when it is not encrypted.
+  /// Decrypts an AES-CBC payload produced by [encrypt].
+  ///
+  /// Returns **`null` when decryption fails** (wrong key, tampered ciphertext,
+  /// invalid base64, bad padding, malformed `iv:cipher` shape, etc.).
+  ///
+  /// **There is no plaintext fallback:** callers must not substitute the raw
+  /// stored string for JSON — that would allow trivial fake-balance injection on
+  /// rooted devices. Invalidate the preference entry when this returns `null`.
   Future<String?> maybeDecrypt(String payload) async {
     try {
       return await decrypt(payload);
     } catch (e) {
       if (kDebugMode) {
         debugPrint(
-            'SecurePrefs: failed to decrypt payload, assuming plaintext.');
+          'SecurePrefs: decrypt failed; rejecting payload (no plaintext fallback). $e',
+        );
       }
       return null;
     }

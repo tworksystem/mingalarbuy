@@ -80,7 +80,7 @@ class PointNotificationManager {
   bool _isShowingModal = false;
   Timer? _modalQueueTimer;
   Timer?
-      _contextCheckTimer; // Timer to periodically check for context availability
+  _contextCheckTimer; // Timer to periodically check for context availability
 
   /// Poll wins: prefer in-app notification (non-blocking). Modal only when callers
   /// explicitly request it (e.g. some engagement types via FCM).
@@ -146,7 +146,7 @@ class PointNotificationManager {
       // New Code: Apply authoritative [currentBalance] to Auth + PointProvider for every
       // notification type that carries a balance, before in-app / modal UX, so My PNP
       // rebuilds immediately even when no modal is shown.
-      _syncHomeBalanceFromNotifyPointEvent(
+      await _syncHomeBalanceFromNotifyPointEvent(
         type: type,
         currentBalance: currentBalance,
         userId: userId,
@@ -186,8 +186,11 @@ class PointNotificationManager {
       // Show modal popup (only for positive/significant events)
       if (!_suppressInternalPointNotificationUi &&
           showModalPopup &&
-          _shouldShowModal(type,
-              additionalData: additionalData, points: points)) {
+          _shouldShowModal(
+            type,
+            additionalData: additionalData,
+            points: points,
+          )) {
         final event = PointNotificationEvent(
           type: type,
           points: points,
@@ -203,8 +206,7 @@ class PointNotificationManager {
 
         // Use context when available — immediate modal, no queue delay.
         // Sequential callers (e.g. carousel) still get one modal per explicit request.
-        final hasContext =
-            preferredContext != null && preferredContext.mounted;
+        final hasContext = preferredContext != null && preferredContext.mounted;
 
         if (hasContext) {
           await _showModalWithContext(preferredContext, event);
@@ -266,8 +268,7 @@ class PointNotificationManager {
     // New Code — one stable key **per poll session** (Carousel + REST + backend FCM all align):
     if (type == PointNotificationType.engagementEarned &&
         additionalData?['itemType']?.toString() == 'poll') {
-      final pollPk =
-          additionalData?['pollId'] ?? additionalData?['poll_id'];
+      final pollPk = additionalData?['pollId'] ?? additionalData?['poll_id'];
       final sessPk =
           additionalData?['sessionId'] ?? additionalData?['session_id'];
       if (pollPk != null && pollPk.toString().trim().isNotEmpty) {
@@ -331,21 +332,24 @@ class PointNotificationManager {
       case PointNotificationType.earned:
         return {
           'title': '🎉 Points Earned!',
-          'body': description ??
+          'body':
+              description ??
               'You earned $points points! Your new balance is $currentBalance points.',
         };
 
       case PointNotificationType.redeemed:
         return {
           'title': '✅ Points Redeemed',
-          'body': description ??
+          'body':
+              description ??
               'You redeemed $points points. Your new balance is $currentBalance points.',
         };
 
       case PointNotificationType.approved:
         return {
           'title': '✨ Points Approved!',
-          'body': description ??
+          'body':
+              description ??
               'Your $points points have been approved! Your new balance is $currentBalance points.',
         };
 
@@ -353,7 +357,8 @@ class PointNotificationManager {
         final isPositive = additionalData?['isPositive'] as bool? ?? points > 0;
         return {
           'title': isPositive ? '📊 Points Added' : '📊 Points Adjusted',
-          'body': description ??
+          'body':
+              description ??
               (isPositive
                   ? 'You received $points points. Your new balance is $currentBalance points.'
                   : '$points points were adjusted. Your new balance is $currentBalance points.'),
@@ -362,13 +367,13 @@ class PointNotificationManager {
       case PointNotificationType.expired:
         return {
           'title': '⏰ Points Expired',
-          'body': description ??
+          'body':
+              description ??
               '$points points have expired. Your current balance is $currentBalance points.',
         };
 
       case PointNotificationType.engagementEarned:
-        final isPollWinner =
-            additionalData?['itemType']?.toString() == 'poll';
+        final isPollWinner = additionalData?['itemType']?.toString() == 'poll';
         final itemTitle = additionalData?['itemTitle'] as String?;
         if (isPollWinner) {
           // Poll-win celebration copy disabled (neutral placeholders for logs/FCM fallbacks).
@@ -379,7 +384,8 @@ class PointNotificationManager {
         }
         return {
           'title': '🎯 Engagement Points!',
-          'body': description ??
+          'body':
+              description ??
               (itemTitle != null
                   ? 'You earned $points points from $itemTitle! Your new balance is $currentBalance points.'
                   : 'You earned $points points from engagement! Your new balance is $currentBalance points.'),
@@ -389,7 +395,8 @@ class PointNotificationManager {
         // PROFESSIONAL FIX: Exchange requests deduct points, so emphasize deduction
         return {
           'title': '💰 Exchange Approved!',
-          'body': description ??
+          'body':
+              description ??
               'Your exchange request has been approved! $points points were deducted. Your new balance is $currentBalance points.',
         };
 
@@ -397,7 +404,8 @@ class PointNotificationManager {
         final reason = additionalData?['reason'] as String?;
         return {
           'title': '⚠️ Exchange Rejected',
-          'body': description ??
+          'body':
+              description ??
               (reason != null
                   ? 'Your exchange request was rejected: $reason'
                   : 'Your exchange request was rejected. Your points remain unchanged.'),
@@ -407,8 +415,11 @@ class PointNotificationManager {
 
   /// Determine if modal popup should be shown for this event type
   /// PROFESSIONAL FIX: Avoid noisy/negative adjustment popups
-  bool _shouldShowModal(PointNotificationType type,
-      {Map<String, dynamic>? additionalData, int? points}) {
+  bool _shouldShowModal(
+    PointNotificationType type, {
+    Map<String, dynamic>? additionalData,
+    int? points,
+  }) {
     // Show modal for positive events and adjustments
     switch (type) {
       case PointNotificationType.earned:
@@ -424,7 +435,8 @@ class PointNotificationManager {
       case PointNotificationType.adjusted:
         // Manual adjustments can be positive (add) or negative (deduct).
         // UX requirement: do NOT show modal popup for negative manual adjustments.
-        final isPositive = (additionalData?['isPositive'] as bool?) ??
+        final isPositive =
+            (additionalData?['isPositive'] as bool?) ??
             (additionalData?['is_positive'] as bool?) ??
             ((points ?? 0) > 0);
         return isPositive;
@@ -437,7 +449,8 @@ class PointNotificationManager {
 
   bool _isPollWinnerEvent(PointNotificationEvent event) {
     final itemType =
-        (event.additionalData?['itemType'] ?? event.additionalData?['item_type'])
+        (event.additionalData?['itemType'] ??
+                event.additionalData?['item_type'])
             ?.toString()
             .toLowerCase();
     return event.type == PointNotificationType.engagementEarned &&
@@ -499,11 +512,12 @@ class PointNotificationManager {
       // New Code:
       // For poll winners, pass a stable requestId derived from pollId+sessionId
       // so storage-level idempotency survives app restarts.
-      final pollId = (additionalData?['pollId'] ??
-              additionalData?['poll_id'] ??
-              additionalData?['itemId'] ??
-              additionalData?['item_id'])
-          ?.toString();
+      final pollId =
+          (additionalData?['pollId'] ??
+                  additionalData?['poll_id'] ??
+                  additionalData?['itemId'] ??
+                  additionalData?['item_id'])
+              ?.toString();
       final sessionId =
           (additionalData?['sessionId'] ?? additionalData?['session_id'])
               ?.toString();
@@ -511,7 +525,8 @@ class PointNotificationManager {
           (additionalData?['itemType'] ?? additionalData?['item_type'])
               ?.toString()
               .toLowerCase();
-      final stableRequestId = (notificationType == 'engagement_points' &&
+      final stableRequestId =
+          (notificationType == 'engagement_points' &&
               itemType == 'poll' &&
               pollId != null &&
               pollId.isNotEmpty &&
@@ -583,10 +598,13 @@ class PointNotificationManager {
   */
 
   /// NEW FIX: Same as above + disk; no extra broadcast (legacy behavior).
-  void _applyBalanceSnapshotToProviders({
+  /// Await canonical apply so it participates in [CanonicalPointBalanceSync] mutex ordering.
+  Future<void> _applyBalanceSnapshotToProviders({
     required String userId,
     required int currentBalance,
-  }) {
+  }) async {
+    /*
+    Old Code: fire-and-forget raced other canonical paths (FCM / poll win).
     unawaited(
       CanonicalPointBalanceSync.apply(
         userId: userId,
@@ -594,6 +612,13 @@ class PointNotificationManager {
         source: 'point_notification_manager',
         emitBroadcast: false,
       ),
+    );
+    */
+    await CanonicalPointBalanceSync.apply(
+      userId: userId,
+      currentBalance: currentBalance,
+      source: 'point_notification_manager',
+      emitBroadcast: false,
     );
   }
 
@@ -614,11 +639,11 @@ class PointNotificationManager {
   }
 
   /// Resolves user id and applies snapshot when authenticated user matches.
-  void _syncHomeBalanceFromNotifyPointEvent({
+  Future<void> _syncHomeBalanceFromNotifyPointEvent({
     required PointNotificationType type,
     required int currentBalance,
     String? userId,
-  }) {
+  }) async {
     if (!_notificationTypeCarriesBalanceForHomeSync(type)) {
       return;
     }
@@ -633,7 +658,7 @@ class PointNotificationManager {
     if (effectiveUserId != sessionUserId) {
       return;
     }
-    _applyBalanceSnapshotToProviders(
+    await _applyBalanceSnapshotToProviders(
       userId: sessionUserId,
       currentBalance: currentBalance,
     );
@@ -641,7 +666,9 @@ class PointNotificationManager {
 
   /// Ensure balance is applied to providers before/after showing win modal.
   /// Prevents "points not added" when modal is queued/delayed or something overwrote.
-  void _ensureBalanceAppliedForWinModal(PointNotificationEvent event) {
+  Future<void> _ensureBalanceAppliedForWinModal(
+    PointNotificationEvent event,
+  ) async {
     /*
     Old Code:
     final isBalanceChange =
@@ -665,16 +692,16 @@ class PointNotificationManager {
     // New Code: Same modal eligibility rules; delegate to shared snapshot helper.
     final isBalanceChange =
         event.type == PointNotificationType.engagementEarned ||
-            event.type == PointNotificationType.earned ||
-            event.type == PointNotificationType.approved ||
-            event.type == PointNotificationType.exchangeApproved ||
-            (event.type == PointNotificationType.adjusted &&
-                (event.additionalData?['isPositive'] as bool? ?? event.points > 0));
+        event.type == PointNotificationType.earned ||
+        event.type == PointNotificationType.approved ||
+        event.type == PointNotificationType.exchangeApproved ||
+        (event.type == PointNotificationType.adjusted &&
+            (event.additionalData?['isPositive'] as bool? ?? event.points > 0));
     if (!isBalanceChange) return;
     final auth = AuthProvider();
     if (!auth.isAuthenticated || auth.user == null) return;
     final userId = auth.user!.id.toString();
-    _applyBalanceSnapshotToProviders(
+    await _applyBalanceSnapshotToProviders(
       userId: userId,
       currentBalance: event.currentBalance,
     );
@@ -682,7 +709,9 @@ class PointNotificationManager {
 
   /// Show modal directly using provided context (most reliable when caller has valid context)
   Future<void> _showModalWithContext(
-      BuildContext context, PointNotificationEvent event) async {
+    BuildContext context,
+    PointNotificationEvent event,
+  ) async {
     if (!context.mounted) return;
     if (_suppressInternalPointNotificationUi) {
       return;
@@ -692,14 +721,14 @@ class PointNotificationManager {
       return;
     }
     try {
-      _ensureBalanceAppliedForWinModal(event);
+      await _ensureBalanceAppliedForWinModal(event);
       await showDialog(
         context: context,
         barrierDismissible: false,
         barrierColor: Colors.black.withValues(alpha: 0.7),
         builder: (ctx) => PointNotificationModal(event: event),
       );
-      _ensureBalanceAppliedForWinModal(event);
+      await _ensureBalanceAppliedForWinModal(event);
     } catch (e, st) {
       Logger.error(
         'Failed to show modal with context, falling back to queue: $e',
@@ -802,7 +831,7 @@ class PointNotificationManager {
             tag: 'PointNotificationManager',
           );
 
-          _ensureBalanceAppliedForWinModal(event);
+          await _ensureBalanceAppliedForWinModal(event);
 
           try {
             await showDialog(
@@ -812,7 +841,7 @@ class PointNotificationManager {
               builder: (context) => PointNotificationModal(event: event),
             );
 
-            _ensureBalanceAppliedForWinModal(event);
+            await _ensureBalanceAppliedForWinModal(event);
 
             Logger.info(
               'Point notification modal closed: ${event.type.toString()}',

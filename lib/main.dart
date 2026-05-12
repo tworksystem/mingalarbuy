@@ -27,6 +27,7 @@ import 'package:ecommerce_int2/services/active_sync_service.dart';
 import 'package:ecommerce_int2/services/push_notification_service.dart';
 import 'package:ecommerce_int2/services/connectivity_service.dart';
 import 'package:ecommerce_int2/services/offline_queue_service.dart';
+import 'package:ecommerce_int2/services/auth_session_cache_service.dart';
 import 'package:ecommerce_int2/services/point_service.dart';
 import 'package:ecommerce_int2/services/usage_tracking_service.dart';
 import 'package:ecommerce_int2/services/app_logger.dart';
@@ -60,13 +61,21 @@ void main() async {
   if (kIsWeb) {
     FlutterError.onError = (FlutterErrorDetails details) {
       FlutterError.presentError(details);
-      Logger.error('Flutter Error: ${details.exception}',
-          tag: 'Main', error: details.exception, stackTrace: details.stack);
+      Logger.error(
+        'Flutter Error: ${details.exception}',
+        tag: 'Main',
+        error: details.exception,
+        stackTrace: details.stack,
+      );
     };
 
     PlatformDispatcher.instance.onError = (error, stack) {
-      Logger.error('Platform Error: $error',
-          tag: 'Main', error: error, stackTrace: stack);
+      Logger.error(
+        'Platform Error: $error',
+        tag: 'Main',
+        error: error,
+        stackTrace: stack,
+      );
       return true;
     };
   }
@@ -79,8 +88,11 @@ void main() async {
         await ConnectivityService().initialize();
         Logger.info('Connectivity service initialized', tag: 'Main');
       } catch (e) {
-        Logger.error('Connectivity service initialization failed: $e',
-            tag: 'Main', error: e);
+        Logger.error(
+          'Connectivity service initialization failed: $e',
+          tag: 'Main',
+          error: e,
+        );
         // Continue even if connectivity service fails
       }
 
@@ -90,8 +102,11 @@ void main() async {
         Logger.info('Offline queue service initialized', tag: 'Main');
         PointService.registerOfflineQueueHandler();
       } catch (e) {
-        Logger.error('Offline queue service initialization failed: $e',
-            tag: 'Main', error: e);
+        Logger.error(
+          'Offline queue service initialization failed: $e',
+          tag: 'Main',
+          error: e,
+        );
         // Continue even if offline queue fails
       }
 
@@ -102,8 +117,11 @@ void main() async {
         await notificationProvider.initialize();
         Logger.info('In-app notification provider initialized', tag: 'Main');
       } catch (e) {
-        Logger.error('In-app notification provider initialization failed: $e',
-            tag: 'Main', error: e);
+        Logger.error(
+          'In-app notification provider initialization failed: $e',
+          tag: 'Main',
+          error: e,
+        );
         // Continue even if notification provider fails
       }
 
@@ -111,8 +129,11 @@ void main() async {
       try {
         await NotificationService().initialize();
       } catch (e) {
-        Logger.error('Notification service initialization failed: $e',
-            tag: 'Main', error: e);
+        Logger.error(
+          'Notification service initialization failed: $e',
+          tag: 'Main',
+          error: e,
+        );
         // Continue even if notification service fails
       }
 
@@ -128,12 +149,17 @@ void main() async {
             initialDelay: const Duration(seconds: 30),
           );
         } catch (e) {
-          Logger.error('Background service initialization failed: $e',
-              tag: 'Main', error: e);
+          Logger.error(
+            'Background service initialization failed: $e',
+            tag: 'Main',
+            error: e,
+          );
         }
       } else {
-        Logger.info('Skipping background service initialization on web',
-            tag: 'Main');
+        Logger.info(
+          'Skipping background service initialization on web',
+          tag: 'Main',
+        );
       }
 
       // Firebase Cloud Messaging (FCM) for instant push notifications
@@ -147,20 +173,26 @@ void main() async {
           // Register background message handler (mobile only)
           if (!kIsWeb) {
             FirebaseMessaging.onBackgroundMessage(
-                firebaseMessagingBackgroundHandler);
+              firebaseMessagingBackgroundHandler,
+            );
           }
 
           // Initialize push notification service
           await PushNotificationService().initialize();
           Logger.info('Push notification service initialized', tag: 'Main');
         } catch (e) {
-          Logger.error('Firebase initialization failed: $e',
-              tag: 'Main', error: e);
+          Logger.error(
+            'Firebase initialization failed: $e',
+            tag: 'Main',
+            error: e,
+          );
           // App will continue without push notifications (fallback to polling)
         }
       } else {
-        Logger.info('Skipping Firebase initialization on web (not configured)',
-            tag: 'Main');
+        Logger.info(
+          'Skipping Firebase initialization on web (not configured)',
+          tag: 'Main',
+        );
       }
     });
 
@@ -169,8 +201,12 @@ void main() async {
     runApp(MyApp());
   } catch (e, stackTrace) {
     // Fallback: Run app even if initialization fails
-    Logger.fatal('Critical error during initialization: $e',
-        tag: 'Main', error: e, stackTrace: stackTrace);
+    Logger.fatal(
+      'Critical error during initialization: $e',
+      tag: 'Main',
+      error: e,
+      stackTrace: stackTrace,
+    );
     Logger.warning('Running app with minimal initialization...', tag: 'Main');
 
     // runApp is already in root zone (same as ensureInitialized above)
@@ -198,6 +234,11 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   DateTime? _lastWebVisibilityBalanceRefresh;
   static const Duration _webVisibilityBalanceThrottle = Duration(seconds: 45);
 
+  DateTime? _lastGlobalResumePointRefreshAt;
+  static const Duration _globalResumePointRefreshMinInterval = Duration(
+    minutes: 2,
+  );
+
   @override
   void initState() {
     super.initState();
@@ -222,10 +263,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void _tryAttachWebPointVisibilityListener() {
     if (!kIsWeb) return;
     _webVisibilitySubscription?.cancel();
-    _webVisibilitySubscription =
-        web_point_visibility.attachWebVisibilityVisibleListener(() {
-      _onWebVisibilityPointRefresh();
-    });
+    _webVisibilitySubscription = web_point_visibility
+        .attachWebVisibilityVisibleListener(() {
+          _onWebVisibilityPointRefresh();
+        });
     if (_webVisibilitySubscription != null) {
       Logger.info(
         'Web: document visibility listener registered for point balance refresh',
@@ -258,13 +299,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       PointProvider.instance
           .loadBalance(userIdString, forceRefresh: true)
           .catchError((Object e, StackTrace st) {
-        Logger.warning(
-          'Web visibility point refresh failed: $e',
-          tag: 'Main',
-          error: e,
-          stackTrace: st,
-        );
-      });
+            Logger.warning(
+              'Web visibility point refresh failed: $e',
+              tag: 'Main',
+              error: e,
+              stackTrace: st,
+            );
+          });
     } catch (e, st) {
       Logger.warning(
         'Web visibility point refresh skipped: $e',
@@ -290,8 +331,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         // Start usage tracking session
         await UsageTrackingService.startSession(userId);
 
-        Logger.info('Usage tracking initialized for user: $userId',
-            tag: 'Main');
+        Logger.info(
+          'Usage tracking initialized for user: $userId',
+          tag: 'Main',
+        );
       }
     } catch (e, stackTrace) {
       Logger.error(
@@ -306,15 +349,21 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Setup push notification callbacks for instant order updates
   void _setupPushNotificationCallbacks() {
     // Setup callback for order refresh when notification arrives
-    PushNotificationService().setOrderUpdateCallback(
-        (String orderId, Map<String, dynamic> data) async {
+    PushNotificationService().setOrderUpdateCallback((
+      String orderId,
+      Map<String, dynamic> data,
+    ) async {
       try {
-        Logger.info('FCM notification received, refreshing orders immediately',
-            tag: 'Main');
+        Logger.info(
+          'FCM notification received, refreshing orders immediately',
+          tag: 'Main',
+        );
 
         // Get providers from context
-        final orderProvider =
-            Provider.of<OrderProvider>(context, listen: false);
+        final orderProvider = Provider.of<OrderProvider>(
+          context,
+          listen: false,
+        );
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         // Use singleton instance to ensure we're updating the same provider instance used in UI
         final notificationProvider = InAppNotificationProvider.instance;
@@ -322,8 +371,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         // Reload notifications to update count immediately
         await notificationProvider.loadNotifications();
         Logger.info(
-            'Notification count updated after FCM notification (${notificationProvider.unreadCount} unread)',
-            tag: 'Main');
+          'Notification count updated after FCM notification (${notificationProvider.unreadCount} unread)',
+          tag: 'Main',
+        );
 
         if (authProvider.isAuthenticated && authProvider.user != null) {
           final userId = authProvider.user!.id.toString();
@@ -331,20 +381,31 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           // Trigger immediate order sync to get latest status
           // Skip notifications during sync since push notification already created it
           Logger.info(
-              'Triggering immediate order sync after FCM notification (skipping duplicate notifications)',
-              tag: 'Main');
-          await orderProvider.syncOrdersWithWooCommerce(userId,
-              skipNotifications: true);
+            'Triggering immediate order sync after FCM notification (skipping duplicate notifications)',
+            tag: 'Main',
+          );
+          await orderProvider.syncOrdersWithWooCommerce(
+            userId,
+            skipNotifications: true,
+          );
 
-          Logger.info('Orders refreshed successfully after FCM notification',
-              tag: 'Main');
+          Logger.info(
+            'Orders refreshed successfully after FCM notification',
+            tag: 'Main',
+          );
         } else {
-          Logger.warning('User not authenticated, skipping order refresh',
-              tag: 'Main');
+          Logger.warning(
+            'User not authenticated, skipping order refresh',
+            tag: 'Main',
+          );
         }
       } catch (e, stackTrace) {
-        Logger.error('Error refreshing orders after FCM notification: $e',
-            tag: 'Main', error: e, stackTrace: stackTrace);
+        Logger.error(
+          'Error refreshing orders after FCM notification: $e',
+          tag: 'Main',
+          error: e,
+          stackTrace: stackTrace,
+        );
       }
     });
 
@@ -354,8 +415,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         Logger.info('Navigating to order details: $orderId', tag: 'Main');
 
         // Get order provider to find the order
-        final orderProvider =
-            Provider.of<OrderProvider>(context, listen: false);
+        final orderProvider = Provider.of<OrderProvider>(
+          context,
+          listen: false,
+        );
 
         // Find order by ID (handle both WC- prefix and plain ID)
         Order? order;
@@ -370,15 +433,19 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           );
         } catch (e) {
           Logger.warning(
-              'Order not found in local cache, need to sync: $orderId',
-              tag: 'Main');
+            'Order not found in local cache, need to sync: $orderId',
+            tag: 'Main',
+          );
 
           // If order not found, sync orders first
-          final authProvider =
-              Provider.of<AuthProvider>(context, listen: false);
+          final authProvider = Provider.of<AuthProvider>(
+            context,
+            listen: false,
+          );
           if (authProvider.isAuthenticated && authProvider.user != null) {
-            await orderProvider
-                .syncOrdersWithWooCommerce(authProvider.user!.id.toString());
+            await orderProvider.syncOrdersWithWooCommerce(
+              authProvider.user!.id.toString(),
+            );
 
             // Try to find order again after sync
             try {
@@ -390,13 +457,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 orElse: () => throw StateError('Order not found'),
               );
             } catch (e2) {
-              Logger.error('Order still not found after sync: $orderId',
-                  tag: 'Main');
+              Logger.error(
+                'Order still not found after sync: $orderId',
+                tag: 'Main',
+              );
               return;
             }
           } else {
-            Logger.warning('User not authenticated, cannot navigate to order',
-                tag: 'Main');
+            Logger.warning(
+              'User not authenticated, cannot navigate to order',
+              tag: 'Main',
+            );
             return;
           }
         }
@@ -414,8 +485,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             );
             Logger.info('Navigated to order details: $orderId', tag: 'Main');
           } else {
-            Logger.warning('Navigator context not available, retrying...',
-                tag: 'Main');
+            Logger.warning(
+              'Navigator context not available, retrying...',
+              tag: 'Main',
+            );
             // Retry after a short delay if context is not available
             Future.delayed(Duration(milliseconds: 500), () {
               final retryContext = AppKeys.navigatorKey.currentContext;
@@ -425,19 +498,26 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                     builder: (context) => OrderDetailsPage(order: order!),
                   ),
                 );
-                Logger.info('Navigated to order details (retry): $orderId',
-                    tag: 'Main');
+                Logger.info(
+                  'Navigated to order details (retry): $orderId',
+                  tag: 'Main',
+                );
               } else {
                 Logger.error(
-                    'Navigator context still not available after retry',
-                    tag: 'Main');
+                  'Navigator context still not available after retry',
+                  tag: 'Main',
+                );
               }
             });
           }
         });
       } catch (e, stackTrace) {
-        Logger.error('Error navigating to order details: $e',
-            tag: 'Main', error: e, stackTrace: stackTrace);
+        Logger.error(
+          'Error navigating to order details: $e',
+          tag: 'Main',
+          error: e,
+          stackTrace: stackTrace,
+        );
       }
     });
 
@@ -449,28 +529,35 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         // Navigate to points history page using navigator key
         if (AppKeys.navigatorKey.currentContext != null) {
           Navigator.of(AppKeys.navigatorKey.currentContext!).push(
-            MaterialPageRoute(
-              builder: (context) => const PointHistoryPage(),
-            ),
+            MaterialPageRoute(builder: (context) => const PointHistoryPage()),
           );
           Logger.info('Navigated to points history', tag: 'Main');
         } else {
-          Logger.warning('Navigator context not available, cannot navigate',
-              tag: 'Main');
+          Logger.warning(
+            'Navigator context not available, cannot navigate',
+            tag: 'Main',
+          );
         }
       } catch (e, stackTrace) {
-        Logger.error('Error navigating to points history: $e',
-            tag: 'Main', error: e, stackTrace: stackTrace);
+        Logger.error(
+          'Error navigating to points history: $e',
+          tag: 'Main',
+          error: e,
+          stackTrace: stackTrace,
+        );
       }
     });
 
     // Setup callback for navigating to engagement hub when engagement notification is tapped
-    PushNotificationService().setEngagementNavigationCallback((
-        {String? itemId, String? itemType}) async {
+    PushNotificationService().setEngagementNavigationCallback(({
+      String? itemId,
+      String? itemType,
+    }) async {
       try {
         Logger.info(
-            'Navigating to engagement hub: itemId=$itemId, itemType=$itemType',
-            tag: 'Main');
+          'Navigating to engagement hub: itemId=$itemId, itemType=$itemType',
+          tag: 'Main',
+        );
 
         // PROFESSIONAL FIX: Parse itemId to integer for navigation
         int? parsedItemId;
@@ -499,11 +586,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             );
 
             Logger.info(
-                'Navigated to engagement hub (MainPage) with itemId: $parsedItemId',
-                tag: 'Main');
+              'Navigated to engagement hub (MainPage) with itemId: $parsedItemId',
+              tag: 'Main',
+            );
           } else {
-            Logger.warning('Navigator context not available, retrying...',
-                tag: 'Main');
+            Logger.warning(
+              'Navigator context not available, retrying...',
+              tag: 'Main',
+            );
             // Retry after a short delay if context is not available
             Future.delayed(Duration(milliseconds: 500), () {
               final retryContext = AppKeys.navigatorKey.currentContext;
@@ -518,19 +608,25 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   (route) => route.isFirst,
                 );
                 Logger.info(
-                    'Navigated to engagement hub (retry) with itemId: $parsedItemId',
-                    tag: 'Main');
+                  'Navigated to engagement hub (retry) with itemId: $parsedItemId',
+                  tag: 'Main',
+                );
               } else {
                 Logger.error(
-                    'Navigator context still not available after retry',
-                    tag: 'Main');
+                  'Navigator context still not available after retry',
+                  tag: 'Main',
+                );
               }
             });
           }
         });
       } catch (e, stackTrace) {
-        Logger.error('Error navigating to engagement hub: $e',
-            tag: 'Main', error: e, stackTrace: stackTrace);
+        Logger.error(
+          'Error navigating to engagement hub: $e',
+          tag: 'Main',
+          error: e,
+          stackTrace: stackTrace,
+        );
       }
     });
 
@@ -538,8 +634,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     PushNotificationService().setEngagementFeedRefreshCallback(() async {
       try {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        final engagementProvider =
-            Provider.of<EngagementProvider>(context, listen: false);
+        final engagementProvider = Provider.of<EngagementProvider>(
+          context,
+          listen: false,
+        );
 
         if (!authProvider.isAuthenticated || authProvider.user == null) {
           Logger.warning(
@@ -555,10 +653,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           tag: 'Main',
         );
 
-        await engagementProvider.loadFeed(
-          userId: userId,
-          forceRefresh: true,
-        );
+        await engagementProvider.loadFeed(userId: userId, forceRefresh: true);
       } catch (e, stackTrace) {
         Logger.error(
           'Error in engagement feed refresh callback: $e',
@@ -569,8 +664,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
     });
 
-    Logger.info('Push notification callbacks configured successfully',
-        tag: 'Main');
+    Logger.info(
+      'Push notification callbacks configured successfully',
+      tag: 'Main',
+    );
   }
 
   @override
@@ -596,52 +693,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         notificationProvider.loadNotifications();
         Logger.info('Notification count refreshed on app resume', tag: 'Main');
       } catch (e) {
-        Logger.error('Error refreshing notifications on app resume: $e',
-            tag: 'Main', error: e);
+        Logger.error(
+          'Error refreshing notifications on app resume: $e',
+          tag: 'Main',
+          error: e,
+        );
       }
 
-      // Old Code:
-      // Immediately refresh engagement feed + point balance on app resume.
-      // This duplicated MainPage resume refresh flow and could race/flicker.
-      //
-      // try {
-      //   final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      //   final engagementProvider =
-      //       Provider.of<EngagementProvider>(context, listen: false);
-      //
-      //   if (authProvider.isAuthenticated && authProvider.user != null) {
-      //     final userId = authProvider.user!.id;
-      //     final token = authProvider.token;
-      //     final userIdString = userId.toString();
-      //
-      //     PointProvider.instance
-      //         .loadBalance(userIdString, forceRefresh: true)
-      //         .catchError((e) {
-      //       Logger.warning('Error refreshing point balance on app resume: $e',
-      //           tag: 'Main', error: e);
-      //     });
-      //
-      //     engagementProvider
-      //         .refreshImmediately(
-      //       userId: userId,
-      //       token: token,
-      //     )
-      //         .catchError((e) {
-      //       Logger.warning('Error refreshing engagement feed on app resume: $e',
-      //           tag: 'Main', error: e);
-      //     });
-      //   }
-      // } catch (e) {
-      //   Logger.error('Error refreshing engagement feed on app resume: $e',
-      //       tag: 'Main', error: e);
-      // }
-      //
-      // New Code:
-      // MainPage now owns cache-first resume refresh + debounced background fetch.
-      Logger.info(
-        'Resume data refresh delegated to MainPage (cache-first, debounced)',
-        tag: 'Main',
-      );
+      // Global reconcile: Point state + ledger refresh regardless of visible route.
+      unawaited(_reconcilePointsOnGlobalResume());
 
       // Start usage tracking session when app resumes
       _handleUsageTrackingResume();
@@ -658,8 +718,11 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         BackgroundService.registerAutoRunPollOneOffTick(
           initialDelay: const Duration(seconds: 15),
         ).catchError((e) {
-          Logger.warning('Failed scheduling background auto-run poll tick: $e',
-              tag: 'Main', error: e);
+          Logger.warning(
+            'Failed scheduling background auto-run poll tick: $e',
+            tag: 'Main',
+            error: e,
+          );
           return false;
         });
       }
@@ -675,14 +738,60 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           initialDelay: const Duration(seconds: 5),
         ).catchError((e) {
           Logger.warning(
-              'Failed scheduling detached auto-run poll background tick: $e',
-              tag: 'Main',
-              error: e);
+            'Failed scheduling detached auto-run poll background tick: $e',
+            tag: 'Main',
+            error: e,
+          );
           return false;
         });
       }
       // App is being terminated - end session
       _handleUsageTrackingDetached();
+    }
+  }
+
+  Future<void> _reconcilePointsOnGlobalResume() async {
+    try {
+      if (!mounted) return;
+
+      final authProvider = AuthProvider();
+      if (!authProvider.isAuthenticated || authProvider.user == null) {
+        return;
+      }
+
+      final now = DateTime.now();
+      final lastAt = _lastGlobalResumePointRefreshAt;
+      if (lastAt != null &&
+          now.difference(lastAt) < _globalResumePointRefreshMinInterval) {
+        Logger.info(
+          'Global resume point reconcile skipped '
+          '(cooldown ${_globalResumePointRefreshMinInterval.inSeconds}s)',
+          tag: 'Main',
+        );
+        return;
+      }
+      _lastGlobalResumePointRefreshAt = now;
+
+      final userId = authProvider.user!.id.toString();
+
+      await PointProvider.instance.refreshPointState(
+        userId: userId,
+        forceRefresh: true,
+        refreshBalance: true,
+        refreshTransactions: true,
+        refreshUserCallback: () => authProvider.refreshUser(),
+      );
+      Logger.info(
+        'Global resume point reconcile finished (userId=$userId)',
+        tag: 'Main',
+      );
+    } catch (e, stackTrace) {
+      Logger.warning(
+        'Global resume point reconcile failed: $e',
+        tag: 'Main',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -737,8 +846,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         final userId = authProvider.user!.id.toString();
         await UsageTrackingService.endSession(userId);
 
-        Logger.info('Usage tracking ended (app detached) for user: $userId',
-            tag: 'Main');
+        Logger.info(
+          'Usage tracking ended (app detached) for user: $userId',
+          tag: 'Main',
+        );
       }
     } catch (e, stackTrace) {
       Logger.error(
@@ -767,8 +878,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         _startActiveSyncWithRetry(retry: retry + 1);
       }
     } catch (e, stackTrace) {
-      Logger.error('Error starting active sync: $e',
-          tag: 'Main', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error starting active sync: $e',
+        tag: 'Main',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -785,8 +900,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error starting active sync: $e',
-          tag: 'Main', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error starting active sync: $e',
+        tag: 'Main',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -804,8 +923,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     */
     // Keep release fallback sync lean and idempotent.
     _releaseFallbackSyncTimer?.cancel();
-    final interval =
-        kIsWeb ? const Duration(minutes: 5) : const Duration(seconds: 75);
+    final interval = kIsWeb
+        ? const Duration(minutes: 5)
+        : const Duration(seconds: 75);
     _releaseFallbackSyncTimer = Timer.periodic(
       interval,
       (_) => _runReleaseFallbackSync(),
@@ -837,11 +957,11 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
 
       final userIdString = authProvider.user!.id.toString();
-      await Future.wait([
-        PointProvider.instance.loadBalance(userIdString, forceRefresh: true),
-        PointProvider.instance
-            .loadTransactions(userIdString, forceRefresh: true),
-      ]);
+      // Periodic history sync; ledger balance reconcile is global resume (above).
+      await PointProvider.instance.loadTransactions(
+        userIdString,
+        forceRefresh: true,
+      );
       Logger.info(
         'Release fallback sync completed for user=$userIdString',
         tag: 'Main',
@@ -878,18 +998,20 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ChangeNotifierProvider.value(value: ConnectivityService()),
         ChangeNotifierProvider.value(value: OfflineQueueService()),
       ],
-      child: PointAuthListener(
-        child: WalletAuthListener(
-          child: OrderAuthListener(
-            child: EngagementAuthListener(
-              child: MaterialApp(
-                navigatorKey: AppKeys
-                    .navigatorKey, // Global navigator key for navigation from anywhere
-                scaffoldMessengerKey: AppKeys.scaffoldMessengerKey,
-                title: 'PlanetMM',
-                debugShowCheckedModeBanner: false,
-                theme: AppTheme.lightTheme,
-                home: SplashScreen(),
+      child: _AuthCartBinder(
+        child: PointAuthListener(
+          child: WalletAuthListener(
+            child: OrderAuthListener(
+              child: EngagementAuthListener(
+                child: MaterialApp(
+                  navigatorKey: AppKeys
+                      .navigatorKey, // Global navigator key for navigation from anywhere
+                  scaffoldMessengerKey: AppKeys.scaffoldMessengerKey,
+                  title: 'PlanetMM',
+                  debugShowCheckedModeBanner: false,
+                  theme: AppTheme.lightTheme,
+                  home: SplashScreen(),
+                ),
               ),
             ),
           ),
@@ -897,4 +1019,35 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+/// Binds [CartProvider] once so [AuthSessionCacheService] can clear the cart on logout / switch.
+class _AuthCartBinder extends StatefulWidget {
+  const _AuthCartBinder({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_AuthCartBinder> createState() => _AuthCartBinderState();
+}
+
+class _AuthCartBinderState extends State<_AuthCartBinder> {
+  bool _registered = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_registered) return;
+    _registered = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      try {
+        final cart = Provider.of<CartProvider>(context, listen: false);
+        AuthSessionCacheService.registerCartProvider(cart);
+      } catch (_) {}
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

@@ -7,6 +7,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api_service.dart';
@@ -20,11 +21,13 @@ import '../providers/auth_provider.dart';
 import 'canonical_point_balance_sync.dart';
 import 'point_notification_manager.dart';
 import 'missed_notification_recovery_service.dart';
+import '../utils/large_int_codec.dart';
 
 /// PROFESSIONAL SECURITY: Helper function to verify notification user in background handler
 /// This is a top-level function that can be called from background handler
 Future<bool> _verifyNotificationUserInBackground(
-    Map<String, dynamic> data) async {
+  Map<String, dynamic> data,
+) async {
   try {
     const secureStorage = FlutterSecureStorage();
 
@@ -44,8 +47,9 @@ Future<bool> _verifyNotificationUserInBackground(
       // If no userId in notification, log warning but allow processing
       // (some notifications might not have userId, e.g., system notifications)
       Logger.warning(
-          'Background notification has no userId, allowing processing (may be system notification)',
-          tag: 'PushNotification');
+        'Background notification has no userId, allowing processing (may be system notification)',
+        tag: 'PushNotification',
+      );
       return true;
     }
 
@@ -54,8 +58,9 @@ Future<bool> _verifyNotificationUserInBackground(
     if (userJson == null) {
       // No user logged in - reject notification
       Logger.info(
-          'Background: No user logged in, rejecting notification for userId: $notificationUserId',
-          tag: 'PushNotification');
+        'Background: No user logged in, rejecting notification for userId: $notificationUserId',
+        tag: 'PushNotification',
+      );
       return false;
     }
 
@@ -66,34 +71,42 @@ Future<bool> _verifyNotificationUserInBackground(
         currentUserId.isEmpty ||
         currentUserId == '0') {
       Logger.info(
-          'Background: No valid user ID found, rejecting notification for userId: $notificationUserId',
-          tag: 'PushNotification');
+        'Background: No valid user ID found, rejecting notification for userId: $notificationUserId',
+        tag: 'PushNotification',
+      );
       return false;
     }
 
     // Verify userId matches
     if (notificationUserId != currentUserId) {
       Logger.warning(
-          'Background: Notification userId mismatch: notification=$notificationUserId, current=$currentUserId. Rejecting notification.',
-          tag: 'PushNotification');
+        'Background: Notification userId mismatch: notification=$notificationUserId, current=$currentUserId. Rejecting notification.',
+        tag: 'PushNotification',
+      );
       return false;
     }
 
     // User ID matches - allow processing
     Logger.info(
-        'Background: Notification verified for current user: $currentUserId',
-        tag: 'PushNotification');
+      'Background: Notification verified for current user: $currentUserId',
+      tag: 'PushNotification',
+    );
     return true;
   } catch (e, stackTrace) {
-    Logger.error('Error verifying notification user in background: $e',
-        tag: 'PushNotification', error: e, stackTrace: stackTrace);
+    Logger.error(
+      'Error verifying notification user in background: $e',
+      tag: 'PushNotification',
+      error: e,
+      stackTrace: stackTrace,
+    );
     // On error, reject notification for security
     return false;
   }
 }
 
 /// SharedPreferences key: background isolate persists last points FCM snapshot for main isolate.
-const String _kPendingFcmPointSnapshotKey = 'twork_fcm_pending_point_snapshot_v1';
+const String _kPendingFcmPointSnapshotKey =
+    'twork_fcm_pending_point_snapshot_v1';
 
 /// Point-related FCM `type` values that carry an authoritative balance snapshot.
 const Set<String> _fcmPointBalanceNotificationTypes = {
@@ -124,7 +137,11 @@ String _fcmDataFirstString(Map<String, dynamic> data, List<String> keys) {
   return '';
 }
 
-int _fcmDataFirstInt(Map<String, dynamic> data, List<String> keys, {int fallback = 0}) {
+int _fcmDataFirstInt(
+  Map<String, dynamic> data,
+  List<String> keys, {
+  int fallback = 0,
+}) {
   final String raw = _fcmDataFirstString(data, keys);
   if (raw.isEmpty) {
     return fallback;
@@ -136,8 +153,52 @@ int _fcmDataFirstInt(Map<String, dynamic> data, List<String> keys, {int fallback
   return n.round();
 }
 
+BigInt? _fcmSnapshotSequence(Map<String, dynamic> data) {
+  for (final String k in const ['sequence_id', 'snapshot_sequence', 'seq']) {
+    if (!data.containsKey(k)) continue;
+    final v = tryParseBigIntId(data[k]);
+    if (v == null && data[k] is num) {
+      Logger.warning(
+        'FCM snapshot key "$k" has unsafe numeric precision; '
+        'backend should send id as string value',
+        tag: 'PushNotification',
+      );
+    }
+    if (v != null) return v;
+  }
+  for (final String k in const ['transactionId', 'transaction_id']) {
+    if (!data.containsKey(k)) continue;
+    final v = tryParseBigIntId(data[k]);
+    if (v == null && data[k] is num) {
+      Logger.warning(
+        'FCM transaction key "$k" has unsafe numeric precision; '
+        'backend should send id as string value',
+        tag: 'PushNotification',
+      );
+    }
+    if (v != null) return v;
+  }
+  return null;
+}
+
+DateTime? _fcmSnapshotObservedAt(Map<String, dynamic> data) {
+  for (final String k in const [
+    'balance_updated_at',
+    'snapshot_at',
+    'updated_at',
+    'server_time',
+  ]) {
+    if (!data.containsKey(k)) continue;
+    final d = DateTime.tryParse(data[k].toString().trim());
+    if (d != null) return d;
+  }
+  return null;
+}
+
 /// Background isolate cannot update [ChangeNotifier]s — persist snapshot for main isolate drain.
-Future<void> persistFcmPointSnapshotForMainIsolate(Map<String, dynamic> data) async {
+Future<void> persistFcmPointSnapshotForMainIsolate(
+  Map<String, dynamic> data,
+) async {
   if (kIsWeb) {
     return;
   }
@@ -154,15 +215,12 @@ Future<void> persistFcmPointSnapshotForMainIsolate(Map<String, dynamic> data) as
     if (uid.isEmpty) {
       return;
     }
-    final int balance = _fcmDataFirstInt(
-      data,
-      const [
-        'currentBalance',
-        'current_balance',
-        'currentbalance',
-        'balance',
-      ],
-    );
+    final int balance = _fcmDataFirstInt(data, const [
+      'currentBalance',
+      'current_balance',
+      'currentbalance',
+      'balance',
+    ]);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _kPendingFcmPointSnapshotKey,
@@ -176,6 +234,13 @@ Future<void> persistFcmPointSnapshotForMainIsolate(Map<String, dynamic> data) as
     Logger.info(
       'Background FCM point snapshot persisted for user=$uid balance=$balance type=$type',
       tag: 'PushNotification',
+    );
+  } on MissingPluginException catch (e, stackTrace) {
+    Logger.warning(
+      'persistFcmPointSnapshotForMainIsolate skipped: plugin unavailable in current isolate/engine state ($e)',
+      tag: 'PushNotification',
+      error: e,
+      stackTrace: stackTrace,
     );
   } catch (e, stackTrace) {
     Logger.error(
@@ -257,7 +322,9 @@ String _trayPointTitleForType(String type, String points) {
     case 'exchange_rejected':
       return '⚠️ Exchange Request Update';
     case 'engagement_points':
-      return pointsNum > 0 ? '🎯 $pointsNum PNP from Activity' : 'Activity Points Earned';
+      return pointsNum > 0
+          ? '🎯 $pointsNum PNP from Activity'
+          : 'Activity Points Earned';
     case 'points_adjusted':
       return '📊 Points Balance Adjusted';
     default:
@@ -266,7 +333,11 @@ String _trayPointTitleForType(String type, String points) {
 }
 
 String _trayPointBodyForType(
-    String type, String points, String balance, Map<String, dynamic> data) {
+  String type,
+  String points,
+  String balance,
+  Map<String, dynamic> data,
+) {
   final pointsNum = int.tryParse(points) ?? 0;
   final balanceNum = int.tryParse(balance) ?? 0;
   final fb = balanceNum.toString().replaceAllMapped(
@@ -301,16 +372,20 @@ String _trayPointBodyForType(
       }
       return 'Your exchange request was not approved. Your PNP balance remains unchanged. Current balance: $fb PNP.';
     case 'engagement_points':
-      final itemTitle = _fcmDataFirstString(
-        data,
-        const ['itemTitle', 'item_title', 'itemtitle'],
-      );
-      final activityName = itemTitle.toString().isNotEmpty ? itemTitle : 'this activity';
+      final itemTitle = _fcmDataFirstString(data, const [
+        'itemTitle',
+        'item_title',
+        'itemtitle',
+      ]);
+      final activityName = itemTitle.toString().isNotEmpty
+          ? itemTitle
+          : 'this activity';
       return pointsNum > 0
           ? 'Thank you for your participation! You earned $pointsNum PNP from $activityName. Your balance is now $fb PNP.'
           : 'You earned points from an engagement activity. Check your balance for details.';
     case 'points_adjusted':
-      final isPositive = _parseTrayBoolNullable(data['isPositive']) ??
+      final isPositive =
+          _parseTrayBoolNullable(data['isPositive']) ??
           _parseTrayBoolNullable(data['is_positive']) ??
           true;
       final adj = isPositive ? 'increased' : 'decreased';
@@ -347,7 +422,11 @@ class TrayLocalSpec {
   factory TrayLocalSpec.fromRemoteMessage(RemoteMessage message) {
     final d = Map<String, dynamic>.from(message.data);
     final nt = _fcmDataFirstString(d, const ['type', 'notification_type']);
-    final orderId = _fcmDataFirstString(d, const ['orderId', 'order_id', 'orderid']);
+    final orderId = _fcmDataFirstString(d, const [
+      'orderId',
+      'order_id',
+      'orderid',
+    ]);
 
     /*
     Old Code:
@@ -375,6 +454,7 @@ class TrayLocalSpec {
       'engagement_points',
       'points_adjusted',
     };
+
     /// Mirror `PushNotificationService._engagementNotificationTypes`.
     const trayEngKinds = {
       'engagement_quiz_submitted',
@@ -402,26 +482,28 @@ class TrayLocalSpec {
       final t = (notifT != null && notifT.isNotEmpty)
           ? notifT
           : (nt == 'reward_updated')
-              ? 'Reward update'
-              : _trayPointTitleForType(nt, points);
+          ? 'Reward update'
+          : _trayPointTitleForType(nt, points);
       final bodyText = (notifB != null && notifB.isNotEmpty)
           ? notifB
           : (nt == 'reward_updated')
-              ? 'Your rewards profile may have changed. Open the app to review.'
-              : _trayPointBodyForType(nt, points, cb, d);
+          ? 'Your rewards profile may have changed. Open the app to review.'
+          : _trayPointBodyForType(nt, points, cb, d);
 
       return TrayLocalSpec(
         channelId: 'points_updates',
         channelName: 'Points Updates',
-        channelDescription: 'Notifications for loyalty points and rewards updates',
+        channelDescription:
+            'Notifications for loyalty points and rewards updates',
         title: t,
         body: bodyText,
       );
     }
 
     if (trayEngKinds.contains(nt)) {
-      final t =
-          (notifT != null && notifT.isNotEmpty) ? notifT : 'Engagement Hub';
+      final t = (notifT != null && notifT.isNotEmpty)
+          ? notifT
+          : 'Engagement Hub';
       final b = (notifB != null && notifB.isNotEmpty)
           ? notifB
           : 'You have a new Engagement Hub activity or update.';
@@ -441,16 +523,15 @@ class TrayLocalSpec {
         channelId: 'order_updates',
         channelName: 'Order Updates',
         channelDescription: 'Notifications for order status updates',
-        title:
-            notifT?.isNotEmpty == true ? notifT! : 'Order update',
-        body:
-            notifB?.isNotEmpty == true ? notifB! : 'Your order has been updated',
+        title: notifT?.isNotEmpty == true ? notifT! : 'Order update',
+        body: notifB?.isNotEmpty == true
+            ? notifB!
+            : 'Your order has been updated',
       );
     }
 
     // Unknown / malformed type — NEVER masquerade as an order shipment:
-    final tFallback =
-        notifT?.isNotEmpty == true ? notifT! : 'Notification';
+    final tFallback = notifT?.isNotEmpty == true ? notifT! : 'Notification';
     final bFallback = notifB?.isNotEmpty == true
         ? notifB!
         : 'Open the app for details.';
@@ -472,17 +553,24 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     // Initialize Firebase if not already initialized
     await Firebase.initializeApp();
 
-    Logger.info('Background message received: ${message.notification?.title}',
-        tag: 'PushNotification');
-    Logger.info('Message ID: ${message.messageId}, Data: ${message.data}',
-        tag: 'PushNotification');
+    Logger.info(
+      'Background message received: ${message.notification?.title}',
+      tag: 'PushNotification',
+    );
+    Logger.info(
+      'Message ID: ${message.messageId}, Data: ${message.data}',
+      tag: 'PushNotification',
+    );
 
     // PROFESSIONAL SECURITY: Verify notification belongs to current user
-    final isAuthorized =
-        await _verifyNotificationUserInBackground(message.data);
+    final isAuthorized = await _verifyNotificationUserInBackground(
+      message.data,
+    );
     if (!isAuthorized) {
-      Logger.info('Background notification rejected - not for current user',
-          tag: 'PushNotification');
+      Logger.info(
+        'Background notification rejected - not for current user',
+        tag: 'PushNotification',
+      );
       return; // Reject notification if not for current user
     }
 
@@ -494,10 +582,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const DarwinInitializationSettings iosSettings =
         DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-    );
+          requestAlertPermission: true,
+          requestBadgePermission: true,
+          requestSoundPermission: true,
+        );
 
     const InitializationSettings initSettings = InitializationSettings(
       android: androidSettings,
@@ -514,8 +602,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     */
 
     // New Code — register all tray channels (Android 8+) so non-order rows never look like orders.
-    final androidImpl = localNotifications.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
+    final androidImpl = localNotifications
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
     const androidChannels = [
       AndroidNotificationChannel(
         'order_updates',
@@ -552,7 +642,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await androidImpl?.createNotificationChannel(ch);
     }
 
-    final nt = _fcmDataFirstString(message.data, const ['type', 'notification_type']);
+    final nt = _fcmDataFirstString(message.data, const [
+      'type',
+      'notification_type',
+    ]);
     if (nt == 'order_status_update') {
       // Notification disabled by user request (order tray notifications only).
       Logger.info(
@@ -594,16 +687,22 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       payload: json.encode(message.data),
     );
 
-    Logger.info('Background notification displayed successfully',
-        tag: 'PushNotification');
+    Logger.info(
+      'Background notification displayed successfully',
+      tag: 'PushNotification',
+    );
 
     // Main isolate cannot read background isolate memory — persist balance for startup drain.
     await persistFcmPointSnapshotForMainIsolate(
       Map<String, dynamic>.from(message.data),
     );
   } catch (e, stackTrace) {
-    Logger.error('Error handling background message: $e',
-        tag: 'PushNotification', error: e, stackTrace: stackTrace);
+    Logger.error(
+      'Error handling background message: $e',
+      tag: 'PushNotification',
+      error: e,
+      stackTrace: stackTrace,
+    );
   }
 }
 
@@ -651,6 +750,7 @@ class PushNotificationService {
   /// Callback for navigating to engagement hub
   /// Set this from main.dart with navigator key
   Function({String? itemId, String? itemType})? onNavigateToEngagement;
+
   /// Callback for forcing engagement feed refresh (real-time config updates)
   Future<void> Function()? onEngagementFeedRefresh;
 
@@ -662,7 +762,8 @@ class PushNotificationService {
 
   /// Set order update callback (called when notification arrives)
   void setOrderUpdateCallback(
-      Function(String orderId, Map<String, dynamic> data) callback) {
+    Function(String orderId, Map<String, dynamic> data) callback,
+  ) {
     onOrderUpdate = callback;
   }
 
@@ -678,7 +779,8 @@ class PushNotificationService {
 
   /// Set callback for navigating to engagement hub
   void setEngagementNavigationCallback(
-      Function({String? itemId, String? itemType}) callback) {
+    Function({String? itemId, String? itemType}) callback,
+  ) {
     onNavigateToEngagement = callback;
   }
 
@@ -705,9 +807,7 @@ class PushNotificationService {
       } else {
         final uploaded = await _sendTokenToBackend(_fcmToken!);
         if (!uploaded) {
-          _scheduleTokenRecovery(
-            reason: 'post-auth reconcile upload failed',
-          );
+          _scheduleTokenRecovery(reason: 'post-auth reconcile upload failed');
         }
       }
     } catch (e, stackTrace) {
@@ -730,7 +830,10 @@ class PushNotificationService {
     _fcmTokenRefreshSubscription = null;
     _tokenRecoveryTimer?.cancel();
     _tokenRecoveryTimer = null;
-    Logger.info('FCM messaging subscriptions disposed', tag: 'PushNotification');
+    Logger.info(
+      'FCM messaging subscriptions disposed',
+      tag: 'PushNotification',
+    );
   }
 
   /// PROFESSIONAL SECURITY: Get current logged-in user ID from secure storage
@@ -748,8 +851,11 @@ class PushNotificationService {
       }
       return userId;
     } catch (e) {
-      Logger.error('Error getting current user ID: $e',
-          tag: 'PushNotification', error: e);
+      Logger.error(
+        'Error getting current user ID: $e',
+        tag: 'PushNotification',
+        error: e,
+      );
       return null;
     }
   }
@@ -774,8 +880,9 @@ class PushNotificationService {
         // If no userId in notification, log warning but allow processing
         // (some notifications might not have userId, e.g., system notifications)
         Logger.warning(
-            'Notification has no userId, allowing processing (may be system notification)',
-            tag: 'PushNotification');
+          'Notification has no userId, allowing processing (may be system notification)',
+          tag: 'PushNotification',
+        );
         return true;
       }
 
@@ -785,26 +892,34 @@ class PushNotificationService {
       if (currentUserId == null) {
         // No user logged in - reject notification
         Logger.info(
-            'No user logged in, rejecting notification for userId: $notificationUserId',
-            tag: 'PushNotification');
+          'No user logged in, rejecting notification for userId: $notificationUserId',
+          tag: 'PushNotification',
+        );
         return false;
       }
 
       // Verify userId matches
       if (notificationUserId != currentUserId) {
         Logger.warning(
-            'Notification userId mismatch: notification=$notificationUserId, current=$currentUserId. Rejecting notification.',
-            tag: 'PushNotification');
+          'Notification userId mismatch: notification=$notificationUserId, current=$currentUserId. Rejecting notification.',
+          tag: 'PushNotification',
+        );
         return false;
       }
 
       // User ID matches - allow processing
-      Logger.info('Notification verified for current user: $currentUserId',
-          tag: 'PushNotification');
+      Logger.info(
+        'Notification verified for current user: $currentUserId',
+        tag: 'PushNotification',
+      );
       return true;
     } catch (e, stackTrace) {
-      Logger.error('Error verifying notification user: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error verifying notification user: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
       // On error, reject notification for security
       return false;
     }
@@ -848,11 +963,16 @@ class PushNotificationService {
       */
 
       // NEW FIX: Pending FCM snapshot — full canonical sync.
+      final Map<String, dynamic> snapData = Map<String, dynamic>.from(
+        decoded as Map,
+      );
       await CanonicalPointBalanceSync.apply(
         userId: uid,
         currentBalance: bal,
         source: 'push_fcm_pending_snapshot',
         emitBroadcast: false,
+        snapshotSequence: _fcmSnapshotSequence(snapData),
+        snapshotObservedAt: _fcmSnapshotObservedAt(snapData),
       );
       _schedulePointsHardSync(uid);
       Logger.info(
@@ -872,28 +992,34 @@ class PushNotificationService {
   /// Initialize push notification service
   Future<void> initialize() async {
     if (_isInitialized) {
-      Logger.info('PushNotificationService already initialized',
-          tag: 'PushNotification');
+      Logger.info(
+        'PushNotificationService already initialized',
+        tag: 'PushNotification',
+      );
       return;
     }
 
     try {
-      Logger.info('Initializing Firebase Cloud Messaging',
-          tag: 'PushNotification');
-
-      // Request notification permissions
-      NotificationSettings settings =
-          await _firebaseMessaging.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-        provisional: false,
-        criticalAlert: false,
+      Logger.info(
+        'Initializing Firebase Cloud Messaging',
+        tag: 'PushNotification',
       );
 
+      // Request notification permissions
+      NotificationSettings settings = await _firebaseMessaging
+          .requestPermission(
+            alert: true,
+            badge: true,
+            sound: true,
+            provisional: false,
+            criticalAlert: false,
+          );
+
       if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        Logger.info('User granted notification permission',
-            tag: 'PushNotification');
+        Logger.info(
+          'User granted notification permission',
+          tag: 'PushNotification',
+        );
 
         // Get FCM token
         await _getFCMToken();
@@ -909,25 +1035,37 @@ class PushNotificationService {
         // New Code: ensure backend token registration is eventually consistent
         // even when release startup races with secure-storage/session hydration.
         _scheduleTokenRecovery(reason: 'initial release reliability check');
-        Logger.info('PushNotificationService initialized successfully',
-            tag: 'PushNotification');
+        Logger.info(
+          'PushNotificationService initialized successfully',
+          tag: 'PushNotification',
+        );
       } else if (settings.authorizationStatus ==
           AuthorizationStatus.provisional) {
-        Logger.info('User granted provisional notification permission',
-            tag: 'PushNotification');
+        Logger.info(
+          'User granted provisional notification permission',
+          tag: 'PushNotification',
+        );
         await _getFCMToken();
         await _configureMessageHandlers();
         await _configureLocalNotifications();
         _isInitialized = true;
         await _applyPendingFcmBalanceSnapshotFromDisk();
-        _scheduleTokenRecovery(reason: 'provisional permission reliability check');
+        _scheduleTokenRecovery(
+          reason: 'provisional permission reliability check',
+        );
       } else {
-        Logger.warning('User declined notification permission',
-            tag: 'PushNotification');
+        Logger.warning(
+          'User declined notification permission',
+          tag: 'PushNotification',
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error initializing push notifications: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error initializing push notifications: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -937,11 +1075,14 @@ class PushNotificationService {
       _fcmToken = await _firebaseMessaging.getToken();
       if (_fcmToken != null) {
         // Show full token for testing (will be in logs)
-        Logger.info('FCM Token obtained (full): $_fcmToken',
-            tag: 'PushNotification');
         Logger.info(
-            'FCM Token (first 50 chars): ${_fcmToken!.substring(0, 50)}...',
-            tag: 'PushNotification');
+          'FCM Token obtained (full): $_fcmToken',
+          tag: 'PushNotification',
+        );
+        Logger.info(
+          'FCM Token (first 50 chars): ${_fcmToken!.substring(0, 50)}...',
+          tag: 'PushNotification',
+        );
 
         // Send token to backend
         final uploaded = await _sendTokenToBackend(_fcmToken!);
@@ -952,8 +1093,11 @@ class PushNotificationService {
         Logger.warning('FCM token is null', tag: 'PushNotification');
       }
     } catch (e) {
-      Logger.error('Failed to get FCM token: $e',
-          tag: 'PushNotification', error: e);
+      Logger.error(
+        'Failed to get FCM token: $e',
+        tag: 'PushNotification',
+        error: e,
+      );
     }
   }
 
@@ -1043,8 +1187,10 @@ class PushNotificationService {
       final userJson = await _secureStorage.read(key: 'user_data');
 
       if (userJson == null) {
-        Logger.info('No user data found, skipping token upload',
-            tag: 'PushNotification');
+        Logger.info(
+          'No user data found, skipping token upload',
+          tag: 'PushNotification',
+        );
         return false;
       }
 
@@ -1052,22 +1198,30 @@ class PushNotificationService {
       final userId = userData['id']?.toString();
 
       if (userId == null || userId.isEmpty || userId == '0') {
-        Logger.info('No valid user ID found, skipping token upload',
-            tag: 'PushNotification');
+        Logger.info(
+          'No valid user ID found, skipping token upload',
+          tag: 'PushNotification',
+        );
         return false;
       }
 
-      Logger.info('Uploading FCM token to backend for user: $userId',
-          tag: 'PushNotification');
+      Logger.info(
+        'Uploading FCM token to backend for user: $userId',
+        tag: 'PushNotification',
+      );
 
       // Upload FCM token to backend server
       try {
         final backendUrl = _getBackendUrl();
         if (backendUrl == null || backendUrl.isEmpty) {
-          Logger.info('Backend URL not configured, skipping token upload',
-              tag: 'PushNotification');
-          Logger.info('Configure backend URL in lib/utils/app_config.dart',
-              tag: 'PushNotification');
+          Logger.info(
+            'Backend URL not configured, skipping token upload',
+            tag: 'PushNotification',
+          );
+          Logger.info(
+            'Configure backend URL in lib/utils/app_config.dart',
+            tag: 'PushNotification',
+          );
           return false;
         }
 
@@ -1089,30 +1243,38 @@ class PushNotificationService {
         );
 
         if (response != null && ApiService.isSuccessResponse(response)) {
-          Logger.info('✅ FCM token uploaded successfully to backend',
-              tag: 'PushNotification');
+          Logger.info(
+            '✅ FCM token uploaded successfully to backend',
+            tag: 'PushNotification',
+          );
           return true;
         } else {
           Logger.warning(
-              'Failed to upload FCM token: ${response?.statusCode}',
-              tag: 'PushNotification');
+            'Failed to upload FCM token: ${response?.statusCode}',
+            tag: 'PushNotification',
+          );
           return false;
         }
       } on TimeoutException {
         Logger.warning(
-            'Backend token upload timeout - continuing without backend sync',
-            tag: 'PushNotification');
+          'Backend token upload timeout - continuing without backend sync',
+          tag: 'PushNotification',
+        );
         return false;
       } catch (e) {
         Logger.warning(
-            'Backend not available - continuing without backend sync: $e',
-            tag: 'PushNotification');
+          'Backend not available - continuing without backend sync: $e',
+          tag: 'PushNotification',
+        );
         // Don't fail the entire FCM initialization if backend is not available
         return false;
       }
     } catch (e) {
-      Logger.error('Failed to send FCM token to backend: $e',
-          tag: 'PushNotification', error: e);
+      Logger.error(
+        'Failed to send FCM token to backend: $e',
+        tag: 'PushNotification',
+        error: e,
+      );
       return false;
     }
   }
@@ -1147,8 +1309,10 @@ class PushNotificationService {
     // Handle foreground messages (app is open)
     _fcmMessageSubscriptions.add(
       FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-        Logger.info('Foreground message received: ${message.notification?.title}',
-            tag: 'PushNotification');
+        Logger.info(
+          'Foreground message received: ${message.notification?.title}',
+          tag: 'PushNotification',
+        );
         Logger.info('Message data: ${message.data}', tag: 'PushNotification');
 
         // Show local notification in foreground
@@ -1161,10 +1325,13 @@ class PushNotificationService {
 
     // Handle notification tap when app is in background
     _fcmMessageSubscriptions.add(
-      FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
+      FirebaseMessaging.onMessageOpenedApp.listen((
+        RemoteMessage message,
+      ) async {
         Logger.info(
-            'Notification tapped (background): ${message.notification?.title}',
-            tag: 'PushNotification');
+          'Notification tapped (background): ${message.notification?.title}',
+          tag: 'PushNotification',
+        );
         Logger.info('Message data: ${message.data}', tag: 'PushNotification');
 
         // Handle notification tap and navigate
@@ -1179,10 +1346,13 @@ class PushNotificationService {
     final initialMessage = await _firebaseMessaging.getInitialMessage();
     if (initialMessage != null) {
       Logger.info(
-          'Notification tapped (terminated): ${initialMessage.notification?.title}',
-          tag: 'PushNotification');
-      Logger.info('Message data: ${initialMessage.data}',
-          tag: 'PushNotification');
+        'Notification tapped (terminated): ${initialMessage.notification?.title}',
+        tag: 'PushNotification',
+      );
+      Logger.info(
+        'Message data: ${initialMessage.data}',
+        tag: 'PushNotification',
+      );
 
       // Handle notification tap and navigate
       await _handleNotificationTap(initialMessage);
@@ -1201,8 +1371,9 @@ class PushNotificationService {
     // });
     //
     // New Code:
-    _fcmTokenRefreshSubscription =
-        _firebaseMessaging.onTokenRefresh.listen((newToken) {
+    _fcmTokenRefreshSubscription = _firebaseMessaging.onTokenRefresh.listen((
+      newToken,
+    ) {
       Logger.info('FCM token refreshed', tag: 'PushNotification');
       _fcmToken = newToken;
       unawaited(() async {
@@ -1285,7 +1456,8 @@ class PushNotificationService {
         'type',
         'notification_type',
       ]);
-      final notificationReason = data['reason']?.toString() ??
+      final notificationReason =
+          data['reason']?.toString() ??
           data['notification_reason']?.toString() ??
           '';
 
@@ -1293,7 +1465,7 @@ class PushNotificationService {
       // Do not block these by strict userId verification.
       final isGlobalEngagementSettingsUpdate =
           notificationType == 'engagement_item_updated' &&
-              notificationReason == 'global_rotation_settings_changed';
+          notificationReason == 'global_rotation_settings_changed';
 
       // PROFESSIONAL SECURITY: Verify notification belongs to current user
       final isAuthorized = isGlobalEngagementSettingsUpdate
@@ -1301,8 +1473,9 @@ class PushNotificationService {
           : await _verifyNotificationUser(data);
       if (!isAuthorized) {
         Logger.info(
-            'Notification rejected - not for current user. Type: $notificationType',
-            tag: 'PushNotification');
+          'Notification rejected - not for current user. Type: $notificationType',
+          tag: 'PushNotification',
+        );
         return; // Reject notification if not for current user
       }
 
@@ -1310,8 +1483,10 @@ class PushNotificationService {
       // Supported types: points_earned, points_approved, points_redeemed,
       // exchange_approved, exchange_rejected, engagement_points
       if (_pointNotificationTypes.contains(notificationType)) {
-        Logger.info('Point notification received: $notificationType',
-            tag: 'PushNotification');
+        Logger.info(
+          'Point notification received: $notificationType',
+          tag: 'PushNotification',
+        );
 
         final transactionId =
             data['transactionId'] ?? data['transaction_id'] ?? '';
@@ -1323,8 +1498,9 @@ class PushNotificationService {
         final reason = data['reason'] ?? '';
 
         Logger.info(
-            'Point notification details: type=$notificationType, transactionId=$transactionId, requestId=$requestId, points=$points, userId=$userId, balance=$currentBalance',
-            tag: 'PushNotification');
+          'Point notification details: type=$notificationType, transactionId=$transactionId, requestId=$requestId, points=$points, userId=$userId, balance=$currentBalance',
+          tag: 'PushNotification',
+        );
 
         // PROFESSIONAL REAL-TIME UX:
         // 1) Apply payload snapshot instantly (no manual refresh needed).
@@ -1368,39 +1544,47 @@ class PushNotificationService {
           */
 
           // NEW FIX: Point notification payload — canonical sync (broadcast optional off).
+          final Map<String, dynamic> snap = Map<String, dynamic>.from(data);
           await CanonicalPointBalanceSync.apply(
             userId: effectiveUserId,
             currentBalance: balanceInt,
             source: 'push_point_notification',
             emitBroadcast: false,
+            snapshotSequence: _fcmSnapshotSequence(snap),
+            snapshotObservedAt: _fcmSnapshotObservedAt(snap),
           );
 
           // Reconcile from server in background using the centralized refresh flow.
           _schedulePointsHardSync(effectiveUserId);
         } else {
           Logger.warning(
-              'No userId in point notification and no authenticated fallback user available',
-              tag: 'PushNotification');
+            'No userId in point notification and no authenticated fallback user available',
+            tag: 'PushNotification',
+          );
         }
 
         // Handle specific notification types for additional actions
         switch (notificationType) {
           case 'exchange_approved':
-            Logger.info('Exchange request approved: Request ID $requestId',
-                tag: 'PushNotification');
+            Logger.info(
+              'Exchange request approved: Request ID $requestId',
+              tag: 'PushNotification',
+            );
             // Could navigate to exchange history or show success message
             break;
           case 'exchange_rejected':
             Logger.info(
-                'Exchange request rejected: Request ID $requestId, Reason: $reason',
-                tag: 'PushNotification');
+              'Exchange request rejected: Request ID $requestId, Reason: $reason',
+              tag: 'PushNotification',
+            );
             // Could navigate to exchange history or show error message
             break;
           case 'engagement_points':
             final itemTitle = data['itemTitle'] ?? data['item_title'] ?? '';
             Logger.info(
-                'Engagement points earned: $points points from $itemTitle',
-                tag: 'PushNotification');
+              'Engagement points earned: $points points from $itemTitle',
+              tag: 'PushNotification',
+            );
             // Could show celebration animation or navigate to engagement hub
             break;
         }
@@ -1413,13 +1597,20 @@ class PushNotificationService {
         // New Code:
         // Single-writer path via PointNotificationManager for both in-app row and modal decision.
         try {
-          final notificationTitle = message.notification?.title ??
+          final notificationTitle =
+              message.notification?.title ??
               _getPointNotificationTitle(notificationType, points);
-          final notificationBody = message.notification?.body ??
+          final notificationBody =
+              message.notification?.body ??
               _getPointNotificationBody(
-                  notificationType, points, currentBalance, data);
-          final eventOccurredAt =
-              _tryParseFcmDataEventTime(Map<String, dynamic>.from(data));
+                notificationType,
+                points,
+                currentBalance,
+                data,
+              );
+          final eventOccurredAt = _tryParseFcmDataEventTime(
+            Map<String, dynamic>.from(data),
+          );
 
           PointNotificationType? modalType;
           bool shouldShowModal = false;
@@ -1456,11 +1647,15 @@ class PushNotificationService {
               break;
             case 'points_adjusted':
               modalType = PointNotificationType.adjusted;
-              isAdjustmentPositive = _parseBool(data['isPositive']) ??
+              isAdjustmentPositive =
+                  _parseBool(data['isPositive']) ??
                   _parseBool(data['is_positive']);
               if (isAdjustmentPositive == null) {
-                final pointsValueRaw = data['pointsValue'] ?? data['points_value'];
-                final parsedDelta = int.tryParse(pointsValueRaw?.toString() ?? '');
+                final pointsValueRaw =
+                    data['pointsValue'] ?? data['points_value'];
+                final parsedDelta = int.tryParse(
+                  pointsValueRaw?.toString() ?? '',
+                );
                 if (parsedDelta != null) {
                   isAdjustmentPositive = parsedDelta >= 0;
                 }
@@ -1473,7 +1668,10 @@ class PushNotificationService {
             final pointsInt = int.tryParse(points) ?? 0;
             final balanceInt = int.tryParse(currentBalance) ?? 0;
             final itemIdRaw =
-                data['itemId'] ?? data['item_id'] ?? data['pollId'] ?? data['poll_id'];
+                data['itemId'] ??
+                data['item_id'] ??
+                data['pollId'] ??
+                data['poll_id'];
 
             final pollDedupeId = data['pollId'] ?? data['poll_id'];
             final sessionDedupeId = data['sessionId'] ?? data['session_id'];
@@ -1489,8 +1687,8 @@ class PushNotificationService {
                       : null,
             */
 
-            final String? pollStableOrderKey = (notificationType ==
-                        'engagement_points' &&
+            final String? pollStableOrderKey =
+                (notificationType == 'engagement_points' &&
                     pollDedupeId != null &&
                     pollDedupeId.toString().trim().isNotEmpty)
                 ? 'poll_stable_${pollDedupeId}_${sessionDedupeId ?? ''}'
@@ -1505,11 +1703,11 @@ class PushNotificationService {
               orderId: transactionId.isNotEmpty
                   ? null
                   : (pollStableOrderKey ??
-                      ((notificationType == 'engagement_points' &&
-                              itemIdRaw != null &&
-                              itemIdRaw.toString().isNotEmpty)
-                          ? 'fcm_engagement_${itemIdRaw}'
-                          : null)),
+                        ((notificationType == 'engagement_points' &&
+                                itemIdRaw != null &&
+                                itemIdRaw.toString().isNotEmpty)
+                            ? 'fcm_engagement_${itemIdRaw}'
+                            : null)),
               userId: userId,
               additionalData: {
                 ...Map<String, dynamic>.from(data),
@@ -1539,19 +1737,28 @@ class PushNotificationService {
             await notificationProvider.loadNotifications();
 
             Logger.info(
-                'Point notification handled via manager: type=$notificationType',
-                tag: 'PushNotification');
+              'Point notification handled via manager: type=$notificationType',
+              tag: 'PushNotification',
+            );
           }
 
           if (transactionId.isNotEmpty && userId.isNotEmpty) {
             MissedNotificationRecoveryService.markTransactionAsNotified(
-                userId, transactionId);
-            Logger.info('Transaction marked as notified: $transactionId',
-                tag: 'PushNotification');
+              userId,
+              transactionId,
+            );
+            Logger.info(
+              'Transaction marked as notified: $transactionId',
+              tag: 'PushNotification',
+            );
           }
         } catch (e, stackTrace) {
-          Logger.error('Error handling in-app point notification: $e',
-              tag: 'PushNotification', error: e, stackTrace: stackTrace);
+          Logger.error(
+            'Error handling in-app point notification: $e',
+            tag: 'PushNotification',
+            error: e,
+            stackTrace: stackTrace,
+          );
         }
 
         // Old Code: `return` only — engagement_points (poll win) left EngagementCarousel
@@ -1565,22 +1772,31 @@ class PushNotificationService {
 
       // Handle reward update notifications (refresh user to update custom_fields['my_rewards'])
       if (notificationType == 'reward_updated') {
-        Logger.info('Reward update notification received',
-            tag: 'PushNotification');
+        Logger.info(
+          'Reward update notification received',
+          tag: 'PushNotification',
+        );
         final userId = data['userId'] ?? data['user_id'] ?? '';
         final rewardValue = data['rewardValue'] ?? data['reward_value'] ?? '';
         Logger.info(
-            'Reward notification details: userId=$userId, rewardValue=$rewardValue',
-            tag: 'PushNotification');
+          'Reward notification details: userId=$userId, rewardValue=$rewardValue',
+          tag: 'PushNotification',
+        );
 
         try {
           // Refresh user profile so UI shows latest custom field "my_rewards"
           await AuthProvider().refreshUser();
-          Logger.info('User refreshed after reward update',
-              tag: 'PushNotification');
+          Logger.info(
+            'User refreshed after reward update',
+            tag: 'PushNotification',
+          );
         } catch (e, stackTrace) {
-          Logger.error('Error refreshing user after reward update: $e',
-              tag: 'PushNotification', error: e, stackTrace: stackTrace);
+          Logger.error(
+            'Error refreshing user after reward update: $e',
+            tag: 'PushNotification',
+            error: e,
+            stackTrace: stackTrace,
+          );
         }
         return;
       }
@@ -1588,25 +1804,30 @@ class PushNotificationService {
       // PROFESSIONAL ENGAGEMENT NOTIFICATIONS: Handle all engagement hub notifications
       if (_engagementNotificationTypes.contains(notificationType) ||
           isGlobalEngagementSettingsUpdate) {
-        Logger.info('Engagement notification received: $notificationType',
-            tag: 'PushNotification');
+        Logger.info(
+          'Engagement notification received: $notificationType',
+          tag: 'PushNotification',
+        );
         final userId = data['userId'] ?? data['user_id'] ?? '';
         final itemId = data['itemId'] ?? data['item_id'] ?? '';
         final itemTitle = data['itemTitle'] ?? data['item_title'] ?? '';
         final itemType = data['itemType'] ?? data['item_type'] ?? '';
-        final numberValue = data['numberValue'] ??
+        final numberValue =
+            data['numberValue'] ??
             data['number_value'] ??
             ''; // PROFESSIONAL FIX: Handle number value
 
         Logger.info(
-            'Engagement notification details: type=$notificationType, userId=$userId, itemId=$itemId, itemType=$itemType, itemTitle=$itemTitle, numberValue=$numberValue',
-            tag: 'PushNotification');
+          'Engagement notification details: type=$notificationType, userId=$userId, itemId=$itemId, itemType=$itemType, itemTitle=$itemTitle, numberValue=$numberValue',
+          tag: 'PushNotification',
+        );
 
         // PROFESSIONAL FIX: Special handling for number type notifications
         if (itemType == 'number' && numberValue.isNotEmpty) {
           Logger.info(
-              'Number type engagement notification: Number value=$numberValue',
-              tag: 'PushNotification');
+            'Number type engagement notification: Number value=$numberValue',
+            tag: 'PushNotification',
+          );
         }
 
         // Refresh engagement feed immediately for real-time config/content updates
@@ -1615,15 +1836,22 @@ class PushNotificationService {
             await onEngagementFeedRefresh!();
           } else {
             Logger.warning(
-                'Engagement feed refresh callback not set. '
-                'Set callback using PushNotificationService().setEngagementFeedRefreshCallback()',
-                tag: 'PushNotification');
+              'Engagement feed refresh callback not set. '
+              'Set callback using PushNotificationService().setEngagementFeedRefreshCallback()',
+              tag: 'PushNotification',
+            );
           }
-          Logger.info('Engagement notification processed: $notificationType',
-              tag: 'PushNotification');
+          Logger.info(
+            'Engagement notification processed: $notificationType',
+            tag: 'PushNotification',
+          );
         } catch (e, stackTrace) {
-          Logger.error('Error processing engagement notification: $e',
-              tag: 'PushNotification', error: e, stackTrace: stackTrace);
+          Logger.error(
+            'Error processing engagement notification: $e',
+            tag: 'PushNotification',
+            error: e,
+            stackTrace: stackTrace,
+          );
         }
         return;
       }
@@ -1632,8 +1860,9 @@ class PushNotificationService {
       if (notificationType == 'order_status_update' && orderId.isNotEmpty) {
         final userId = data['userId'] ?? data['user_id'] ?? '';
         Logger.info(
-            'Order update notification received for order: $orderId, userId: $userId',
-            tag: 'PushNotification');
+          'Order update notification received for order: $orderId, userId: $userId',
+          tag: 'PushNotification',
+        );
 
         // Notification disabled by user request
         // try {
@@ -1665,30 +1894,41 @@ class PushNotificationService {
         //   Logger.error('Error creating in-app notification: $e',
         //       tag: 'PushNotification', error: e);
         // }
-        Logger.info('Triggering immediate order refresh',
-            tag: 'PushNotification');
+        Logger.info(
+          'Triggering immediate order refresh',
+          tag: 'PushNotification',
+        );
 
         // Call the callback to refresh orders immediately
         if (onOrderUpdate != null) {
           onOrderUpdate!(orderId.toString(), data);
-          Logger.info('Order refresh callback triggered for order: $orderId',
-              tag: 'PushNotification');
+          Logger.info(
+            'Order refresh callback triggered for order: $orderId',
+            tag: 'PushNotification',
+          );
         } else {
           Logger.warning(
-              'Order update callback not set, notification received but order not refreshed',
-              tag: 'PushNotification');
+            'Order update callback not set, notification received but order not refreshed',
+            tag: 'PushNotification',
+          );
           Logger.warning(
-              'Set callback using PushNotificationService().setOrderUpdateCallback()',
-              tag: 'PushNotification');
+            'Set callback using PushNotificationService().setOrderUpdateCallback()',
+            tag: 'PushNotification',
+          );
         }
       } else {
         Logger.info(
-            'Notification type is not order_status_update, skipping order refresh',
-            tag: 'PushNotification');
+          'Notification type is not order_status_update, skipping order refresh',
+          tag: 'PushNotification',
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error handling order update notification: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error handling order update notification: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -1707,8 +1947,10 @@ class PushNotificationService {
 
     unawaited(() async {
       try {
-        Logger.info('Running points hard-sync for user: $userId',
-            tag: 'PushNotification');
+        Logger.info(
+          'Running points hard-sync for user: $userId',
+          tag: 'PushNotification',
+        );
 
         /*
         // Old Code:
@@ -1731,11 +1973,17 @@ class PushNotificationService {
           refreshUserCallback: () => AuthProvider().refreshUser(),
         );
 
-        Logger.info('Points hard-sync completed for user: $userId',
-            tag: 'PushNotification');
+        Logger.info(
+          'Points hard-sync completed for user: $userId',
+          tag: 'PushNotification',
+        );
       } catch (e, stackTrace) {
-        Logger.error('Points hard-sync failed: $e',
-            tag: 'PushNotification', error: e, stackTrace: stackTrace);
+        Logger.error(
+          'Points hard-sync failed: $e',
+          tag: 'PushNotification',
+          error: e,
+          stackTrace: stackTrace,
+        );
       }
     }());
   }
@@ -1784,8 +2032,9 @@ class PushNotificationService {
       enableVibration: true,
     );
 
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings = AndroidInitializationSettings(
+      '@mipmap/ic_launcher',
+    );
     const iosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
@@ -1801,8 +2050,10 @@ class PushNotificationService {
     await _localNotifications.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) async {
-        Logger.info('Local notification tapped: ${response.payload}',
-            tag: 'PushNotification');
+        Logger.info(
+          'Local notification tapped: ${response.payload}',
+          tag: 'PushNotification',
+        );
 
         // Handle notification tap
         if (response.payload != null && response.payload!.isNotEmpty) {
@@ -1812,24 +2063,29 @@ class PushNotificationService {
             final orderId = payloadData['orderId'] ?? payloadData['order_id'];
 
             Logger.info(
-                'Notification tap - type: $notificationType, orderId: $orderId',
-                tag: 'PushNotification');
+              'Notification tap - type: $notificationType, orderId: $orderId',
+              tag: 'PushNotification',
+            );
 
             // PROFESSIONAL SECURITY: Verify notification belongs to current user
             final pushService = PushNotificationService();
-            final isAuthorized =
-                await pushService._verifyNotificationUser(payloadData);
+            final isAuthorized = await pushService._verifyNotificationUser(
+              payloadData,
+            );
             if (!isAuthorized) {
               Logger.info(
-                  'Local notification tap rejected - not for current user. Type: $notificationType',
-                  tag: 'PushNotification');
+                'Local notification tap rejected - not for current user. Type: $notificationType',
+                tag: 'PushNotification',
+              );
               return; // Reject notification if not for current user
             }
 
             // Handle point notifications
             if (_pointNotificationTypes.contains(notificationType)) {
-              Logger.info('Point notification tapped: $notificationType',
-                  tag: 'PushNotification');
+              Logger.info(
+                'Point notification tapped: $notificationType',
+                tag: 'PushNotification',
+              );
 
               // Mark in-app notification as read if exists (fire and forget)
               _markPointNotificationAsRead(payloadData);
@@ -1839,57 +2095,67 @@ class PushNotificationService {
               if (onNavigateToPoints != null) {
                 Future.microtask(() {
                   onNavigateToPoints!();
-                  Logger.info('Navigation callback triggered for points',
-                      tag: 'PushNotification');
+                  Logger.info(
+                    'Navigation callback triggered for points',
+                    tag: 'PushNotification',
+                  );
                 });
               } else {
                 Logger.warning(
-                    'Points navigation callback not set, notification tapped but navigation not handled',
-                    tag: 'PushNotification');
+                  'Points navigation callback not set, notification tapped but navigation not handled',
+                  tag: 'PushNotification',
+                );
                 Logger.warning(
-                    'Set callback using PushNotificationService().setPointsNavigationCallback()',
-                    tag: 'PushNotification');
+                  'Set callback using PushNotificationService().setPointsNavigationCallback()',
+                  tag: 'PushNotification',
+                );
               }
               return;
             }
 
             // Handle engagement notifications
             if (_engagementNotificationTypes.contains(notificationType)) {
-              Logger.info('Engagement notification tapped: $notificationType',
-                  tag: 'PushNotification');
+              Logger.info(
+                'Engagement notification tapped: $notificationType',
+                tag: 'PushNotification',
+              );
 
-              final itemId = payloadData['itemId']?.toString() ??
+              final itemId =
+                  payloadData['itemId']?.toString() ??
                   payloadData['item_id']?.toString();
-              final itemType = payloadData['itemType']?.toString() ??
+              final itemType =
+                  payloadData['itemType']?.toString() ??
                   payloadData['item_type']?.toString();
 
               // Call navigation callback for engagement if set
               // Use Future.microtask to ensure navigation happens after current frame
               if (onNavigateToEngagement != null) {
                 Future.microtask(() {
-                  onNavigateToEngagement!(
-                    itemId: itemId,
-                    itemType: itemType,
-                  );
+                  onNavigateToEngagement!(itemId: itemId, itemType: itemType);
                   Logger.info(
-                      'Navigation callback triggered for engagement: itemId=$itemId, itemType=$itemType',
-                      tag: 'PushNotification');
+                    'Navigation callback triggered for engagement: itemId=$itemId, itemType=$itemType',
+                    tag: 'PushNotification',
+                  );
                 });
               } else {
                 Logger.warning(
-                    'Engagement navigation callback not set, notification tapped but navigation not handled',
-                    tag: 'PushNotification');
+                  'Engagement navigation callback not set, notification tapped but navigation not handled',
+                  tag: 'PushNotification',
+                );
                 Logger.warning(
-                    'Set callback using PushNotificationService().setEngagementNavigationCallback()',
-                    tag: 'PushNotification');
+                  'Set callback using PushNotificationService().setEngagementNavigationCallback()',
+                  tag: 'PushNotification',
+                );
               }
               return;
             }
 
             // Handle order notifications
             if (orderId != null && notificationType == 'order_status_update') {
-              Logger.info('Order notification tapped: $orderId',
-                  tag: 'PushNotification');
+              Logger.info(
+                'Order notification tapped: $orderId',
+                tag: 'PushNotification',
+              );
 
               // Mark in-app notification as read if exists (fire and forget)
               _markOrderNotificationAsRead(orderId.toString(), payloadData);
@@ -1900,44 +2166,59 @@ class PushNotificationService {
                 Future.microtask(() {
                   onNavigateToOrder!(orderId.toString());
                   Logger.info(
-                      'Navigation callback triggered for order: $orderId',
-                      tag: 'PushNotification');
+                    'Navigation callback triggered for order: $orderId',
+                    tag: 'PushNotification',
+                  );
                 });
               } else {
                 Logger.warning(
-                    'Navigation callback not set, notification tapped but navigation not handled',
-                    tag: 'PushNotification');
+                  'Navigation callback not set, notification tapped but navigation not handled',
+                  tag: 'PushNotification',
+                );
                 Logger.warning(
-                    'Set callback using PushNotificationService().setNavigationCallback()',
-                    tag: 'PushNotification');
+                  'Set callback using PushNotificationService().setNavigationCallback()',
+                  tag: 'PushNotification',
+                );
               }
             }
           } catch (e, stackTrace) {
-            Logger.error('Error handling local notification tap: $e',
-                tag: 'PushNotification', error: e, stackTrace: stackTrace);
+            Logger.error(
+              'Error handling local notification tap: $e',
+              tag: 'PushNotification',
+              error: e,
+              stackTrace: stackTrace,
+            );
           }
         } else {
-          Logger.warning('Notification tapped but payload is empty',
-              tag: 'PushNotification');
+          Logger.warning(
+            'Notification tapped but payload is empty',
+            tag: 'PushNotification',
+          );
         }
       },
     );
 
     // Create the channels AFTER initialization
-    final androidImplementation =
-        _localNotifications.resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
+    final androidImplementation = _localNotifications
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
 
     await androidImplementation?.createNotificationChannel(androidChannelOrder);
-    await androidImplementation
-        ?.createNotificationChannel(androidChannelPoints);
-    await androidImplementation
-        ?.createNotificationChannel(androidChannelEngagement);
-    await androidImplementation?.createNotificationChannel(androidChannelGeneral);
+    await androidImplementation?.createNotificationChannel(
+      androidChannelPoints,
+    );
+    await androidImplementation?.createNotificationChannel(
+      androidChannelEngagement,
+    );
+    await androidImplementation?.createNotificationChannel(
+      androidChannelGeneral,
+    );
 
     Logger.info(
-        'Local notifications configured with channels: ${androidChannelOrder.id}, ${androidChannelPoints.id}, ${androidChannelEngagement.id}, ${androidChannelGeneral.id}',
-        tag: 'PushNotification');
+      'Local notifications configured with channels: ${androidChannelOrder.id}, ${androidChannelPoints.id}, ${androidChannelEngagement.id}, ${androidChannelGeneral.id}',
+      tag: 'PushNotification',
+    );
   }
 
   /// Handle foreground message by showing local notification
@@ -1953,8 +2234,9 @@ class PushNotificationService {
       final isAuthorized = await _verifyNotificationUser(data);
       if (!isAuthorized) {
         Logger.info(
-            'Foreground notification rejected - not for current user. Type: $notificationType',
-            tag: 'PushNotification');
+          'Foreground notification rejected - not for current user. Type: $notificationType',
+          tag: 'PushNotification',
+        );
         return; // Reject notification if not for current user
       }
 
@@ -2017,8 +2299,9 @@ class PushNotificationService {
         );
 
         Logger.info(
-            'Foreground tray shown type=$notificationType orderId=${orderId ?? "-"} trayChannel=${tray.channelId}',
-            tag: 'PushNotification');
+          'Foreground tray shown type=$notificationType orderId=${orderId ?? "-"} trayChannel=${tray.channelId}',
+          tag: 'PushNotification',
+        );
       }
 
       // PROFESSIONAL FCM INTEGRATION: Trigger immediate refresh for all point notifications
@@ -2028,13 +2311,18 @@ class PushNotificationService {
           _engagementNotificationTypes.contains(notificationType) ||
           notificationType == 'reward_updated') {
         Logger.info(
-            'Foreground notification received, triggering immediate refresh',
-            tag: 'PushNotification');
+          'Foreground notification received, triggering immediate refresh',
+          tag: 'PushNotification',
+        );
         await _handleOrderUpdateNotification(message);
       }
     } catch (e, stackTrace) {
-      Logger.error('Failed to display foreground notification: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to display foreground notification: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -2050,15 +2338,18 @@ class PushNotificationService {
       final isAuthorized = await _verifyNotificationUser(data);
       if (!isAuthorized) {
         Logger.info(
-            'Notification tap rejected - not for current user. Type: $notificationType',
-            tag: 'PushNotification');
+          'Notification tap rejected - not for current user. Type: $notificationType',
+          tag: 'PushNotification',
+        );
         return; // Reject notification if not for current user
       }
 
       // Handle point notifications
       if (_pointNotificationTypes.contains(notificationType)) {
-        Logger.info('Point notification tapped: $notificationType',
-            tag: 'PushNotification');
+        Logger.info(
+          'Point notification tapped: $notificationType',
+          tag: 'PushNotification',
+        );
 
         // Mark in-app notification as read if exists
         _markPointNotificationAsRead(data);
@@ -2066,23 +2357,29 @@ class PushNotificationService {
         // Call navigation callback for points if set
         if (onNavigateToPoints != null) {
           onNavigateToPoints!();
-          Logger.info('Navigation callback triggered for points',
-              tag: 'PushNotification');
+          Logger.info(
+            'Navigation callback triggered for points',
+            tag: 'PushNotification',
+          );
         } else {
           Logger.warning(
-              'Points navigation callback not set, notification tapped but navigation not handled',
-              tag: 'PushNotification');
+            'Points navigation callback not set, notification tapped but navigation not handled',
+            tag: 'PushNotification',
+          );
           Logger.warning(
-              'Set callback using PushNotificationService().setPointsNavigationCallback()',
-              tag: 'PushNotification');
+            'Set callback using PushNotificationService().setPointsNavigationCallback()',
+            tag: 'PushNotification',
+          );
         }
         return;
       }
 
       // Handle engagement notifications
       if (_engagementNotificationTypes.contains(notificationType)) {
-        Logger.info('Engagement notification tapped: $notificationType',
-            tag: 'PushNotification');
+        Logger.info(
+          'Engagement notification tapped: $notificationType',
+          tag: 'PushNotification',
+        );
 
         final itemId =
             data['itemId']?.toString() ?? data['item_id']?.toString();
@@ -2091,28 +2388,30 @@ class PushNotificationService {
 
         // Call navigation callback for engagement if set
         if (onNavigateToEngagement != null) {
-          onNavigateToEngagement!(
-            itemId: itemId,
-            itemType: itemType,
-          );
+          onNavigateToEngagement!(itemId: itemId, itemType: itemType);
           Logger.info(
-              'Navigation callback triggered for engagement: itemId=$itemId, itemType=$itemType',
-              tag: 'PushNotification');
+            'Navigation callback triggered for engagement: itemId=$itemId, itemType=$itemType',
+            tag: 'PushNotification',
+          );
         } else {
           Logger.warning(
-              'Engagement navigation callback not set, notification tapped but navigation not handled',
-              tag: 'PushNotification');
+            'Engagement navigation callback not set, notification tapped but navigation not handled',
+            tag: 'PushNotification',
+          );
           Logger.warning(
-              'Set callback using PushNotificationService().setEngagementNavigationCallback()',
-              tag: 'PushNotification');
+            'Set callback using PushNotificationService().setEngagementNavigationCallback()',
+            tag: 'PushNotification',
+          );
         }
         return;
       }
 
       // Handle order notifications
       if (orderId != null && notificationType == 'order_status_update') {
-        Logger.info('Notification tapped for order: $orderId',
-            tag: 'PushNotification');
+        Logger.info(
+          'Notification tapped for order: $orderId',
+          tag: 'PushNotification',
+        );
 
         // Mark in-app notification as read if exists
         _markOrderNotificationAsRead(orderId.toString(), data);
@@ -2120,26 +2419,38 @@ class PushNotificationService {
         // Call navigation callback if set
         if (onNavigateToOrder != null) {
           onNavigateToOrder!(orderId.toString());
-          Logger.info('Navigation callback triggered for order: $orderId',
-              tag: 'PushNotification');
+          Logger.info(
+            'Navigation callback triggered for order: $orderId',
+            tag: 'PushNotification',
+          );
         } else {
           Logger.warning(
-              'Navigation callback not set, notification tapped but navigation not handled',
-              tag: 'PushNotification');
+            'Navigation callback not set, notification tapped but navigation not handled',
+            tag: 'PushNotification',
+          );
           Logger.warning(
-              'Set callback using PushNotificationService().setNavigationCallback()',
-              tag: 'PushNotification');
+            'Set callback using PushNotificationService().setNavigationCallback()',
+            tag: 'PushNotification',
+          );
         }
       } else {
-        Logger.info('Notification tapped but orderId not found or wrong type',
-            tag: 'PushNotification');
+        Logger.info(
+          'Notification tapped but orderId not found or wrong type',
+          tag: 'PushNotification',
+        );
       }
 
-      Logger.info('Notification tap handled for message: ${message.messageId}',
-          tag: 'PushNotification');
+      Logger.info(
+        'Notification tap handled for message: ${message.messageId}',
+        tag: 'PushNotification',
+      );
     } catch (e, stackTrace) {
-      Logger.error('Error handling notification tap: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error handling notification tap: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -2158,8 +2469,8 @@ class PushNotificationService {
       for (final notification in notifications) {
         if (notification.type == NotificationType.points) {
           final nType = notification.data?['notificationType']?.toString();
-          final nTransactionId =
-              notification.data?['transactionId']?.toString();
+          final nTransactionId = notification.data?['transactionId']
+              ?.toString();
           final nRequestId = notification.data?['requestId']?.toString();
 
           if (nType == notificationType) {
@@ -2167,14 +2478,16 @@ class PushNotificationService {
             if (transactionId.isNotEmpty && nTransactionId == transactionId) {
               await InAppNotificationService().markAsRead(notification.id);
               Logger.info(
-                  'Marked point notification as read: ${notification.id}',
-                  tag: 'PushNotification');
+                'Marked point notification as read: ${notification.id}',
+                tag: 'PushNotification',
+              );
               break;
             } else if (requestId.isNotEmpty && nRequestId == requestId) {
               await InAppNotificationService().markAsRead(notification.id);
               Logger.info(
-                  'Marked point notification as read: ${notification.id}',
-                  tag: 'PushNotification');
+                'Marked point notification as read: ${notification.id}',
+                tag: 'PushNotification',
+              );
               break;
             }
           }
@@ -2199,18 +2512,27 @@ class PushNotificationService {
         final notificationProvider = InAppNotificationProvider.instance;
         await notificationProvider.loadNotifications();
       } catch (e) {
-        Logger.error('Error updating notification provider: $e',
-            tag: 'PushNotification', error: e);
+        Logger.error(
+          'Error updating notification provider: $e',
+          tag: 'PushNotification',
+          error: e,
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error marking point notification as read: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error marking point notification as read: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
   /// Mark order notification as read in in-app notifications
   Future<void> _markOrderNotificationAsRead(
-      String orderId, Map<String, dynamic> data) async {
+    String orderId,
+    Map<String, dynamic> data,
+  ) async {
     try {
       final status = data['status'] ?? '';
 
@@ -2225,8 +2547,10 @@ class PushNotificationService {
 
           if (nOrderId == orderId && nStatus == status) {
             await InAppNotificationService().markAsRead(notification.id);
-            Logger.info('Marked order notification as read: ${notification.id}',
-                tag: 'PushNotification');
+            Logger.info(
+              'Marked order notification as read: ${notification.id}',
+              tag: 'PushNotification',
+            );
             break;
           }
         }
@@ -2237,12 +2561,19 @@ class PushNotificationService {
         final notificationProvider = InAppNotificationProvider.instance;
         await notificationProvider.loadNotifications();
       } catch (e) {
-        Logger.error('Error updating notification provider: $e',
-            tag: 'PushNotification', error: e);
+        Logger.error(
+          'Error updating notification provider: $e',
+          tag: 'PushNotification',
+          error: e,
+        );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error marking order notification as read: $e',
-          tag: 'PushNotification', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error marking order notification as read: $e',
+        tag: 'PushNotification',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -2280,12 +2611,18 @@ class PushNotificationService {
 
   /// Get notification body for point notifications
   /// Professional, clear, and user-friendly messages with balance information
-  String _getPointNotificationBody(String type, String points,
-      String currentBalance, Map<String, dynamic> data) {
+  String _getPointNotificationBody(
+    String type,
+    String points,
+    String currentBalance,
+    Map<String, dynamic> data,
+  ) {
     final pointsNum = int.tryParse(points) ?? 0;
     final balanceNum = int.tryParse(currentBalance) ?? 0;
     final formattedBalance = balanceNum.toString().replaceAllMapped(
-        RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},');
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match m) => '${m[1]},',
+    );
 
     switch (type) {
       case 'points_earned':
@@ -2322,7 +2659,8 @@ class PushNotificationService {
             ? 'Thank you for your participation! You earned $pointsNum PNP from $activityName. Your balance is now $formattedBalance PNP.'
             : 'You earned points from an engagement activity. Check your balance for details.';
       case 'points_adjusted':
-        final isPositive = _parseBool(data['isPositive']) ??
+        final isPositive =
+            _parseBool(data['isPositive']) ??
             _parseBool(data['is_positive']) ??
             true;
         final adjustType = isPositive ? 'increased' : 'decreased';
@@ -2360,8 +2698,11 @@ class PushNotificationService {
       await _firebaseMessaging.subscribeToTopic(topic);
       Logger.info('Subscribed to topic: $topic', tag: 'PushNotification');
     } catch (e) {
-      Logger.error('Failed to subscribe to topic: $e',
-          tag: 'PushNotification', error: e);
+      Logger.error(
+        'Failed to subscribe to topic: $e',
+        tag: 'PushNotification',
+        error: e,
+      );
     }
   }
 
@@ -2371,8 +2712,11 @@ class PushNotificationService {
       await _firebaseMessaging.unsubscribeFromTopic(topic);
       Logger.info('Unsubscribed from topic: $topic', tag: 'PushNotification');
     } catch (e) {
-      Logger.error('Failed to unsubscribe from topic: $e',
-          tag: 'PushNotification', error: e);
+      Logger.error(
+        'Failed to unsubscribe from topic: $e',
+        tag: 'PushNotification',
+        error: e,
+      );
     }
   }
 
@@ -2386,8 +2730,10 @@ class PushNotificationService {
       if (url.startsWith('http://localhost') ||
           url.startsWith('http://127.0.0.1')) {
         assert(() {
-          Logger.info('Using localhost backend URL in debug mode: $url',
-              tag: 'PushNotification');
+          Logger.info(
+            'Using localhost backend URL in debug mode: $url',
+            tag: 'PushNotification',
+          );
           return true;
         }());
         // In release, still treat localhost as not configured

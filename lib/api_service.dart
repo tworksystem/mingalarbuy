@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,9 @@ import 'utils/logger.dart';
 ///   the user to [WelcomeBackPage].
 class ApiService {
   ApiService._();
+
+  static const String _httpsOnlyError =
+      'Insecure transport blocked: HTTPS is required for all API calls.';
 
   static final Dio _dio = Dio(
     BaseOptions(
@@ -49,6 +53,9 @@ class ApiService {
 
   static bool _interceptorsReady = false;
   static bool _handlingAuthFailure = false;
+  static Timer? _authFailureResetTimer;
+
+  static const Duration _authFailureFlagSafetyTimeout = Duration(seconds: 3);
 
   /// Shared [Dio] instance (interceptors configured on first access).
   static Dio get dio {
@@ -60,29 +67,56 @@ class ApiService {
     if (_interceptorsReady) {
       return;
     }
+    _enforceHttpsBaseUrl();
     _interceptorsReady = true;
 
     _dio.interceptors.add(
       InterceptorsWrapper(
-        onRequest: (RequestOptions options, RequestInterceptorHandler handler) async {
-          options.extra['sentAuth'] = false;
-          final bool skipAuth = options.extra['skipAuth'] == true;
-          if (!skipAuth) {
-            final Map<String, String> auth = await _getAuthHeaders();
-            if (auth.isNotEmpty) {
-              options.headers.addAll(auth);
-              options.extra['sentAuth'] = true;
-            }
-          }
-          handler.next(options);
-        },
-        onResponse: (Response<dynamic> response, ResponseInterceptorHandler handler) async {
-          final int? code = response.statusCode;
-          if (code == 401 || code == 403) {
-            await _onUnauthorized(response.requestOptions, code!);
-          }
-          handler.next(response);
-        },
+        onRequest:
+            (RequestOptions options, RequestInterceptorHandler handler) async {
+              if (!_isHttpsUri(options.uri)) {
+                handler.reject(
+                  DioException(
+                    requestOptions: options,
+                    type: DioExceptionType.connectionError,
+                    error: _httpsOnlyError,
+                  ),
+                );
+                return;
+              }
+              options.extra['sentAuth'] = false;
+              final bool skipAuth = options.extra['skipAuth'] == true;
+              if (!skipAuth) {
+                final Map<String, String> auth = await _getAuthHeaders();
+                if (auth.isNotEmpty) {
+                  options.headers.addAll(auth);
+                  options.extra['sentAuth'] = true;
+                }
+              }
+              handler.next(options);
+            },
+        onResponse:
+            (
+              Response<dynamic> response,
+              ResponseInterceptorHandler handler,
+            ) async {
+              if (!_isHttpsUri(response.realUri)) {
+                handler.reject(
+                  DioException(
+                    requestOptions: response.requestOptions,
+                    response: response,
+                    type: DioExceptionType.connectionError,
+                    error: _httpsOnlyError,
+                  ),
+                );
+                return;
+              }
+              final int? code = response.statusCode;
+              if (code == 401 || code == 403) {
+                await _onUnauthorized(response.requestOptions, code!);
+              }
+              handler.next(response);
+            },
         onError: (DioException err, ErrorInterceptorHandler handler) async {
           final int? code = err.response?.statusCode;
           if (code == 401 || code == 403) {
@@ -94,12 +128,42 @@ class ApiService {
     );
   }
 
+  static bool _isHttpsUri(Uri uri) => uri.scheme.toLowerCase() == 'https';
+
+  static void _enforceHttpsBaseUrl() {
+    final Uri? base = Uri.tryParse(AppConfig.backendUrl);
+    if (base == null || !_isHttpsUri(base)) {
+      throw StateError(
+        'AppConfig.backendUrl must use HTTPS. Received: ${AppConfig.backendUrl}',
+      );
+    }
+  }
+
   /// Authorization map for the current session (empty when logged out).
   static Future<Map<String, String>> _getAuthHeaders() async {
     return AuthHeaderProvider.buildHeaders();
   }
 
-  /// Retries transient failures (same policy as [NetworkUtils.executeRequest]).
+  /// Cap for exponential backoff between retries (excluding jitter).
+  static const Duration _maxRetryBackoffCeiling = Duration(seconds: 32);
+
+  /// Waits `(base × 2^(n-1))` capped, with multiplicative jitter in `[0.75, 1.25]` to
+  /// spread retries under network flapping (avoids thundering herd / pseudo-DDoS).
+  static Future<void> _delayBeforeRetryAttempt({
+    required int failedAttemptsSoFar,
+    required Duration baseDelay,
+  }) async {
+    if (failedAttemptsSoFar <= 0) return;
+    final double exp = math.pow(2.0, failedAttemptsSoFar - 1).toDouble();
+    double ms = baseDelay.inMilliseconds * exp;
+    final cap = _maxRetryBackoffCeiling.inMilliseconds.toDouble();
+    if (ms > cap) ms = cap;
+    final jitter = 0.75 + math.Random().nextDouble() * 0.5;
+    final waitMs = (ms * jitter).round().clamp(1, cap.round() * 2);
+    await Future<void>.delayed(Duration(milliseconds: waitMs));
+  }
+
+  /// Retries transient failures with exponential backoff + jitter between attempts.
   static Future<Response<dynamic>?> executeWithRetry(
     Future<Response<dynamic>> Function() request, {
     Duration timeout = AppConfig.networkTimeout,
@@ -131,7 +195,19 @@ class ApiService {
       }
       attempts++;
       if (attempts < maxRetries) {
-        await Future<void>.delayed(retryDelay);
+        try {
+          await _delayBeforeRetryAttempt(
+            failedAttemptsSoFar: attempts,
+            baseDelay: retryDelay,
+          );
+        } catch (e, st) {
+          Logger.warning(
+            'executeWithRetry delay failed, continuing: $e',
+            tag: 'ApiService',
+            error: e,
+            stackTrace: st,
+          );
+        }
       }
     }
     if (context != null) {
@@ -210,7 +286,10 @@ class ApiService {
     }
   }
 
-  static Future<void> _onUnauthorized(RequestOptions options, int statusCode) async {
+  static Future<void> _onUnauthorized(
+    RequestOptions options,
+    int statusCode,
+  ) async {
     if (options.extra['skipAuth'] == true) {
       return;
     }
@@ -222,6 +301,17 @@ class ApiService {
       return;
     }
     _handlingAuthFailure = true;
+    _authFailureResetTimer?.cancel();
+    _authFailureResetTimer = Timer(_authFailureFlagSafetyTimeout, () {
+      _authFailureResetTimer = null;
+      if (_handlingAuthFailure) {
+        Logger.warning(
+          'ApiService: auth failure flag safety reset (timeout ${_authFailureFlagSafetyTimeout.inSeconds}s)',
+          tag: 'ApiService',
+        );
+        _handlingAuthFailure = false;
+      }
+    });
 
     try {
       Logger.warning(
@@ -235,9 +325,7 @@ class ApiService {
           final BuildContext? ctx = AppKeys.navigatorKey.currentContext;
           if (ctx != null && ctx.mounted) {
             Navigator.of(ctx).pushAndRemoveUntil<void>(
-              MaterialPageRoute<void>(
-                builder: (_) => const WelcomeBackPage(),
-              ),
+              MaterialPageRoute<void>(builder: (_) => const WelcomeBackPage()),
               (Route<dynamic> route) => false,
             );
           }
@@ -248,8 +336,6 @@ class ApiService {
             error: e,
             stackTrace: st,
           );
-        } finally {
-          _handlingAuthFailure = false;
         }
       });
     } catch (e, st) {
@@ -259,6 +345,9 @@ class ApiService {
         error: e,
         stackTrace: st,
       );
+    } finally {
+      _authFailureResetTimer?.cancel();
+      _authFailureResetTimer = null;
       _handlingAuthFailure = false;
     }
   }
