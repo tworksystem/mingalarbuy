@@ -341,17 +341,14 @@ bool _guardShouldContinue(bool Function()? fn, String scopeLabel) {
   }
 }
 
-/// Delay before retry attempt [attempt] (2…15): first five waits 1.5s, next five 2.5s, remainder 4s; ±200ms jitter.
+/// Delay before retry attempt [attempt] (2…15): **3–5s** only (server ledger + firewall-safe).
 Duration _reconcilePollBackoffDuration(int attempt, Random rng) {
-  final int waitIndex = attempt - 1;
-  final int baseMs;
-  if (waitIndex <= 5) {
-    baseMs = 1500;
-  } else if (waitIndex <= 10) {
-    baseMs = 2500;
-  } else {
-    baseMs = 4000;
-  }
-  final int jitter = rng.nextInt(401) - 200;
-  return Duration(milliseconds: baseMs + jitter);
+  assert(
+    attempt >= 2 && attempt <= 15,
+    'backoff only used for smart_poll attempts 2–15',
+  );
+  const int minMs = 3000;
+  const int maxMs = 5000;
+  final int span = maxMs - minMs + 1;
+  return Duration(milliseconds: minMs + rng.nextInt(span));
 }

@@ -1908,6 +1908,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 initialSeconds: secondsUntilClose,
                 serverEndsAtUtc: serverEndsAtUtc,
                 debugLabel: 'poll_${item.id}_$sessionKey',
+                onPollFinished: _onPollFinishedDelayedBalanceRefresh,
               ),
           ],
         ),
@@ -2480,6 +2481,30 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
           }
         })
         .catchError((_) {});
+  }
+
+  /// After poll countdown reaches zero: brief delay so the server ledger can settle,
+  /// then one force refresh of points (firewall-safe cadence vs. immediate burst).
+  Future<void> _onPollFinishedDelayedBalanceRefresh() async {
+    await Future<void>.delayed(const Duration(seconds: 2));
+    if (!mounted) return;
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.id;
+    if (userId == null) return;
+    try {
+      await PointProvider.instance.loadBalance(
+        userId.toString(),
+        forceRefresh: true,
+        notifyLoading: false,
+      );
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'onPollFinished: loadBalance failed: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+        stackTrace: st,
+      );
+    }
   }
 
   String _stripHtmlTags(String html) {
@@ -3272,11 +3297,15 @@ class _PollCountdownOverlay extends StatefulWidget {
   final DateTime? serverEndsAtUtc;
   final String? debugLabel;
 
+  /// Invoked once when countdown hits zero (e.g. delayed balance refresh).
+  final Future<void> Function()? onPollFinished;
+
   const _PollCountdownOverlay({
     super.key,
     required this.initialSeconds,
     this.serverEndsAtUtc,
     this.debugLabel,
+    this.onPollFinished,
   });
 
   @override
@@ -3372,6 +3401,20 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     Later: single [refreshPointState] on timer end still duplicated interaction-time sync.
     */
     unawaited(runTimerEndMetaSync('single'));
+
+    final Future<void> Function()? onPollFinished = widget.onPollFinished;
+    if (onPollFinished != null) {
+      unawaited(
+        onPollFinished().catchError((Object e, StackTrace st) {
+          app_logger.Logger.warning(
+            'onPollFinished failed: $e',
+            tag: 'EngagementCarousel',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
+    }
   }
 
   @override

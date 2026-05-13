@@ -232,8 +232,8 @@ class EngagementProvider with ChangeNotifier {
   // OLD CODE:
   // static const Duration _fastPollingInterval = Duration(seconds: 2);
   */
-  // New Code: reduce burst traffic toward WAF / rate limits (still 'fast' vs 15s/60s).
-  static const Duration _fastPollingInterval = Duration(seconds: 10);
+  // New Code: ~5–7s target for close/result windows (feed freshness vs. WAF / rate limits).
+  static const Duration _fastPollingInterval = Duration(seconds: 5);
   static const int _fastPollingCloseThresholdSeconds = 20;
 
   List<EngagementItem> get items => _items;
@@ -1899,7 +1899,7 @@ class EngagementProvider with ChangeNotifier {
   }
 
   /// Smart polling resolver:
-  /// - 2s during AUTO_RUN close/result windows
+  /// - ~5s during AUTO_RUN close/result windows ([_fastPollingInterval])
   /// - 15s for AUTO_RUN normal windows (not near close/result)
   /// - 60s only when no AUTO_RUN polls exist
   _SmartPollingDecision _resolvePollingIntervalFromItems(List<dynamic> items) {
