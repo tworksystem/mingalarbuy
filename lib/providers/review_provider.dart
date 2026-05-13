@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,6 +9,9 @@ class ReviewProvider with ChangeNotifier {
   bool _isLoading = false;
   String? _errorMessage;
   static const String _reviewsKey = 'product_reviews';
+
+  int _hydrateEpoch = 0;
+  String? _authBoundUserId;
 
   // Getters
   List<ProductReview> get reviews => List.unmodifiable(_reviews);
@@ -39,24 +43,64 @@ class ReviewProvider with ChangeNotifier {
       _reviews.where((review) => review.isHelpful).toList();
 
   ReviewProvider() {
-    _loadReviewsFromStorage();
+    // OLD CODE: eager storage load without session invalidation.
+    // _loadReviewsFromStorage();
+    Future.microtask(() => _loadReviewsFromStorage());
+  }
+
+  Future<void> handleAuthStateChange({
+    required bool isAuthenticated,
+    String? userId,
+  }) async {
+    if (!isAuthenticated) {
+      _authBoundUserId = null;
+      _hydrateEpoch++;
+      _reviews.clear();
+      await _saveReviewsToStorage();
+      _clearError();
+      notifyListeners();
+      return;
+    }
+    if (userId == null) return;
+    final switched = _authBoundUserId != null && _authBoundUserId != userId;
+    _authBoundUserId = userId;
+    if (switched) {
+      _hydrateEpoch++;
+      _reviews.clear();
+      await _saveReviewsToStorage();
+    }
+    await _loadReviewsFromStorage(restrictToUserId: userId);
   }
 
   /// Load reviews from SharedPreferences
-  Future<void> _loadReviewsFromStorage() async {
+  Future<void> _loadReviewsFromStorage({String? restrictToUserId}) async {
+    final loadToken = _hydrateEpoch;
     _setLoading(true);
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (loadToken != _hydrateEpoch) return;
       final reviewsJson = prefs.getString(_reviewsKey);
 
       if (reviewsJson != null) {
         final List<dynamic> reviewsData = json.decode(reviewsJson);
+        if (loadToken != _hydrateEpoch) return;
         _reviews = reviewsData
-            .map((review) =>
-                ProductReview.fromJson(review as Map<String, dynamic>))
+            .map(
+              (review) =>
+                  ProductReview.fromJson(review as Map<String, dynamic>),
+            )
             .toList();
+        if (restrictToUserId != null) {
+          _reviews = _reviews
+              .where((r) => r.userId == restrictToUserId)
+              .toList();
+          await _saveReviewsToStorage();
+        }
         print(
-            'DEBUG: Reviews loaded from storage - ${_reviews.length} reviews');
+          'DEBUG: Reviews loaded from storage - ${_reviews.length} reviews',
+        );
+      } else if (loadToken == _hydrateEpoch) {
+        _reviews = [];
       }
     } catch (e) {
       print('Error loading reviews from storage: $e');
@@ -70,8 +114,9 @@ class ReviewProvider with ChangeNotifier {
   Future<void> _saveReviewsToStorage() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final reviewsJson =
-          json.encode(_reviews.map((review) => review.toJson()).toList());
+      final reviewsJson = json.encode(
+        _reviews.map((review) => review.toJson()).toList(),
+      );
       await prefs.setString(_reviewsKey, reviewsJson);
       print('DEBUG: Reviews saved to storage - ${_reviews.length} reviews');
     } catch (e) {
@@ -177,8 +222,9 @@ class ReviewProvider with ChangeNotifier {
     _clearError();
 
     try {
-      final reviewIndex =
-          _reviews.indexWhere((review) => review.id == reviewId);
+      final reviewIndex = _reviews.indexWhere(
+        (review) => review.id == reviewId,
+      );
       if (reviewIndex == -1) {
         _setError('Review not found');
         return null;
@@ -198,7 +244,8 @@ class ReviewProvider with ChangeNotifier {
       // Validate updated review
       if (!updatedReview.isValid) {
         _setError(
-            'Invalid review: ${updatedReview.validationErrors.join(', ')}');
+          'Invalid review: ${updatedReview.validationErrors.join(', ')}',
+        );
         return null;
       }
 
@@ -223,8 +270,9 @@ class ReviewProvider with ChangeNotifier {
     _clearError();
 
     try {
-      final reviewIndex =
-          _reviews.indexWhere((review) => review.id == reviewId);
+      final reviewIndex = _reviews.indexWhere(
+        (review) => review.id == reviewId,
+      );
       if (reviewIndex == -1) {
         _setError('Review not found');
         return false;
@@ -251,8 +299,9 @@ class ReviewProvider with ChangeNotifier {
     _clearError();
 
     try {
-      final reviewIndex =
-          _reviews.indexWhere((review) => review.id == reviewId);
+      final reviewIndex = _reviews.indexWhere(
+        (review) => review.id == reviewId,
+      );
       if (reviewIndex == -1) {
         _setError('Review not found');
         return false;
@@ -297,8 +346,10 @@ class ReviewProvider with ChangeNotifier {
     }
 
     // Calculate average rating
-    final totalRating =
-        productReviews.fold(0, (sum, review) => sum + review.rating);
+    final totalRating = productReviews.fold(
+      0,
+      (sum, review) => sum + review.rating,
+    );
     final averageRating = totalRating / productReviews.length;
 
     // Calculate rating distribution
@@ -332,7 +383,8 @@ class ReviewProvider with ChangeNotifier {
   /// Check if user can review product
   bool canUserReviewProduct(String userId, String productId) {
     return !_reviews.any(
-        (review) => review.userId == userId && review.productId == productId);
+      (review) => review.userId == userId && review.productId == productId,
+    );
   }
 
   /// Search reviews
@@ -350,6 +402,7 @@ class ReviewProvider with ChangeNotifier {
 
   /// Clear all reviews (for testing)
   Future<void> clearAllReviews() async {
+    _hydrateEpoch++;
     _setLoading(true);
     try {
       _reviews.clear();
@@ -384,6 +437,6 @@ class ReviewProvider with ChangeNotifier {
 
   /// Force refresh reviews from storage
   Future<void> refreshReviews() async {
-    await _loadReviewsFromStorage();
+    await _loadReviewsFromStorage(restrictToUserId: _authBoundUserId);
   }
 }

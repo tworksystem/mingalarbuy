@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/web_network_service_stub.dart'
     if (dart.library.html) '../services/web_network_service.dart';
+import '../utils/app_config.dart';
 
 /// Web-optimized image widget with CORS and connectivity handling
 class WebOptimizedImageWidget extends StatefulWidget {
@@ -96,8 +97,9 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
         }
 
         // Find working image URL
-        _workingImageUrl =
-            await WebNetworkService.getWorkingImageUrl(widget.imageUrl);
+        _workingImageUrl = await WebNetworkService.getWorkingImageUrl(
+          widget.imageUrl,
+        );
 
         if (widget.enableDebug) {
           print('✅ Working image URL: $_workingImageUrl');
@@ -151,9 +153,18 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
           }
           return widget.errorWidget ?? _buildErrorWidget();
         },
-        httpHeaders: {
+        // OLD CODE:
+        // httpHeaders: {
+        //   'Accept': 'image/*',
+        //   'User-Agent': WebNetworkService.userAgent,
+        //   'Accept-Encoding': 'gzip, deflate',
+        //   'Connection': 'keep-alive',
+        //   'Cache-Control': 'no-cache',
+        //   'Origin': WebNetworkService.currentOrigin,
+        // },
+        httpHeaders: <String, String>{
           'Accept': 'image/*',
-          'User-Agent': WebNetworkService.userAgent,
+          'User-Agent': AppConfig.defaultUserAgent,
           'Accept-Encoding': 'gzip, deflate',
           'Connection': 'keep-alive',
           'Cache-Control': 'no-cache',
@@ -208,10 +219,7 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
             const SizedBox(height: 8),
             Text(
               'Loading...',
-              style: TextStyle(
-                fontSize: 10,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 10, color: Colors.grey[600]),
             ),
           ],
         ),
@@ -240,10 +248,7 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
             const SizedBox(height: 4),
             Text(
               _errorMessage ?? 'Error',
-              style: TextStyle(
-                fontSize: 8,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 8, color: Colors.grey[600]),
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -255,10 +260,7 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
                   widget.imageUrl.length > 20
                       ? '${widget.imageUrl.substring(0, 20)}...'
                       : widget.imageUrl,
-                  style: TextStyle(
-                    fontSize: 6,
-                    color: Colors.grey[500],
-                  ),
+                  style: TextStyle(fontSize: 6, color: Colors.grey[500]),
                   textAlign: TextAlign.center,
                 ),
               ),

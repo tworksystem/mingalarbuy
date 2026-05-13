@@ -8,10 +8,8 @@ import '../utils/app_config.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/network_utils.dart';
 
-/// Get WooCommerce authentication query parameters
-/// Same as other services (point_service, wallet_service, etc.)
 Map<String, String> _getWooCommerceAuthQueryParams() {
-  return {
+  return <String, String>{
     'consumer_key': AppConfig.consumerKey,
     'consumer_secret': AppConfig.consumerSecret,
   };
@@ -397,9 +395,41 @@ class EngagementItem {
     final pollVotingSchedule = json['poll_voting_schedule'] is Map
         ? Map<String, dynamic>.from(json['poll_voting_schedule'] as Map)
         : null;
+    /*
+    Old Code: [poll_result] only when already a Map — JSON string payloads were dropped.
     final pollResult = json['poll_result'] is Map
         ? Map<String, dynamic>.from(json['poll_result'] as Map)
         : null;
+    */
+    // New Code: accept Map or JSON-encoded string (same pattern as [quiz_data] above).
+    Map<String, dynamic>? pollResult;
+    final rawPollResult = json['poll_result'];
+    if (rawPollResult is Map) {
+      pollResult = Map<String, dynamic>.from(rawPollResult);
+    } else if (rawPollResult is String && rawPollResult.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawPollResult);
+        if (decoded is Map) {
+          pollResult = Map<String, dynamic>.from(decoded);
+        } else {
+          app_logger.Logger.warning(
+            'poll_result string did not decode to an object (item ${json['id']})',
+            tag: 'EngagementService',
+          );
+        }
+      } catch (e) {
+        app_logger.Logger.warning(
+          'Failed to decode poll_result string for item ${json['id']}: $e',
+          tag: 'EngagementService',
+          error: e,
+        );
+      }
+    } else if (rawPollResult != null) {
+      app_logger.Logger.warning(
+        'poll_result has unexpected type ${rawPollResult.runtimeType} for item ${json['id']}',
+        tag: 'EngagementService',
+      );
+    }
 
     Map<int, int>? _parseUserBetUnitsPerOption(dynamic raw) {
       if (raw == null) return null;
@@ -483,9 +513,10 @@ class EngagementService {
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
           uri.path,
-          queryParameters: uri.queryParameters,
+          queryParameters: uri.queryParameters.isEmpty
+              ? null
+              : uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'getEngagementFeed',
       );
@@ -610,7 +641,7 @@ class EngagementService {
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
       if (itemIds != null && itemIds.isNotEmpty) {
         uri = uri.replace(
-          queryParameters: {
+          queryParameters: <String, String>{
             ...uri.queryParameters,
             'item_ids': itemIds.join(','),
           },
@@ -619,9 +650,10 @@ class EngagementService {
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
           uri.path,
-          queryParameters: uri.queryParameters,
+          queryParameters: uri.queryParameters.isEmpty
+              ? null
+              : uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'getEngagementUpdates',
       );
@@ -670,9 +702,10 @@ class EngagementService {
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
           uri.path,
-          queryParameters: uri.queryParameters,
+          queryParameters: uri.queryParameters.isEmpty
+              ? null
+              : uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'fetchPollState',
       );
@@ -719,9 +752,10 @@ class EngagementService {
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
           uri.path,
-          queryParameters: uri.queryParameters,
+          queryParameters: uri.queryParameters.isEmpty
+              ? null
+              : uri.queryParameters,
           skipAuth: false,
-          headers: const <String, dynamic>{'Content-Type': 'application/json'},
         ),
         context: 'fetchPollResults',
       );
@@ -763,7 +797,6 @@ class EngagementService {
     try {
       _lastError = null;
 
-      // Use same pattern as Point Service - WooCommerce auth in query params
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/engagement/interact',
       ).replace(queryParameters: _getWooCommerceAuthQueryParams());
@@ -814,7 +847,9 @@ class EngagementService {
       try {
         response = await ApiService.post(
           uri.path,
-          queryParameters: uri.queryParameters,
+          queryParameters: uri.queryParameters.isEmpty
+              ? null
+              : uri.queryParameters,
           skipAuth: false,
           headers: <String, dynamic>{
             'Content-Type': 'application/json',
@@ -850,15 +885,6 @@ class EngagementService {
           stackTrace: stackTrace,
         );
         return {'success': false, 'message': _lastError ?? 'Request failed'};
-      }
-
-      if (response == null) {
-        _lastError = 'No response from server';
-        app_logger.Logger.error(
-          'Interaction failed: $_lastError',
-          tag: 'EngagementService',
-        );
-        return {'success': false, 'message': _lastError};
       }
 
       // PROFESSIONAL FIX: Parse JSON even on non-2xx responses (e.g. 400 already-voted)
@@ -899,14 +925,44 @@ class EngagementService {
               : null;
           final isCorrect =
               responseData?['is_correct'] ?? data['is_correct'] ?? false;
-          final pointsEarned =
+          final pointsEarnedRaw =
               responseData?['points_earned'] ??
               data['points_earned'] ??
               data['points_awarded'] ??
               0;
+
+          /*
+          Old Code:
           final parsedNewBalance = parseNumeric(
             responseData?['new_balance'] ?? data['new_balance'],
           );
+          */
+          int? pickFirstBalance() {
+            final rd = responseData;
+            final candidates = <dynamic>[
+              if (rd != null) ...[
+                rd['new_balance'],
+                rd['current_balance'],
+                rd['points_balance'],
+                rd['pnp_balance'],
+                rd['balance'],
+                rd['currentBalance'],
+                rd['pointsBalance'],
+              ],
+              data?['new_balance'],
+              data?['current_balance'],
+              data?['points_balance'],
+              data?['balance'],
+            ];
+            for (final c in candidates) {
+              final v = parseNumeric(c);
+              if (v != null) return v;
+            }
+            return null;
+          }
+
+          final parsedNewBalance = pickFirstBalance();
+
           final parsedRequired = parseNumeric(
             responseData?['required'] ?? data['required'],
           );
@@ -915,18 +971,19 @@ class EngagementService {
           );
 
           app_logger.Logger.info(
-            'Interaction submitted successfully - Correct: $isCorrect, Points: $pointsEarned',
+            'Interaction submitted successfully - Correct: $isCorrect, Points: $pointsEarnedRaw',
             tag: 'EngagementService',
           );
           return {
             'success': true,
             'is_correct': isCorrect,
-            'points_earned': pointsEarned is int
-                ? pointsEarned
-                : (pointsEarned as num).toInt(),
+            'points_earned': pointsEarnedRaw is int
+                ? pointsEarnedRaw
+                : (pointsEarnedRaw as num).toInt(),
             'message': data['message']?.toString() ?? 'Success',
             'data': responseData,
             if (parsedNewBalance != null) 'new_balance': parsedNewBalance,
+            if (parsedNewBalance != null) 'current_balance': parsedNewBalance,
             if (parsedRequired != null) 'required': parsedRequired,
             if (parsedBalance != null) 'balance': parsedBalance,
           };

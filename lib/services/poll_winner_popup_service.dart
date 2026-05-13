@@ -5,58 +5,39 @@ import 'package:flutter/material.dart';
 
 import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
+import 'package:ecommerce_int2/providers/point_provider_poll_reconcile.dart';
 import 'package:ecommerce_int2/services/engagement_service.dart';
+/*
 import 'package:ecommerce_int2/services/canonical_point_balance_sync.dart';
+*/
 import 'package:ecommerce_int2/utils/logger.dart';
-import 'package:ecommerce_int2/utils/large_int_codec.dart';
+import 'package:ecommerce_int2/utils/poll_result_snapshot_meta.dart';
 
 /// Feed-based polls: `GET poll/state` → `GET poll/results/{id}/{session}` then
 /// **silent** [PointProvider] balance sync.
 ///
 /// **POPUP KILL-SWITCH (SILENT MODE):** No modal/dialog/bottom sheet or in-app
-/// winner celebration UI is shown from this service — only point sync
-/// ([PointProvider.beginBalanceSync], [CanonicalPointBalanceSync.apply],
-/// [PointProvider.refreshPointStateAfterPollWin]; optimistic bumps removed to avoid double-count).
+/// winner celebration UI is shown from this service — only point sync:
+/// [PointProvider.reconcileAfterPollResult] bundles [PointProvider.beginBalanceSync],
+/// optional [CanonicalPointBalanceSync.apply] when local ≠ poll balance, and
+/// [PointProvider.refreshPointStateAfterPollWin] for wins (optimistic bumps removed).
 class PollWinnerPopupService {
   PollWinnerPopupService._();
 
-  static final Set<String> _shownKeys = <String>{};
+  /*
+  // Old Code: win-only duplicate tracking (replaced by [_pollBalanceReconcileKeys] for win + loss).
+  // static final Set<String> _shownKeys = <String>{};
+  */
+  /// Win + loss: one balance reconcile pass per `[pollId]_[sessionKey]` outcome.
+  static final Set<String> _pollBalanceReconcileKeys = <String>{};
   static final Set<String> _inFlightSyncKeys = <String>{};
 
-  static BigInt? _snapshotSequenceFromResultMap(Map<String, dynamic> rd) {
-    for (final k in const ['sequence_id', 'snapshot_sequence', 'seq']) {
-      if (!rd.containsKey(k)) continue;
-      final v = tryParseBigIntId(rd[k]);
-      if (v == null && rd[k] is num) {
-        Logger.warning(
-          'Poll result key "$k" has unsafe numeric precision; '
-          'backend should send sequence as string',
-          tag: 'PollWinnerPopup',
-        );
-      }
-      if (v != null) return v;
-    }
-    final aw = rd['awarded_txn_id'];
-    if (aw == null) return null;
-    final v = tryParseBigIntId(aw);
-    if (v == null && aw is num) {
-      Logger.warning(
-        'Poll result key "awarded_txn_id" has unsafe numeric precision; '
-        'backend should send transaction id as string',
-        tag: 'PollWinnerPopup',
-      );
-    }
-    return v;
-  }
+  static BigInt? snapshotSequenceFromPollResultMap(Map<String, dynamic> rd) =>
+      pollResultSnapshotSequenceFromMap(rd);
 
-  static DateTime? _snapshotObservedFromResultMap(Map<String, dynamic> rd) {
-    for (final k in const ['balance_updated_at', 'awarded_at', 'updated_at']) {
-      if (!rd.containsKey(k)) continue;
-      final d = DateTime.tryParse(rd[k].toString().trim());
-      if (d != null) return d;
-    }
-    return null;
-  }
+  static DateTime? snapshotObservedAtFromPollResultMap(
+    Map<String, dynamic> rd,
+  ) => pollResultSnapshotObservedAtFromMap(rd);
 
   /*
   // Old Code: deferred duplicate points REST refresh dedupe set.
@@ -168,7 +149,10 @@ class PollWinnerPopupService {
                 : 'default_${DateTime.now().toUtc().millisecondsSinceEpoch ~/ 60000}')
           : sessionId;
       final dedupeKey = '${pollId}_$dedupeSessionKey';
-      if (_shownKeys.contains(dedupeKey)) return;
+      /*
+      // Old Code: if (_shownKeys.contains(dedupeKey)) return;
+      */
+      if (_pollBalanceReconcileKeys.contains(dedupeKey)) return;
 
       final Map<String, dynamic>? resJson =
           await EngagementService.fetchPollResults(
@@ -213,208 +197,104 @@ class PollWinnerPopupService {
           (rd['request_id'] ?? 'poll_stable_${pollId}_$stableSessionId')
               .toString();
 
+      /*
+      Old Code: required pointsEarned > 0 — same Cron race as AutoRunPollWidget;
+      winners with points_awarded not yet written never synced.
       if (!userWon || pointsEarned <= 0) {
+        return;
+      }
+      */
+      if (!userWon) {
+        if (!context.mounted) return;
+        /*
+        // Old Code: loss path did not reconcile engagement feed polls.
+        // return;
+        */
+        try {
+          await PointProvider.instance.reconcileAfterPollResult(
+            userId: userId.toString(),
+            authoritativePollBalance: currentBalance > 0
+                ? currentBalance
+                : null,
+            balanceSyncDebugTag:
+                'carousel_feed_loss_${pollId}_$stableSessionId',
+            canonicalSource: 'poll_result_reconcile_carousel_loss',
+            shouldContinue: () => context.mounted,
+          );
+          _pollBalanceReconcileKeys.add(dedupeKey);
+          if (_pollBalanceReconcileKeys.length > 250) {
+            _pollBalanceReconcileKeys.clear();
+          }
+        } catch (e, st) {
+          debugPrint('[PollWinnerPopup] loss reconcile: $e\n$st');
+        }
         return;
       }
 
       if (!context.mounted) return;
 
-      final String balanceSyncLease = PointProvider.instance.beginBalanceSync(
-        'carousel_feed_win_${pollId}_$stableSessionId',
-      );
-      try {
-        /*
-      Old Code: optimisticAddPoints before canonical (stacked with feed optimistic).
-      final optimisticRefId = 'poll_win_${pollId}_${stableSessionId}';
+      /*
+      Old Code: wrapped win path in an extra try { } (flattened — single outer try handles errors).
+      */
+
+      // Single dedupe id per poll for logging / future extension (session-free).
+      final String pollWinSyncRefId = 'poll_win_sync_$pollId';
       Logger.info(
-        'DEBUG_SYNC: optimisticAddPoints called userId=$userId '
-        'pointsToAdd=$pointsEarned source=poll_win_carousel_feed',
+        'DEBUG_SYNC: poll win sync refId=$pollWinSyncRefId userId=$userId session=$stableSessionId',
         tag: 'PollWinnerPopup',
       );
-      Logger.info(
-        'DEBUG_SYNC: optimisticAddPoints refId=$optimisticRefId',
-        tag: 'PollWinnerPopup',
+
+      // Baseline (My PNP SSOT): [PointProvider.currentBalance] only — pre-reconcile snapshot.
+      final int baseline = PointProvider.instance.currentBalance;
+      final int localWithEarned = baseline + pointsEarned;
+      final int effectiveBalance = currentBalance > 0
+          ? currentBalance
+          : localWithEarned;
+
+      debugPrint(
+        '[PollWinnerPopup] user won pollId=$pollId session=$sessionId +$pointsEarned PNP — silent sync (no popup)',
       );
-      PointProvider.instance.optimisticAddPoints(
-        pointsEarned,
-        refId: optimisticRefId,
+
+      debugPrint(
+        '[PollWinnerPopup] ✓ WINNER REWARD SYNC — User: $userId, Poll: $pollId, Session: $sessionId, '
+        'requestId=$backendRequestId, Earned: +$pointsEarned, '
+        'baseline=$baseline → effective=$effectiveBalance (API current_balance: $currentBalance, local+earn: $localWithEarned)',
       );
-      */
 
-        // Single dedupe id per poll for logging / future extension (session-free).
-        final String pollWinSyncRefId = 'poll_win_sync_$pollId';
-        Logger.info(
-          'DEBUG_SYNC: poll win sync refId=$pollWinSyncRefId userId=$userId session=$stableSessionId',
-          tag: 'PollWinnerPopup',
-        );
+      await PointProvider.instance.reconcileAfterPollResult(
+        userId: userId.toString(),
+        authoritativePollBalance: effectiveBalance,
+        balanceSyncDebugTag: 'carousel_feed_win_${pollId}_$stableSessionId',
+        authProvider: AuthProvider(),
+        snapshotSequence: snapshotSequenceFromPollResultMap(rd),
+        snapshotObservedAt: snapshotObservedAtFromPollResultMap(rd),
+        canonicalSource: 'poll_win_instant_carousel_feed',
+        refreshUserCallback: () => AuthProvider().refreshUser(),
+        shouldContinue: () => context.mounted,
+        pollWinPriorBalanceExclusive: baseline,
+      );
 
-        // Baseline (My PNP SSOT): [PointProvider.currentBalance] only — pre-canonical snapshot.
-        final int baseline = PointProvider.instance.currentBalance;
-        final int localWithEarned = baseline + pointsEarned;
-        final int effectiveBalance = currentBalance > 0
-            ? currentBalance
-            : localWithEarned;
-
-        /*
-       * POPUP KILL-SWITCH — UI examples kept commented (silent mode):
-       *   // showDialog(context: context, builder: (_) => PollWinnerDialog(...));
-       *   // showModalBottomSheet(context: context, builder: (_) => ...);
-       * Point/in-app celebration is intentionally not shown here.
-       */
-
-        _shownKeys.add(dedupeKey);
-        if (_shownKeys.length > 250) {
-          _shownKeys.clear();
-        }
-
+      if (kDebugMode) {
         debugPrint(
-          '[PollWinnerPopup] user won pollId=$pollId session=$sessionId +$pointsEarned PNP — silent sync (no popup)',
-        );
-
-        // Winner points are credited server-side; prefer API balance when present, else baseline+earn.
-        debugPrint(
-          '[PollWinnerPopup] ✓ WINNER REWARD SYNC — User: $userId, Poll: $pollId, Session: $sessionId, '
-          'requestId=$backendRequestId, Earned: +$pointsEarned, '
-          'baseline=$baseline → effective=$effectiveBalance (API current_balance: $currentBalance, local+earn: $localWithEarned)',
-        );
-
-        await CanonicalPointBalanceSync.apply(
-          userId: userId.toString(),
-          currentBalance: effectiveBalance,
-          source: 'poll_win_carousel_feed',
-          emitBroadcast: true,
-          snapshotSequence: _snapshotSequenceFromResultMap(rd),
-          snapshotObservedAt: _snapshotObservedFromResultMap(rd),
-        );
-
-        if (kDebugMode) {
-          debugPrint(
-            '🚀 [PNP DEBUG] [${DateTime.now()}] Poll Win Detected! | PollID: $pollId | Triggering Immediate Refresh...',
-          );
-        }
-        /*
-      // Old Code: immediate + 3s delayed [refreshPointState] could apply a stale GET /points
-      // before the ledger finished crediting the poll win.
-      try {
-        await PointProvider.instance.refreshPointState(
-          userId: userId.toString(),
-          forceRefresh: true,
-          refreshBalance: true,
-          refreshTransactions: true,
-          refreshUserCallback: () => AuthProvider().refreshUser(),
-        );
-      } catch (error) {
-        debugPrint('[PollWinnerPopup] refreshPointState: $error');
-      }
-      final String serverFetchKey = 'srv_${pollId}_$stableSessionId';
-      if (_serverBalanceFetchOnceKeys.add(serverFetchKey)) {
-        if (_serverBalanceFetchOnceKeys.length > 250) {
-          _serverBalanceFetchOnceKeys.clear();
-        }
-        unawaited(
-          Future<void>.delayed(const Duration(seconds: 3)).then((_) async {
-            await PointProvider.instance
-                .refreshPointState(
-              userId: userId.toString(),
-              forceRefresh: true,
-              refreshBalance: true,
-              refreshTransactions: true,
-              refreshUserCallback: () => AuthProvider().refreshUser(),
-            )
-                .catchError((Object error) {
-              debugPrint('[PollWinnerPopup] delayed refreshPointState: $error');
-            });
-          }),
+          '🚀 [PNP DEBUG] [${DateTime.now()}] Poll Win Detected! | PollID: $pollId | Triggering Immediate Refresh...',
         );
       }
+
+      /*
+      _shownKeys.add(dedupeKey);
+      if (_shownKeys.length > 250) _shownKeys.clear();
       */
 
-        // NEW FIX: smart 1s × 5 ledger polls under the global balance lock; keeps shimmer until
-        // the server balance strictly exceeds the pre-win baseline (see PointProvider).
-        try {
-          await PointProvider.instance.refreshPointStateAfterPollWin(
-            userId: userId.toString(),
-            priorBalanceExclusive: baseline,
-            refreshUserCallback: () => AuthProvider().refreshUser(),
-          );
-        } catch (error) {
-          debugPrint('[PollWinnerPopup] refreshPointStateAfterPollWin: $error');
-        }
-
-        // In-app point notification disabled for poll wins — Home My PNP updates via PointProvider only.
-        // final eventId = backendRequestId;
-        // final pollLabel = (itemTitle != null && itemTitle.isNotEmpty)
-        //     ? '$itemTitle — '
-        //     : '';
-        // await PointNotificationManager().notifyPointEvent(
-        //   type: PointNotificationType.engagementEarned,
-        //   points: pointsEarned,
-        //   currentBalance: effectiveBalance,
-        //   description:
-        //       '${pollLabel}Your selection matched the winning result. Well done! '
-        //       '+$pointsEarned PNP has been credited to your balance.',
-        //   showPushNotification: false,
-        //   showInAppNotification: true,
-        //   showModalPopup: false,
-        //   orderId: eventId,
-        //   additionalData: {
-        //     'itemType': 'poll',
-        //     'itemTitle': itemTitle ?? 'Poll',
-        //     'pollId': pollId,
-        //     'sessionId': stableSessionId,
-        //     'requestId': backendRequestId,
-        //     'awardedTxnId': rd['awarded_txn_id'],
-        //   },
-        // );
-
-        /*
-      // Old Code:
-      // PROFESSIONAL FIX: Defer balance/transactions refresh by 4 seconds.
-      // Immediate loadBalance/refreshUser can overwrite the applied balance with
-      // stale API responses (backend may not have propagated to all endpoints yet).
-      // Skip refreshUser — we already patched points in AuthProvider; no user
-      // profile data changes from a poll win.
-      unawaited(
-        Future<void>.delayed(const Duration(seconds: 4)).then((_) async {
-          try {
-            await PointProvider.instance.loadBalance(
-              userId.toString(),
-              forceRefresh: true,
-            );
-          } catch (e) {
-            debugPrint('[PollWinnerPopup] deferred loadBalance: $e');
-          }
-        }),
-      );
-      */
-
-        /*
-      // New Code:
-      // Reconcile using the same flow as Point History refresh so Home/Profile/History
-      // converge to one consistent state graph after a poll win.
-      unawaited(
-        Future<void>.delayed(const Duration(seconds: 4)).then((_) async {
-          try {
-            await PointProvider.instance.refreshPointState(
-              userId: userId.toString(),
-              forceRefresh: true,
-              refreshBalance: true,
-              refreshTransactions: true,
-              refreshUserCallback: () => AuthProvider().refreshUser(),
-            );
-          } catch (e) {
-            debugPrint('[PollWinnerPopup] deferred refreshPointState: $e');
-            _scheduleResilientSync(
-              userId: userId.toString(),
-              syncKey: 'poll_sync_${pollId}_$stableSessionId',
-            );
-          }
-        }),
-      );
-      */
-      } finally {
-        PointProvider.instance.endBalanceSync(balanceSyncLease);
+      _pollBalanceReconcileKeys.add(dedupeKey);
+      if (_pollBalanceReconcileKeys.length > 250) {
+        _pollBalanceReconcileKeys.clear();
       }
+
+      /*
+      ... prior notification / deferred refresh snippets kept above in history ...
+      */
+
+      // Old Code closing inner try } catch — removed after flatten.
     } catch (e, st) {
       debugPrint('[PollWinnerPopup] error: $e\n$st');
     }
@@ -429,28 +309,22 @@ class PollWinnerPopupService {
     _inFlightSyncKeys.add(syncKey);
 
     unawaited(() async {
-      const delays = <Duration>[
-        Duration(seconds: 1),
-        Duration(seconds: 3),
-        Duration(seconds: 7),
-      ];
-      for (final delay in delays) {
-        await Future<void>.delayed(delay);
-        try {
-          await PointProvider.instance.refreshPointState(
-            userId: userId,
-            forceRefresh: true,
-            refreshBalance: true,
-            refreshTransactions: true,
-            refreshUserCallback: () => AuthProvider().refreshUser(),
-          );
-          _inFlightSyncKeys.remove(syncKey);
-          return;
-        } catch (e) {
-          debugPrint('[PollWinnerPopup] resilient sync retry failed: $e');
-        }
+      try {
+        await PointProvider.instance.refreshPointState(
+          userId: userId,
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: true,
+          notifyBalanceLoading: false,
+          refreshUserCallback: () => AuthProvider().refreshUser(),
+        );
+      } catch (e) {
+        debugPrint(
+          '[PollWinnerPopup] resilient sync refreshPointState failed: $e',
+        );
+      } finally {
+        _inFlightSyncKeys.remove(syncKey);
       }
-      _inFlightSyncKeys.remove(syncKey);
     }());
   }
 }

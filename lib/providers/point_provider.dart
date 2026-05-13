@@ -8,6 +8,8 @@ import '../utils/logger.dart';
 import '../services/connectivity_service.dart';
 import '../services/point_balance_sync_lock.dart';
 import '../services/point_sync_telemetry.dart';
+import '../services/canonical_point_balance_sync.dart';
+import '../services/toast_service.dart';
 import 'auth_provider.dart';
 
 /// Point provider for managing point state
@@ -35,30 +37,72 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   /// [applyOptimisticBalanceUpdate] ends with [notifyListeners] so Home My PNP
   /// (Consumer2) rebuilds without a separate StreamBuilder.
   void _onPointSyncBroadcast(PointSyncBroadcast event) {
+    final authId = AuthProvider().user?.id.toString().trim();
+    final rawEventId = event.userId.trim();
+
     Logger.info(
-      'DEBUG_SYNC: _onPointSyncBroadcast received userId=${event.userId} '
+      'DEBUG_SYNC: _onPointSyncBroadcast received userId=$rawEventId '
       'newBalance=${event.newBalance} source=${event.source} '
-      '_currentUserId=$_currentUserId',
+      '_currentUserId=$_currentUserId authId=$authId',
       tag: 'PointProvider',
     );
-    if (event.userId.isEmpty) {
+
+    /*
+    Old Code:
+    if (event.userId.isEmpty) return;
+    if (_currentUserId != null && _currentUserId != event.userId) return;
+    applyOptimisticBalanceUpdate(userId: event.userId, ...);
+    */
+
+    // Active session id from AuthProvider is authoritative when broadcast / PointProvider drift.
+    final String effectiveUserId;
+    if (authId != null && authId.isNotEmpty) {
+      effectiveUserId = authId;
+    } else if (rawEventId.isNotEmpty) {
+      effectiveUserId = rawEventId;
+    } else {
       Logger.info(
-        'DEBUG_SYNC: _onPointSyncBroadcast skipped (empty userId)',
+        'DEBUG_SYNC: _onPointSyncBroadcast skipped (no auth or event user id)',
         tag: 'PointProvider',
       );
       return;
     }
-    if (_currentUserId != null && _currentUserId != event.userId) {
+
+    if (rawEventId.isNotEmpty && rawEventId != effectiveUserId) {
       Logger.info(
-        'DEBUG_SYNC: _onPointSyncBroadcast skipped (user mismatch '
-        'event=${event.userId} current=$_currentUserId)',
+        'DEBUG_SYNC: _onPointSyncBroadcast skipped '
+        '(event user=$rawEventId session=$effectiveUserId)',
         tag: 'PointProvider',
       );
       return;
     }
-    applyOptimisticBalanceUpdate(
-      userId: event.userId,
-      currentBalance: event.newBalance,
+
+    if (_currentUserId != null && _currentUserId != effectiveUserId) {
+      if (authId != null && authId.isNotEmpty && authId == effectiveUserId) {
+        Logger.info(
+          'DEBUG_SYNC: _onPointSyncBroadcast applying with auth-aligned userId '
+          '(stale _currentUserId=$_currentUserId → $effectiveUserId)',
+          tag: 'PointProvider',
+        );
+      } else {
+        Logger.info(
+          'DEBUG_SYNC: _onPointSyncBroadcast skipped (provider mismatch '
+          'current=$_currentUserId effective=$effectiveUserId)',
+          tag: 'PointProvider',
+        );
+        return;
+      }
+    }
+
+    // Serialize with canonical / loadBalance so optimistic broadcast does not
+    // interleave oddly with FIFO balance work (same global queue as mutations).
+    unawaited(
+      PointBalanceSyncLock.run(() async {
+        applyOptimisticBalanceUpdate(
+          userId: effectiveUserId,
+          currentBalance: event.newBalance,
+        );
+      }),
     );
   }
 
@@ -120,6 +164,43 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
 
   /// After the first 3 poll-win ledger polls fail to exceed the floor, My PNP shows a stricter label.
   bool _extendedPollWinSyncLabel = false;
+
+  /// Incremented while poll vote / win / deduct **ledger verification** holds
+  /// [PointBalanceSyncLock] (entire smart-poll loop, including delays).
+  ///
+  /// [PointBalanceSyncLock.run] is **reentrant**: nested callers (e.g. pull-to-refresh
+  /// [loadBalance]) would otherwise invoke [_loadBalanceUnlocked] without
+  /// [acceptOnlyBalanceEquals] / [rejectFetchedBalanceIfGreaterThan] / [pollWinStaleFloorExclusive]
+  /// and could apply a stale GET, breaking verification. When this depth is > 0,
+  /// unscoped fetches are skipped (see [_loadBalanceUnlocked]).
+  int _strictSerializedBalancePollDepth = 0;
+
+  /// Clears [_extendedPollWinSyncLabel] after verification loops (success, timeout, cancel, or throw).
+  void _clearExtendedPollWinSyncLabelIfNeeded() {
+    if (!_extendedPollWinSyncLabel) {
+      return;
+    }
+    _extendedPollWinSyncLabel = false;
+    notifyListeners();
+  }
+
+  /// Returns false if [fn] is non-null and throws or returns false (treat as stop polling).
+  bool _pollVerificationShouldProceed(bool Function()? fn, String scope) {
+    if (fn == null) {
+      return true;
+    }
+    try {
+      return fn();
+    } catch (e, st) {
+      Logger.error(
+        '$scope: shouldContinue threw: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: st,
+      );
+      return false;
+    }
+  }
 
   /// True after the first successful balance hydrate for this session (API or cache).
   /// Used so UI does not treat "0 → server balance" on cold start as points earned.
@@ -251,6 +332,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     _legacyBoolLeaseStack.clear();
     _syncActiveCount = 0;
     _extendedPollWinSyncLabel = false;
+    _strictSerializedBalancePollDepth = 0;
   }
 
   /// After Doze / deep sleep, Dart timers may fire very late; balance-sync shimmer can
@@ -396,164 +478,551 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     String userId, {
     bool forceRefresh = false,
     bool notifyLoading = true,
+
+    /// When set, passed to [PointService.getPointBalance] as `t=` to defeat CDN/proxy caches.
+    int? balanceCacheBypassTimestampMs,
   }) async {
-    await PointBalanceSyncLock.run(() async {
-      await _loadBalanceUnlocked(
-        userId,
-        forceRefresh: forceRefresh,
-        notifyLoading: notifyLoading,
+    try {
+      /*
+      Old Code:
+      await PointBalanceSyncLock.run(() async {
+        await _loadBalanceUnlocked(
+          userId,
+          forceRefresh: forceRefresh,
+          notifyLoading: notifyLoading,
+          balanceCacheBypassTimestampMs: balanceCacheBypassTimestampMs,
+        );
+      });
+      */
+      final int? resolvedBypass =
+          balanceCacheBypassTimestampMs ??
+          (forceRefresh ? DateTime.now().microsecondsSinceEpoch : null);
+      await PointBalanceSyncLock.run(() async {
+        await _loadBalanceUnlocked(
+          userId,
+          forceRefresh: forceRefresh,
+          notifyLoading: notifyLoading,
+          balanceCacheBypassTimestampMs: resolvedBypass,
+        );
+      });
+    } catch (e, stackTrace) {
+      Logger.error(
+        'PointProvider.loadBalance failed userId=$userId '
+        'forceRefresh=$forceRefresh: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: stackTrace,
       );
-    });
+      rethrow;
+    }
   }
 
-  /// Poll-win path: up to **5** server reads (1s apart) while [isSyncingBalance] stays true
-  /// at the call site, until the **ledger** reports a balance strictly greater than
-  /// [priorBalanceExclusive]. Prevents stale GET /points from overwriting canonical UI.
+  /// Trimmed poll-win finalize: trusts caller-supplied [authoritativePollBalance] when provided
+  /// and applies **[CanonicalPointBalanceSync.apply]** once — no ledger polling loop or 30s retry.
   ///
-  /// After 3 failed attempts, [balanceSyncLoadingSubtitle] switches to
-  /// "Synchronizing Points...". If all 5 attempts fail, sets [syncNoticeMessage].
-  /// Call-site [beginBalanceSync] (or paired [setSyncingBalance]) owns shimmer teardown — this
-  /// method does **not** decrement the sync refcount (avoids double-[false] vs outer `finally`).
+  /// **[priorBalanceExclusive]** is retained for logging / diagnostics only (legacy callers).
   ///
-  /// [shouldContinue]: when non-null and returns `false`, stops polling early (e.g. widget
-  /// disposed / user left the poll). Skips [syncNoticeMessage], [refreshUserCallback], and the
-  /// follow-up [loadTransactions] so background work and SnackBars do not surprise the user.
+  /// When [authoritativePollBalance] is null, performs a **single** [loadBalance] instead of the
+  /// old ten-attempt poll.
+  ///
+  /// History: **[loadTransactions] page 1 only** (`perPage`: 20, `notifyLoading`: false).
+  ///
+  /// [scheduleDeferredRetryOnFailure]: **ignored** (kept only so existing call sites keep compiling).
   Future<void> refreshPointStateAfterPollWin({
     required String userId,
     required int priorBalanceExclusive,
+    int? authoritativePollBalance,
+    AuthProvider? authProvider,
+    BigInt? snapshotSequence,
+    DateTime? snapshotObservedAt,
+    String canonicalPollWinSource = 'poll_win_refresh_trimmed',
     Future<void> Function()? refreshUserCallback,
     bool Function()? shouldContinue,
+    bool scheduleDeferredRetryOnFailure = true,
   }) async {
     Logger.info(
-      'PointProvider.refreshPointStateAfterPollWin userId=$userId '
-      'priorExclusive=$priorBalanceExclusive',
+      'PointProvider.refreshPointStateAfterPollWin(trimmed) userId=$userId '
+      'priorExclusive=$priorBalanceExclusive authoritativePollBalance=$authoritativePollBalance '
+      'source=$canonicalPollWinSource (scheduleDeferredRetryOnFailure ignored)',
       tag: 'PointProvider',
     );
 
-    var serverConfirmed = false;
-    var pollingCancelled = false;
-    await PointBalanceSyncLock.run(() async {
-      for (var attempt = 0; attempt < 5; attempt++) {
-        if (shouldContinue != null && !shouldContinue()) {
-          pollingCancelled = true;
-          _extendedPollWinSyncLabel = false;
-          Logger.info(
-            'Poll win smart poll: aborted before attempt ${attempt + 1} '
-            '(shouldContinue returned false)',
-            tag: 'PointProvider',
-          );
-          notifyListeners();
-          break;
-        }
-        if (attempt > 0) {
-          await Future<void>.delayed(const Duration(seconds: 1));
-        }
-        if (shouldContinue != null && !shouldContinue()) {
-          pollingCancelled = true;
-          _extendedPollWinSyncLabel = false;
-          Logger.info(
-            'Poll win smart poll: aborted after delay before attempt ${attempt + 1}',
-            tag: 'PointProvider',
-          );
-          notifyListeners();
-          break;
-        }
-        if (attempt >= 3) {
-          _extendedPollWinSyncLabel = true;
-          notifyListeners();
-        }
-        final applied = await _loadBalanceUnlocked(
-          userId,
-          forceRefresh: true,
-          notifyLoading: false,
-          pollWinStaleFloorExclusive: priorBalanceExclusive,
-        );
-        if (shouldContinue != null && !shouldContinue()) {
-          pollingCancelled = true;
-          _extendedPollWinSyncLabel = false;
-          Logger.info(
-            'Poll win smart poll: aborted after load attempt ${attempt + 1}',
-            tag: 'PointProvider',
-          );
-          notifyListeners();
-          break;
-        }
-        if (applied) {
-          serverConfirmed = true;
-          _extendedPollWinSyncLabel = false;
-          Logger.info(
-            'Poll win smart poll: ledger confirmed increase on attempt ${attempt + 1} '
-            '(balance=$currentBalance)',
-            tag: 'PointProvider',
-          );
-          break;
-        }
-      }
-      if (!serverConfirmed && !pollingCancelled) {
-        Logger.warning(
-          'Poll win smart poll: ledger never exceeded prior=$priorBalanceExclusive '
-          'after 5 attempts; keeping in-memory balance=${_balance?.currentBalance}',
+    if (shouldContinue != null && !shouldContinue()) {
+      Logger.info(
+        'refreshPointStateAfterPollWin: aborted (shouldContinue false before apply)',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+
+    if (authoritativePollBalance != null) {
+      final int local = currentBalance;
+      if (authoritativePollBalance != local) {
+        Logger.info(
+          'refreshPointStateAfterPollWin: CanonicalPointBalanceSync.apply '
+          'local=$local authoritative=$authoritativePollBalance',
           tag: 'PointProvider',
         );
-        _extendedPollWinSyncLabel = false;
-        _syncNoticeMessage =
-            'Syncing takes longer than usual. Please check back in a moment.';
+        await CanonicalPointBalanceSync.apply(
+          userId: userId,
+          currentBalance: authoritativePollBalance,
+          source: canonicalPollWinSource,
+          emitBroadcast: true,
+          authProvider: authProvider,
+          pointProvider: this,
+          snapshotSequence: snapshotSequence,
+          snapshotObservedAt: snapshotObservedAt,
+        );
+      } else {
+        Logger.info(
+          'refreshPointStateAfterPollWin: skip apply (already local==authoritative $local)',
+          tag: 'PointProvider',
+        );
       }
-
-      final refreshUser = refreshUserCallback;
-      if (!pollingCancelled && refreshUser != null) {
-        try {
-          await refreshUser();
-        } catch (e, st) {
-          Logger.error(
-            'refreshPointStateAfterPollWin refreshUser failed: $e',
-            tag: 'PointProvider',
-            error: e,
-            stackTrace: st,
-          );
-        }
-      }
-    });
-
-    if (!pollingCancelled) {
-      unawaited(
-        loadTransactions(
-          userId,
-          page: 1,
-          perPage: 20,
-          forceRefresh: true,
-          rangeDays: 90,
-        ).catchError((Object e, StackTrace st) {
-          Logger.error(
-            'refreshPointStateAfterPollWin loadTransactions failed: $e',
-            tag: 'PointProvider',
-            error: e,
-            stackTrace: st,
-          );
-        }),
+    } else {
+      Logger.info(
+        'refreshPointStateAfterPollWin: authoritative null → single loadBalance(forceRefresh)',
+        tag: 'PointProvider',
       );
+      /*
+      Old Code:
+      await loadBalance(userId, forceRefresh: true, notifyLoading: false);
+      */
+      // High-resolution cache-bypass nonce + explicit notify so My PNP Selector/C rebuilds
+      // after poll-win GET even when ledger filters previously skipped nested fetches.
+      await loadBalance(
+        userId,
+        forceRefresh: true,
+        notifyLoading: false,
+        balanceCacheBypassTimestampMs: DateTime.now().microsecondsSinceEpoch,
+      );
+      notifyListeners();
+    }
+
+    if (shouldContinue != null && !shouldContinue()) {
+      Logger.info(
+        'refreshPointStateAfterPollWin: aborted after balance (shouldContinue false)',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+
+    final refreshUser = refreshUserCallback;
+    if (refreshUser != null) {
+      try {
+        await refreshUser();
+        Logger.info(
+          'refreshPointStateAfterPollWin: refreshUser done',
+          tag: 'PointProvider',
+        );
+      } catch (e, st) {
+        Logger.error(
+          'refreshPointStateAfterPollWin refreshUser failed: $e',
+          tag: 'PointProvider',
+          error: e,
+          stackTrace: st,
+        );
+      }
+    }
+
+    if (shouldContinue != null && !shouldContinue()) {
+      Logger.info(
+        'refreshPointStateAfterPollWin: skip loadTransactions (shouldContinue false)',
+        tag: 'PointProvider',
+      );
+      return;
+    }
+
+    try {
+      Logger.info(
+        'refreshPointStateAfterPollWin: loadTransactions FIRST PAGE ONLY page=1 perPage=20',
+        tag: 'PointProvider',
+      );
+      await loadTransactions(
+        userId,
+        page: 1,
+        perPage: 20,
+        forceRefresh: true,
+        rangeDays: 90,
+        notifyLoading: false,
+      );
+      Logger.info(
+        'refreshPointStateAfterPollWin: done userId=$userId '
+        'currentBalance=$currentBalance',
+        tag: 'PointProvider',
+      );
+    } catch (e, st) {
+      Logger.error(
+        'refreshPointStateAfterPollWin loadTransactions failed: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+
+    /*
+    // Old Code (heavy path — removed for latency):
+    // - Up to 10× _loadBalanceUnlocked (1s apart) until ledger > priorBalanceExclusive
+    // - _extendedPollWinSyncLabel + ToastService timeout on exhaustion
+    // - unawaited loadTransactions + 30s deferred retry calling this method again
+    */
+  }
+
+  /// Engagement submit / ledger paths where POST returns an exact authoritative balance.
+  /// Up to **5** GETs (1s apart); only applies snapshots equal to [expectedBalance] so stale
+  /// pre-mutation reads cannot overwrite [CanonicalPointBalanceSync] UI.
+  ///
+  /// Does not decrement balance-sync leases — caller [beginBalanceSync] / [endBalanceSync].
+  ///
+  /// See [refreshPointStateAfterPollWin] regarding [shouldContinue] and app backgrounding.
+  Future<void> refreshPointStateUntilBalanceConfirmed({
+    required String userId,
+    required int expectedBalance,
+    Future<void> Function()? refreshUserCallback,
+    bool Function()? shouldContinue,
+  }) async {
+    final int strictPollDepthBaseline = _strictSerializedBalancePollDepth;
+    /*
+    Old Code: no outer restore — a leaked [_strictSerializedBalancePollDepth] could persist.
+    */
+    try {
+      Logger.info(
+        'PointProvider.refreshPointStateUntilBalanceConfirmed userId=$userId '
+        'expected=$expectedBalance',
+        tag: 'PointProvider',
+      );
+      var confirmed = false;
+      var pollingCancelled = false;
+      await PointBalanceSyncLock.run(() async {
+        _strictSerializedBalancePollDepth++;
+        try {
+          try {
+            for (var attempt = 0; attempt < 5; attempt++) {
+              if (shouldContinue != null &&
+                  !_pollVerificationShouldProceed(
+                    shouldContinue,
+                    'refreshPointStateUntilBalanceConfirmed',
+                  )) {
+                pollingCancelled = true;
+                _extendedPollWinSyncLabel = false;
+                Logger.info(
+                  'Balance confirm poll: aborted before attempt ${attempt + 1}',
+                  tag: 'PointProvider',
+                );
+                notifyListeners();
+                break;
+              }
+              if (attempt > 0) {
+                await Future<void>.delayed(const Duration(seconds: 1));
+              }
+              if (shouldContinue != null &&
+                  !_pollVerificationShouldProceed(
+                    shouldContinue,
+                    'refreshPointStateUntilBalanceConfirmed',
+                  )) {
+                pollingCancelled = true;
+                _extendedPollWinSyncLabel = false;
+                notifyListeners();
+                break;
+              }
+              if (attempt >= 3) {
+                _extendedPollWinSyncLabel = true;
+                notifyListeners();
+              }
+              final applied = await _loadBalanceUnlocked(
+                userId,
+                forceRefresh: true,
+                notifyLoading: false,
+                acceptOnlyBalanceEquals: expectedBalance,
+              );
+              if (shouldContinue != null &&
+                  !_pollVerificationShouldProceed(
+                    shouldContinue,
+                    'refreshPointStateUntilBalanceConfirmed',
+                  )) {
+                pollingCancelled = true;
+                _extendedPollWinSyncLabel = false;
+                notifyListeners();
+                break;
+              }
+              if (applied) {
+                confirmed = true;
+                _extendedPollWinSyncLabel = false;
+                Logger.info(
+                  'Balance confirm poll: matched expected=$expectedBalance on attempt ${attempt + 1}',
+                  tag: 'PointProvider',
+                );
+                break;
+              }
+            }
+            if (!confirmed && !pollingCancelled) {
+              Logger.warning(
+                'Balance confirm poll: never matched expected=$expectedBalance after 5 attempts',
+                tag: 'PointProvider',
+              );
+              _extendedPollWinSyncLabel = false;
+              if (!ToastService.showPointsVerificationTimeout()) {
+                _syncNoticeMessage =
+                    ToastService.pointsVerificationTimeoutMessage;
+                notifyListeners();
+              }
+            }
+
+            final refreshUser = refreshUserCallback;
+            if (!pollingCancelled && refreshUser != null) {
+              try {
+                await refreshUser();
+              } catch (e, st) {
+                Logger.error(
+                  'refreshPointStateUntilBalanceConfirmed refreshUser failed: $e',
+                  tag: 'PointProvider',
+                  error: e,
+                  stackTrace: st,
+                );
+              }
+            }
+          } finally {
+            _clearExtendedPollWinSyncLabelIfNeeded();
+          }
+        } finally {
+          _strictSerializedBalancePollDepth--;
+        }
+      });
+
+      if (!pollingCancelled) {
+        unawaited(
+          loadTransactions(
+            userId,
+            page: 1,
+            perPage: 20,
+            forceRefresh: true,
+            rangeDays: 90,
+          ).catchError((Object e, StackTrace st) {
+            Logger.error(
+              'refreshPointStateUntilBalanceConfirmed loadTransactions failed: $e',
+              tag: 'PointProvider',
+              error: e,
+              stackTrace: st,
+            );
+          }),
+        );
+      }
+    } finally {
+      if (_strictSerializedBalancePollDepth != strictPollDepthBaseline) {
+        Logger.warning(
+          'refreshPointStateUntilBalanceConfirmed: strict poll depth safety restore '
+          '($_strictSerializedBalancePollDepth → $strictPollDepthBaseline)',
+          tag: 'PointProvider',
+        );
+      }
+      _strictSerializedBalancePollDepth = strictPollDepthBaseline;
+    }
+  }
+
+  /// Poll-vote **deduction** path when interact response omits `new_balance`: reject GET
+  /// snapshots strictly **greater** than [maxAcceptableFromApi] (typically `balanceBefore - cost`)
+  /// until the ledger reflects the spend (or attempts exhaust).
+  ///
+  /// See [refreshPointStateAfterPollWin] regarding [shouldContinue] and app backgrounding.
+  Future<void> refreshPointStateUntilDeductionVisibleOnLedger({
+    required String userId,
+    required int maxAcceptableFromApi,
+    Future<void> Function()? refreshUserCallback,
+    bool Function()? shouldContinue,
+  }) async {
+    final int strictPollDepthBaseline = _strictSerializedBalancePollDepth;
+    /*
+    Old Code: no outer restore — a leaked [_strictSerializedBalancePollDepth] could persist.
+    */
+    try {
+      Logger.info(
+        'PointProvider.refreshPointStateUntilDeductionVisibleOnLedger userId=$userId '
+        'maxAcceptable=$maxAcceptableFromApi',
+        tag: 'PointProvider',
+      );
+      var confirmed = false;
+      var pollingCancelled = false;
+      await PointBalanceSyncLock.run(() async {
+        _strictSerializedBalancePollDepth++;
+        try {
+          try {
+            for (var attempt = 0; attempt < 5; attempt++) {
+              if (shouldContinue != null &&
+                  !_pollVerificationShouldProceed(
+                    shouldContinue,
+                    'refreshPointStateUntilDeductionVisibleOnLedger',
+                  )) {
+                pollingCancelled = true;
+                _extendedPollWinSyncLabel = false;
+                notifyListeners();
+                break;
+              }
+              if (attempt > 0) {
+                await Future<void>.delayed(const Duration(seconds: 1));
+              }
+              if (shouldContinue != null &&
+                  !_pollVerificationShouldProceed(
+                    shouldContinue,
+                    'refreshPointStateUntilDeductionVisibleOnLedger',
+                  )) {
+                pollingCancelled = true;
+                _extendedPollWinSyncLabel = false;
+                notifyListeners();
+                break;
+              }
+              if (attempt >= 3) {
+                _extendedPollWinSyncLabel = true;
+                notifyListeners();
+              }
+              final applied = await _loadBalanceUnlocked(
+                userId,
+                forceRefresh: true,
+                notifyLoading: false,
+                rejectFetchedBalanceIfGreaterThan: maxAcceptableFromApi,
+              );
+              if (shouldContinue != null &&
+                  !_pollVerificationShouldProceed(
+                    shouldContinue,
+                    'refreshPointStateUntilDeductionVisibleOnLedger',
+                  )) {
+                pollingCancelled = true;
+                _extendedPollWinSyncLabel = false;
+                notifyListeners();
+                break;
+              }
+              if (applied) {
+                confirmed = true;
+                _extendedPollWinSyncLabel = false;
+                Logger.info(
+                  'Deduction ledger poll: applied snapshot on attempt ${attempt + 1} '
+                  '(balance=$currentBalance)',
+                  tag: 'PointProvider',
+                );
+                break;
+              }
+            }
+            if (!confirmed && !pollingCancelled) {
+              Logger.warning(
+                'Deduction ledger poll: stale-high reads persisted after 5 attempts '
+                '(maxAcceptable=$maxAcceptableFromApi, memory=${_balance?.currentBalance})',
+                tag: 'PointProvider',
+              );
+              _extendedPollWinSyncLabel = false;
+              if (!ToastService.showPointsVerificationTimeout()) {
+                _syncNoticeMessage =
+                    ToastService.pointsVerificationTimeoutMessage;
+                notifyListeners();
+              }
+            }
+
+            final refreshUser = refreshUserCallback;
+            if (!pollingCancelled && refreshUser != null) {
+              try {
+                await refreshUser();
+              } catch (e, st) {
+                Logger.error(
+                  'refreshPointStateUntilDeductionVisibleOnLedger refreshUser failed: $e',
+                  tag: 'PointProvider',
+                  error: e,
+                  stackTrace: st,
+                );
+              }
+            }
+          } finally {
+            _clearExtendedPollWinSyncLabelIfNeeded();
+          }
+        } finally {
+          _strictSerializedBalancePollDepth--;
+        }
+      });
+
+      if (!pollingCancelled) {
+        unawaited(
+          loadTransactions(
+            userId,
+            page: 1,
+            perPage: 20,
+            forceRefresh: true,
+            rangeDays: 90,
+          ).catchError((Object e, StackTrace st) {
+            Logger.error(
+              'refreshPointStateUntilDeductionVisibleOnLedger loadTransactions failed: $e',
+              tag: 'PointProvider',
+              error: e,
+              stackTrace: st,
+            );
+          }),
+        );
+      }
+    } finally {
+      if (_strictSerializedBalancePollDepth != strictPollDepthBaseline) {
+        Logger.warning(
+          'refreshPointStateUntilDeductionVisibleOnLedger: strict poll depth safety restore '
+          '($_strictSerializedBalancePollDepth → $strictPollDepthBaseline)',
+          tag: 'PointProvider',
+        );
+      }
+      _strictSerializedBalancePollDepth = strictPollDepthBaseline;
     }
   }
 
   /// Core balance fetch; must be invoked only from inside [PointBalanceSyncLock.run]
-  /// **or** from [loadBalance] / [refreshPointStateAfterPollWin] wrappers (which acquire the lock).
+  /// **or** from [loadBalance] / [refreshPointStateAfterPollWin] / ledger verification helpers
+  /// (which acquire the lock).
   ///
   /// Returns `true` when a **fresh online** [PointService.getPointBalance] result was applied
   /// to [_balance] (including normal loads). Returns `false` when the poll-win floor rejected
-  /// a stale snapshot, on cache/offline paths, or on errors.
+  /// a stale snapshot, [acceptOnlyBalanceEquals] / [rejectFetchedBalanceIfGreaterThan] rejected
+  /// the fetch, on cache/offline paths, or on errors.
   Future<bool> _loadBalanceUnlocked(
     String userId, {
     bool forceRefresh = false,
     bool notifyLoading = true,
     int? pollWinStaleFloorExclusive,
+
+    /// When set, only apply API balance if it equals this (authoritative `new_balance` path).
+    int? acceptOnlyBalanceEquals,
+
+    /// When set, treat API balance as stale if strictly greater (pre-deduct ghost reads).
+    int? rejectFetchedBalanceIfGreaterThan,
+
+    /// Optional stronger cache bypass for [PointService.getPointBalance] (`t=` query).
+    int? balanceCacheBypassTimestampMs,
   }) async {
     var appliedServerSnapshot = false;
+    final bool unscopedApiBalanceApply =
+        pollWinStaleFloorExclusive == null &&
+        acceptOnlyBalanceEquals == null &&
+        rejectFetchedBalanceIfGreaterThan == null;
+    /*
+    Old Code:
+    if (_strictSerializedBalancePollDepth > 0 &&
+        unscopedApiBalanceApply &&
+        !forceRefresh) {
+      ...
+      return false;
+    }
+    */
+    // Strict-depth throttle applies only to incidental unscoped GETs during verification.
+    // [forceRefresh: true] bypasses this gate entirely — avoids sync starvation / deadlock-feel.
+    if (!forceRefresh &&
+        _strictSerializedBalancePollDepth > 0 &&
+        unscopedApiBalanceApply) {
+      Logger.info(
+        'PointProvider._loadBalanceUnlocked: skip unscoped balance fetch during '
+        'ledger verification (nested [loadBalance] would bypass accept/reject/floor filters). '
+        'userId=$userId',
+        tag: 'PointProvider',
+      );
+      return false;
+    }
     // First successful hydrate for this session (startup / login sync), not an in-session earn.
     final bool isInitialLoad = !_sessionInitialBalanceLoadComplete;
     Logger.info(
       'PointProvider._loadBalanceUnlocked start: userId=$userId, forceRefresh=$forceRefresh, '
       'isConnected=${_connectivityService.isConnected}, currentUserId=$_currentUserId, '
-      'localBalance=${_balance?.currentBalance}, pollWinFloor=$pollWinStaleFloorExclusive',
+      'localBalance=${_balance?.currentBalance}, pollWinFloor=$pollWinStaleFloorExclusive, '
+      'acceptOnly=$acceptOnlyBalanceEquals, rejectIfGt=$rejectFetchedBalanceIfGreaterThan',
       tag: 'PointProvider',
     );
     if (forceRefresh) {
@@ -625,13 +1094,25 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
 
       // Try to load from API if online
       // OPTIMIZED: Use cached connectivity service
+      // Embedded transaction rows may lift stale headline totals — see [PointService.getPointBalance].
       if (_connectivityService.isConnected) {
         final balance = await PointService.getPointBalance(
           userId,
-          cacheBypassTimestampMs: DateTime.now().millisecondsSinceEpoch,
-          persistToStorage: pollWinStaleFloorExclusive == null,
+          cacheBypassTimestampMs:
+              balanceCacheBypassTimestampMs ??
+              DateTime.now().millisecondsSinceEpoch,
+          persistToStorage:
+              pollWinStaleFloorExclusive == null &&
+              acceptOnlyBalanceEquals == null &&
+              rejectFetchedBalanceIfGreaterThan == null,
         );
         if (balance != null) {
+          Logger.debug(
+            'PointProvider: balance snapshot currentBalance=${balance.currentBalance} '
+            '(API headline merged with embedded ledger preview via '
+            'PointService.coalesceHeadlineWithEmbeddedLedgerPreview inside getPointBalance)',
+            tag: 'PointProvider',
+          );
           /*
           Old Code: always trust API balance from getPointBalance (no floor).
           _balance = balance;
@@ -644,13 +1125,44 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
               '(keeping ${_balance?.currentBalance})',
               tag: 'PointProvider',
             );
+          } else if (pollWinStaleFloorExclusive != null &&
+              _balance != null &&
+              _balance!.currentBalance > pollWinStaleFloorExclusive &&
+              balance.currentBalance < _balance!.currentBalance) {
+            // Canonical / broadcast may already reflect the win; a lagging GET can still be
+            // strictly above the pre-win floor yet below SSOT — do not downgrade mid-verify.
+            Logger.info(
+              'PointProvider: poll-win smart poll — API returned ${balance.currentBalance} '
+              '(< in-memory ${_balance!.currentBalance} while > floor '
+              '$pollWinStaleFloorExclusive); not applying mid-lag snapshot '
+              '(keeping ${_balance?.currentBalance})',
+              tag: 'PointProvider',
+            );
+          } else if (acceptOnlyBalanceEquals != null &&
+              balance.currentBalance != acceptOnlyBalanceEquals) {
+            Logger.info(
+              'PointProvider: ledger confirm poll — API returned ${balance.currentBalance} '
+              '(want exact $acceptOnlyBalanceEquals); not applying stale snapshot '
+              '(keeping ${_balance?.currentBalance})',
+              tag: 'PointProvider',
+            );
+          } else if (rejectFetchedBalanceIfGreaterThan != null &&
+              balance.currentBalance > rejectFetchedBalanceIfGreaterThan) {
+            Logger.info(
+              'PointProvider: post-deduct poll — API returned ${balance.currentBalance} '
+              '(> ceiling $rejectFetchedBalanceIfGreaterThan); not applying stale snapshot '
+              '(keeping ${_balance?.currentBalance})',
+              tag: 'PointProvider',
+            );
           } else {
             _balance = balance;
             appliedServerSnapshot = true;
             AuthProvider().mirrorLedgerBalanceToUserMeta(
               balance.currentBalance,
             );
-            if (pollWinStaleFloorExclusive != null) {
+            if (pollWinStaleFloorExclusive != null ||
+                acceptOnlyBalanceEquals != null ||
+                rejectFetchedBalanceIfGreaterThan != null) {
               await PointService.persistFetchedBalance(balance);
             }
             Logger.info(
@@ -661,8 +1173,20 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
             _debounceTimer?.cancel();
             notifyListeners();
           }
+          /*
+          Old Code:
+          (no extra notify after guarded branches)
+          */
+          // Force-refresh: always ping listeners after a successful GET parse so My PNP rebuilds
+          // even when ledger guards rejected applying (verification paths).
+          if (forceRefresh) {
+            notifyListeners();
+          }
         } else {
           if (forceRefresh) {
+            /*
+            Old Code: cleared [_balance] on force-refresh null — engagement bursts
+            made My PNP flicker to empty when the API hiccupped.
             Logger.error(
               'PointProvider._loadBalanceUnlocked forceRefresh API returned null. '
               'Clearing in-memory balance and skipping cache fallback for userId=$userId',
@@ -673,6 +1197,23 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
             _setError(_buildBalanceSyncErrorMessage());
             _debounceTimer?.cancel();
             notifyListeners();
+            */
+            // New Code: keep last known good balance; surface error; try disk cache if memory empty.
+            Logger.warning(
+              'PointProvider._loadBalanceUnlocked forceRefresh API returned null '
+              'for userId=$userId — retaining prior balance when available',
+              tag: 'PointProvider',
+            );
+            _setError(_buildBalanceSyncErrorMessage());
+            _debounceTimer?.cancel();
+            if (_balance != null) {
+              notifyListeners();
+            } else {
+              await _loadCachedBalance(
+                userId: userId,
+                preferImmediateNotify: immediateCacheNotifyAfterOnlineAttempt,
+              );
+            }
           } else {
             Logger.warning(
               'PointProvider._loadBalanceUnlocked API returned null, entering cache fallback '
@@ -700,6 +1241,8 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         stackTrace: stackTrace,
       );
       if (forceRefresh) {
+        /*
+        Old Code: cleared balance on force-refresh exception.
         Logger.error(
           'PointProvider._loadBalanceUnlocked forceRefresh threw error, skipping cache fallback '
           'and clearing balance for userId=$userId',
@@ -710,6 +1253,24 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         _setError(_buildBalanceSyncErrorMessage(error: e));
         _debounceTimer?.cancel();
         notifyListeners();
+        */
+        Logger.warning(
+          'PointProvider._loadBalanceUnlocked forceRefresh error for userId=$userId '
+          '— retaining prior balance when available: $e',
+          tag: 'PointProvider',
+          error: e,
+          stackTrace: stackTrace,
+        );
+        _setError(_buildBalanceSyncErrorMessage(error: e));
+        _debounceTimer?.cancel();
+        if (_balance != null) {
+          notifyListeners();
+        } else {
+          await _loadCachedBalance(
+            userId: userId,
+            preferImmediateNotify: immediateCacheNotifyAfterOnlineAttempt,
+          );
+        }
       } else {
         _setError('Failed to load point balance');
         Logger.warning(
@@ -747,6 +1308,10 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     DateTime? transactionsDateFrom,
     DateTime? transactionsDateTo,
     Future<void> Function()? refreshUserCallback,
+
+    /// When false, [loadBalance] skips the global points loading spinner — use after
+    /// authoritative balance (e.g. poll `new_balance`) so My PNP does not flash stale loading.
+    bool notifyBalanceLoading = true,
   }) async {
     if (kDebugMode) {
       debugPrint(
@@ -765,7 +1330,11 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         // Ensure next fetch cannot be short-circuited by in-memory "already loaded" state.
         _hasLoadedForCurrentUser = false;
       }
-      await loadBalance(userId, forceRefresh: forceRefresh);
+      await loadBalance(
+        userId,
+        forceRefresh: forceRefresh,
+        notifyLoading: notifyBalanceLoading,
+      );
     }
 
     final refreshUser = refreshUserCallback;
@@ -981,10 +1550,12 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   /// Call only while [PointBalanceSyncLock.run] already holds the queue (e.g. from
   /// [AuthProvider.applyPointsBalanceSnapshot] or nested canonical work).
   ///
-  /// Returns `false` when the snapshot is stale by sequence/time, or when a balance
+  /// Returns `false` when the snapshot is stale by sequence/time **for non-upgrades**, or when a balance
   /// **downgrade** would apply but neither [snapshotSequence] nor [snapshotObservedAt]
   /// proves the snapshot is strictly newer than the last accepted metadata (avoids
   /// lagging API ghosts while allowing another device’s spend to sync when metadata is fresh).
+  /// Ledger **upgrades** (`currentBalance` strictly greater than memory) bypass stale sequence/time
+  /// rejection so poll/push paths cannot be blocked by non-monotonic txn ids.
   bool applyRemoteBalanceSnapshotUnlocked({
     required String userId,
     required int currentBalance,
@@ -1003,16 +1574,31 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
 
     _currentUserId = userId;
 
+    final int? memoryBalance = _balance?.currentBalance;
+    final bool isLedgerUpgrade =
+        memoryBalance == null || currentBalance > memoryBalance;
+
     final BigInt? seqLast = _lastAcceptedRemoteSnapshotSequence;
+    /*
+    Old Code: stale sequence rejected even when remote balance was a strict upgrade
+    (e.g. poll used DB txn id as “sequence” vs higher FCM seq).
     if (snapshotSequence != null && seqLast != null) {
       if (snapshotSequence < seqLast) {
-        Logger.info(
-          'PointProvider.applyRemoteBalanceSnapshot: ignore stale sequence '
-          'seq=$snapshotSequence < lastSeq=$seqLast (userId=$userId)',
-          tag: 'PointProvider',
-        );
+        ...
         return false;
       }
+    }
+    */
+    if (!isLedgerUpgrade &&
+        snapshotSequence != null &&
+        seqLast != null &&
+        snapshotSequence < seqLast) {
+      Logger.info(
+        'PointProvider.applyRemoteBalanceSnapshot: ignore stale sequence '
+        'seq=$snapshotSequence < lastSeq=$seqLast (userId=$userId)',
+        tag: 'PointProvider',
+      );
+      return false;
     }
 
     // Chaos guard: ledger `sequence_id` is authoritative; replica/wall-clock fields
@@ -1023,7 +1609,18 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         snapshotSequence > seqLast;
 
     final DateTime? tsLast = _lastAcceptedRemoteSnapshotObservedAt;
+    /*
+    Old Code: stale observation time rejected even for strict balance upgrades.
     if (!sequenceStrictlyAheadOfLast &&
+        snapshotObservedAt != null &&
+        tsLast != null) {
+      if (snapshotObservedAt.isBefore(tsLast)) {
+        return false;
+      }
+    }
+    */
+    if (!isLedgerUpgrade &&
+        !sequenceStrictlyAheadOfLast &&
         snapshotObservedAt != null &&
         tsLast != null) {
       if (snapshotObservedAt.isBefore(tsLast)) {
@@ -1037,7 +1634,6 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
       }
     }
 
-    final int? memoryBalance = _balance?.currentBalance;
     if (memoryBalance != null && currentBalance < memoryBalance) {
       if (!_snapshotMetadataStrictlyNewerThanLast(
         snapshotSequence: snapshotSequence,
@@ -1074,11 +1670,27 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     final DateTime snapshotClock = DateTime.now();
     _lastPushBalanceSnapshotAt = snapshotClock;
 
+    /*
+    Old Code: always overwrote last seq/ts from snapshot — could lower seq after upgrade bypass.
     if (snapshotSequence != null) {
       _lastAcceptedRemoteSnapshotSequence = snapshotSequence;
     }
     if (snapshotObservedAt != null) {
       _lastAcceptedRemoteSnapshotObservedAt = snapshotObservedAt;
+    }
+    */
+    // New Code: monotonic metadata only — never regress causal ordering state.
+    if (snapshotSequence != null) {
+      final BigInt? prevSeq = _lastAcceptedRemoteSnapshotSequence;
+      if (prevSeq == null || snapshotSequence >= prevSeq) {
+        _lastAcceptedRemoteSnapshotSequence = snapshotSequence;
+      }
+    }
+    if (snapshotObservedAt != null) {
+      final DateTime? prevTs = _lastAcceptedRemoteSnapshotObservedAt;
+      if (prevTs == null || !snapshotObservedAt.isBefore(prevTs)) {
+        _lastAcceptedRemoteSnapshotObservedAt = snapshotObservedAt;
+      }
     }
 
     _hasLoadedForCurrentUser = true;

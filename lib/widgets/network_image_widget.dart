@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
+import '../utils/app_config.dart';
+
 class NetworkImageWidget extends StatelessWidget {
   final String imageUrl;
   final double? height;
@@ -41,11 +43,22 @@ class NetworkImageWidget extends StatelessWidget {
 
     // On web, prefer Image.network to avoid service worker/cache conflicts
     if (kIsWeb) {
+      // OLD CODE: Image.network without headers (engine default User-Agent).
+      // return Image.network(
+      //   resolvedUrl,
+      //   height: height,
+      //   width: width,
+      //   fit: fit,
+      //   loadingBuilder: ...
       return Image.network(
         resolvedUrl,
         height: height,
         width: width,
         fit: fit,
+        headers: const <String, String>{
+          'User-Agent': AppConfig.defaultUserAgent,
+          'Accept': 'image/*',
+        },
         loadingBuilder: (context, child, loadingProgress) {
           if (loadingProgress == null) return child;
           return _buildLoadingIndicator();
@@ -58,6 +71,7 @@ class NetworkImageWidget extends StatelessWidget {
 
     // For mobile/desktop, use CachedNetworkImage (falls back to Image.network on error)
     try {
+      // OLD CODE: CachedNetworkImage without httpHeaders.
       return CachedNetworkImage(
         imageUrl: resolvedUrl,
         height: height,
@@ -67,6 +81,10 @@ class NetworkImageWidget extends StatelessWidget {
         errorWidget: (context, url, error) => _buildFallbackImage(),
         fadeInDuration: const Duration(milliseconds: 300),
         fadeOutDuration: const Duration(milliseconds: 100),
+        httpHeaders: const <String, String>{
+          'User-Agent': AppConfig.defaultUserAgent,
+          'Accept': 'image/*',
+        },
       );
     } catch (e) {
       return Image.network(
@@ -74,6 +92,10 @@ class NetworkImageWidget extends StatelessWidget {
         height: height,
         width: width,
         fit: fit,
+        headers: const <String, String>{
+          'User-Agent': AppConfig.defaultUserAgent,
+          'Accept': 'image/*',
+        },
         loadingBuilder: (context, child, loadingProgress) {
           if (loadingProgress == null) return child;
           return _buildLoadingIndicator();
@@ -150,9 +172,7 @@ class NetworkImageWidget extends StatelessWidget {
         child: SizedBox(
           width: 20,
           height: 20,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-          ),
+          child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
     );

@@ -19,16 +19,26 @@ class _WalletAuthListenerState extends State<WalletAuthListener> {
   String? _lastUserId;
   bool _hasInitialized = false;
 
+  /// Avoids queuing a post-frame callback on every [didChangeDependencies] rebuild.
+  bool _didScheduleDependenciesPostFrame = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _checkAuthAndLoadWallet();
-  }
-
-  @override
-  void didUpdateWidget(WalletAuthListener oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _checkAuthAndLoadWallet();
+    // OLD CODE:
+    // WidgetsBinding.instance.addPostFrameCallback((_) {
+    //   if (mounted) {
+    //     _checkAuthAndLoadWallet();
+    //   }
+    // });
+    if (!_didScheduleDependenciesPostFrame) {
+      _didScheduleDependenciesPostFrame = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _checkAuthAndLoadWallet();
+        }
+      });
+    }
   }
 
   void _checkAuthAndLoadWallet() {
@@ -40,40 +50,67 @@ class _WalletAuthListenerState extends State<WalletAuthListener> {
     if (authProvider.isAuthenticated && authProvider.user != null) {
       final userId = authProvider.user!.id.toString();
 
-      // Only load if this is a new user or first initialization
       if (_lastUserId != userId || !_hasInitialized) {
+        final previousUserId = _lastUserId;
         _lastUserId = userId;
         _hasInitialized = true;
 
-        Logger.info('User authenticated, loading wallet balance for user: $userId',
-            tag: 'WalletAuthListener');
+        if (previousUserId != null && previousUserId != userId) {
+          Logger.info(
+            'User account changed from $previousUserId to $userId, reloading wallet balance',
+            tag: 'WalletAuthListener',
+          );
+        } else {
+          Logger.info(
+            'User authenticated, loading wallet balance for user: $userId',
+            tag: 'WalletAuthListener',
+          );
+        }
 
-        // Load balance asynchronously without blocking UI
-        walletProvider.handleAuthStateChange(
-          isAuthenticated: true,
-          userId: userId,
-        ).catchError((e) {
-          Logger.error('Error loading wallet on auth: $e',
-              tag: 'WalletAuthListener', error: e);
-        });
+        walletProvider
+            .handleAuthStateChange(isAuthenticated: true, userId: userId)
+            .catchError((e) {
+              Logger.error(
+                'Error loading wallet on auth: $e',
+                tag: 'WalletAuthListener',
+                error: e,
+              );
+            });
       }
     } else if (_lastUserId != null) {
-      // User logged out
       _lastUserId = null;
       _hasInitialized = false;
-      walletProvider.handleAuthStateChange(
-        isAuthenticated: false,
-        userId: null,
-      ).catchError((e) {
-        Logger.error('Error clearing wallet on logout: $e',
-            tag: 'WalletAuthListener', error: e);
-      });
+      walletProvider
+          .handleAuthStateChange(isAuthenticated: false, userId: null)
+          .catchError((e) {
+            Logger.error(
+              'Error clearing wallet on logout: $e',
+              tag: 'WalletAuthListener',
+              error: e,
+            );
+          });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return widget.child;
+    return Consumer<AuthProvider>(
+      builder: (context, authProvider, child) {
+        final isAuthenticated = authProvider.isAuthenticated;
+        final currentUserId = authProvider.user?.id.toString();
+
+        if ((isAuthenticated && currentUserId != _lastUserId) ||
+            (!isAuthenticated && _lastUserId != null) ||
+            (isAuthenticated && !_hasInitialized)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              _checkAuthAndLoadWallet();
+            }
+          });
+        }
+
+        return widget.child;
+      },
+    );
   }
 }
-

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/network_image_service.dart';
+import '../utils/app_config.dart';
 
 /// Robust Image Widget with comprehensive error handling and network optimization
 class RobustImageWidget extends StatefulWidget {
@@ -55,22 +56,22 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
   Future<void> _initializeImage() async {
     if (widget.imageUrl.isEmpty) {
       if (mounted) {
-      setState(() {
-        _hasError = true;
-        _errorMessage = 'Empty image URL';
-        _isLoading = false;
-      });
+        setState(() {
+          _hasError = true;
+          _errorMessage = 'Empty image URL';
+          _isLoading = false;
+        });
       }
       return;
     }
 
     // OPTIMIZED: Single setState call instead of multiple
     if (mounted) {
-    setState(() {
-      _isLoading = true;
-      _hasError = false;
-      _errorMessage = null;
-    });
+      setState(() {
+        _isLoading = true;
+        _hasError = false;
+        _errorMessage = null;
+      });
     }
 
     // Get optimized URL
@@ -89,12 +90,14 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
     // Only do connectivity check if cache is expired
     if (widget.imageUrl.startsWith('http')) {
       final now = DateTime.now();
-      final shouldCheckConnectivity = _connectivityCheckTime == null ||
+      final shouldCheckConnectivity =
+          _connectivityCheckTime == null ||
           now.difference(_connectivityCheckTime!) > _connectivityCacheDuration;
 
       if (shouldCheckConnectivity) {
         try {
-          _cachedConnectivityState = await NetworkImageService.testConnectivity();
+          _cachedConnectivityState =
+              await NetworkImageService.testConnectivity();
           _connectivityCheckTime = now;
         } catch (e) {
           // If connectivity check fails, assume connected and let image loading handle it
@@ -120,9 +123,9 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
 
     // OPTIMIZED: Single setState call at the end
     if (mounted) {
-    setState(() {
-      _isLoading = false;
-    });
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -154,8 +157,15 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
           }
           return widget.errorWidget ?? _buildErrorWidget();
         },
-        httpHeaders: const {
-          'User-Agent': 'HomeAid-Flutter-App/1.0',
+        // OLD CODE:
+        // httpHeaders: const {
+        //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+        //   'Accept': 'image/*',
+        //   'Accept-Encoding': 'gzip, deflate',
+        //   'Connection': 'keep-alive',
+        // },
+        httpHeaders: const <String, String>{
+          'User-Agent': AppConfig.defaultUserAgent,
           'Accept': 'image/*',
           'Accept-Encoding': 'gzip, deflate',
           'Connection': 'keep-alive',
@@ -208,10 +218,7 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
             const SizedBox(height: 8),
             Text(
               'Loading...',
-              style: TextStyle(
-                fontSize: 10,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 10, color: Colors.grey[600]),
             ),
           ],
         ),
@@ -240,10 +247,7 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
             const SizedBox(height: 4),
             Text(
               _errorMessage ?? 'Error',
-              style: TextStyle(
-                fontSize: 8,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 8, color: Colors.grey[600]),
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -255,10 +259,7 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
                   widget.imageUrl.length > 20
                       ? '${widget.imageUrl.substring(0, 20)}...'
                       : widget.imageUrl,
-                  style: TextStyle(
-                    fontSize: 6,
-                    color: Colors.grey[500],
-                  ),
+                  style: TextStyle(fontSize: 6, color: Colors.grey[500]),
                   textAlign: TextAlign.center,
                 ),
               ),

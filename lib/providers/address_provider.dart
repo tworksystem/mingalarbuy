@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,6 +9,9 @@ class AddressProvider with ChangeNotifier {
   bool _isLoading = false;
   String? _errorMessage;
   static const String _addressesKey = 'user_addresses';
+
+  int _hydrateEpoch = 0;
+  String? _authBoundUserId;
 
   // Getters
   List<Address> get addresses => List.unmodifiable(_addresses);
@@ -39,23 +43,61 @@ class AddressProvider with ChangeNotifier {
   List<Address> get otherAddresses => getAddressesByType(AddressType.other);
 
   AddressProvider() {
-    _loadAddressesFromStorage();
+    // OLD CODE: eager storage load without session invalidation.
+    // _loadAddressesFromStorage();
+    Future.microtask(() => _loadAddressesFromStorage());
+  }
+
+  Future<void> handleAuthStateChange({
+    required bool isAuthenticated,
+    String? userId,
+  }) async {
+    if (!isAuthenticated) {
+      _authBoundUserId = null;
+      _hydrateEpoch++;
+      _addresses.clear();
+      await _saveAddressesToStorage();
+      _clearError();
+      notifyListeners();
+      return;
+    }
+    if (userId == null) return;
+    final switched = _authBoundUserId != null && _authBoundUserId != userId;
+    _authBoundUserId = userId;
+    if (switched) {
+      _hydrateEpoch++;
+      _addresses.clear();
+      await _saveAddressesToStorage();
+    }
+    await _loadAddressesFromStorage(restrictToUserId: userId);
   }
 
   /// Load addresses from SharedPreferences
-  Future<void> _loadAddressesFromStorage() async {
+  Future<void> _loadAddressesFromStorage({String? restrictToUserId}) async {
+    final loadToken = _hydrateEpoch;
     _setLoading(true);
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (loadToken != _hydrateEpoch) return;
       final addressesJson = prefs.getString(_addressesKey);
 
       if (addressesJson != null) {
         final List<dynamic> addressesData = json.decode(addressesJson);
+        if (loadToken != _hydrateEpoch) return;
         _addresses = addressesData
             .map((address) => Address.fromJson(address as Map<String, dynamic>))
             .toList();
+        if (restrictToUserId != null) {
+          _addresses = _addresses
+              .where((a) => a.userId == restrictToUserId)
+              .toList();
+          await _saveAddressesToStorage();
+        }
         print(
-            'DEBUG: Addresses loaded from storage - ${_addresses.length} addresses');
+          'DEBUG: Addresses loaded from storage - ${_addresses.length} addresses',
+        );
+      } else if (loadToken == _hydrateEpoch) {
+        _addresses = [];
       }
     } catch (e) {
       print('Error loading addresses from storage: $e');
@@ -69,11 +111,13 @@ class AddressProvider with ChangeNotifier {
   Future<void> _saveAddressesToStorage() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final addressesJson =
-          json.encode(_addresses.map((address) => address.toJson()).toList());
+      final addressesJson = json.encode(
+        _addresses.map((address) => address.toJson()).toList(),
+      );
       await prefs.setString(_addressesKey, addressesJson);
       print(
-          'DEBUG: Addresses saved to storage - ${_addresses.length} addresses');
+        'DEBUG: Addresses saved to storage - ${_addresses.length} addresses',
+      );
     } catch (e) {
       print('Error saving addresses to storage: $e');
     }
@@ -181,8 +225,9 @@ class AddressProvider with ChangeNotifier {
     _clearError();
 
     try {
-      final addressIndex =
-          _addresses.indexWhere((address) => address.id == addressId);
+      final addressIndex = _addresses.indexWhere(
+        (address) => address.id == addressId,
+      );
       if (addressIndex == -1) {
         _setError('Address not found');
         return null;
@@ -222,7 +267,8 @@ class AddressProvider with ChangeNotifier {
       // Validate updated address
       if (!updatedAddress.isValid) {
         _setError(
-            'Invalid address: ${updatedAddress.validationErrors.join(', ')}');
+          'Invalid address: ${updatedAddress.validationErrors.join(', ')}',
+        );
         return null;
       }
 
@@ -247,8 +293,9 @@ class AddressProvider with ChangeNotifier {
     _clearError();
 
     try {
-      final addressIndex =
-          _addresses.indexWhere((address) => address.id == addressId);
+      final addressIndex = _addresses.indexWhere(
+        (address) => address.id == addressId,
+      );
       if (addressIndex == -1) {
         _setError('Address not found');
         return false;
@@ -275,8 +322,9 @@ class AddressProvider with ChangeNotifier {
     _clearError();
 
     try {
-      final addressIndex =
-          _addresses.indexWhere((address) => address.id == addressId);
+      final addressIndex = _addresses.indexWhere(
+        (address) => address.id == addressId,
+      );
       if (addressIndex == -1) {
         _setError('Address not found');
         return false;
@@ -335,6 +383,7 @@ class AddressProvider with ChangeNotifier {
 
   /// Clear all addresses (for testing)
   Future<void> clearAllAddresses() async {
+    _hydrateEpoch++;
     _setLoading(true);
     try {
       _addresses.clear();
@@ -369,6 +418,6 @@ class AddressProvider with ChangeNotifier {
 
   /// Force refresh addresses from storage
   Future<void> refreshAddresses() async {
-    await _loadAddressesFromStorage();
+    await _loadAddressesFromStorage(restrictToUserId: _authBoundUserId);
   }
 }

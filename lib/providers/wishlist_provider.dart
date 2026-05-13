@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +11,9 @@ class WishlistProvider with ChangeNotifier {
   String? _errorMessage;
   static const String _wishlistKey = 'user_wishlist';
 
+  int _hydrateEpoch = 0;
+  String? _authBoundUserId;
+
   // Getters
   List<WishlistItem> get items => List.unmodifiable(_items);
   bool get isLoading => _isLoading;
@@ -19,22 +23,58 @@ class WishlistProvider with ChangeNotifier {
   int get itemCount => _items.length;
 
   WishlistProvider() {
-    _loadWishlistFromStorage();
+    // OLD CODE: synchronous storage load with no session epoch / auth binding.
+    // _loadWishlistFromStorage();
+    Future.microtask(() => _loadWishlistFromStorage());
+  }
+
+  /// Clears or reloads wishlist when auth session changes (logout / account switch).
+  Future<void> handleAuthStateChange({
+    required bool isAuthenticated,
+    String? userId,
+  }) async {
+    if (!isAuthenticated) {
+      _authBoundUserId = null;
+      _hydrateEpoch++;
+      _items.clear();
+      await _saveWishlistToStorage();
+      _clearError();
+      notifyListeners();
+      return;
+    }
+    if (userId == null) return;
+    final switched = _authBoundUserId != null && _authBoundUserId != userId;
+    _authBoundUserId = userId;
+    if (switched) {
+      _hydrateEpoch++;
+      _items.clear();
+      await _saveWishlistToStorage();
+    }
+    await _loadWishlistFromStorage(restrictToUserId: userId);
   }
 
   /// Load wishlist from SharedPreferences
-  Future<void> _loadWishlistFromStorage() async {
+  Future<void> _loadWishlistFromStorage({String? restrictToUserId}) async {
+    final loadToken = _hydrateEpoch;
     _setLoading(true);
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (loadToken != _hydrateEpoch) return;
       final wishlistJson = prefs.getString(_wishlistKey);
 
       if (wishlistJson != null) {
         final List<dynamic> wishlistData = json.decode(wishlistJson);
+        if (loadToken != _hydrateEpoch) return;
         _items = wishlistData
             .map((item) => WishlistItem.fromJson(item as Map<String, dynamic>))
             .toList();
+        if (restrictToUserId != null) {
+          _items = _items.where((i) => i.userId == restrictToUserId).toList();
+          await _saveWishlistToStorage();
+        }
         print('DEBUG: Wishlist loaded from storage - ${_items.length} items');
+      } else if (loadToken == _hydrateEpoch) {
+        _items = [];
       }
     } catch (e) {
       print('Error loading wishlist from storage: $e');
@@ -48,8 +88,9 @@ class WishlistProvider with ChangeNotifier {
   Future<void> _saveWishlistToStorage() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final wishlistJson =
-          json.encode(_items.map((item) => item.toJson()).toList());
+      final wishlistJson = json.encode(
+        _items.map((item) => item.toJson()).toList(),
+      );
       await prefs.setString(_wishlistKey, wishlistJson);
       print('DEBUG: Wishlist saved to storage - ${_items.length} items');
     } catch (e) {
@@ -178,6 +219,7 @@ class WishlistProvider with ChangeNotifier {
 
   /// Clear entire wishlist
   Future<bool> clearWishlist() async {
+    _hydrateEpoch++;
     _setLoading(true);
     _clearError();
 
@@ -304,6 +346,6 @@ class WishlistProvider with ChangeNotifier {
 
   /// Force refresh wishlist from storage
   Future<void> refreshWishlist() async {
-    await _loadWishlistFromStorage();
+    await _loadWishlistFromStorage(restrictToUserId: _authBoundUserId);
   }
 }

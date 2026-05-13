@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../api_service.dart';
+import '../utils/app_config.dart';
 
 /// Stub implementation for non-web platforms
 class WebNetworkService {
@@ -33,7 +34,8 @@ class WebNetworkService {
 
   static bool get isWeb => false;
 
-  static String get userAgent => 'HomeAid-Flutter-App/1.0';
+  // OLD CODE: static String get userAgent => 'HomeAid-Flutter-App/1.0';
+  static String get userAgent => AppConfig.defaultUserAgent;
 
   static String get currentOrigin => 'unknown';
 
@@ -55,9 +57,7 @@ class WebNetworkService {
       () => ApiService.getUri(
         url,
         skipAuth: true,
-        headers: headers != null
-            ? Map<String, dynamic>.from(headers)
-            : null,
+        headers: headers != null ? Map<String, dynamic>.from(headers) : null,
       ),
       context: 'webNetworkStub.get',
       timeout: timeout ?? _timeout,
@@ -74,9 +74,7 @@ class WebNetworkService {
       () => ApiService.postUri(
         url,
         skipAuth: true,
-        headers: headers != null
-            ? Map<String, dynamic>.from(headers)
-            : null,
+        headers: headers != null ? Map<String, dynamic>.from(headers) : null,
         data: body,
       ),
       context: 'webNetworkStub.post',

@@ -204,6 +204,10 @@ class EngagementProvider with ChangeNotifier {
   Timer? _pollingNotifyThrottleTimer;
   bool _pollingNotifyPending = false;
   static const Duration _pollingNotifyMinInterval = Duration(milliseconds: 200);
+
+  /// Minimum wall-clock spacing between full-feed network polls (timer + restarts).
+  static const Duration _minFullFeedPollSpacing = Duration(seconds: 8);
+  DateTime? _lastEngagementFullFeedPollAt;
   final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
   final Map<String, Map<String, int?>> _pollSessionReceiptCache =
       <String, Map<String, int?>>{};
@@ -224,7 +228,12 @@ class EngagementProvider with ChangeNotifier {
   */
   // New Code: reduce polling pressure to prevent near-continuous feed calls.
   static const Duration _pollingInterval = Duration(seconds: 60);
-  static const Duration _fastPollingInterval = Duration(seconds: 2);
+  /*
+  // OLD CODE:
+  // static const Duration _fastPollingInterval = Duration(seconds: 2);
+  */
+  // New Code: reduce burst traffic toward WAF / rate limits (still 'fast' vs 15s/60s).
+  static const Duration _fastPollingInterval = Duration(seconds: 10);
   static const int _fastPollingCloseThresholdSeconds = 20;
 
   List<EngagementItem> get items => _items;
@@ -421,6 +430,7 @@ class EngagementProvider with ChangeNotifier {
         );
         // Stop polling for old user
         _stopPolling();
+        _lastEngagementFullFeedPollAt = null;
 
         // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန်
         // _items.clear();
@@ -1560,6 +1570,7 @@ class EngagementProvider with ChangeNotifier {
   void clear() {
     final cacheUserId = _currentUserId;
     _stopPolling();
+    _lastEngagementFullFeedPollAt = null;
 
     // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန်
     // _items.clear();
@@ -1797,6 +1808,19 @@ class EngagementProvider with ChangeNotifier {
       }
 
       // Full feed refresh: poll even when empty (detects create after delete-all)
+      final now = DateTime.now();
+      if (_lastEngagementFullFeedPollAt != null &&
+          now.difference(_lastEngagementFullFeedPollAt!) <
+              _minFullFeedPollSpacing) {
+        app_logger.Logger.info(
+          'Skipping engagement feed poll: throttled '
+          '(min spacing ${_minFullFeedPollSpacing.inSeconds}s)',
+          tag: 'EngagementProvider',
+        );
+        return;
+      }
+      _lastEngagementFullFeedPollAt = now;
+
       try {
         final items = await EngagementService.getFeed(
           userId: userId,

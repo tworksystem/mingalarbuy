@@ -148,11 +148,17 @@ class PointService {
       );
 
   static Map<String, dynamic> _requestHeaders() {
-    return const <String, dynamic>{
+    // OLD CODE:
+    // return const <String, dynamic>{
+    //   'Content-Type': 'application/json',
+    //   'Accept': 'application/json',
+    //   'User-Agent':
+    //       'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+    // };
+    return <String, dynamic>{
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'User-Agent':
-          'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+      'User-Agent': AppConfig.defaultUserAgent,
     };
   }
 
@@ -185,6 +191,81 @@ class PointService {
       tag: 'PointService',
     );
     return true;
+  }
+
+  /// Optional non-negative int for embedded ledger rows (transaction list).
+  static int? _parseOptionalNonNegativeInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v < 0 ? null : v;
+    if (v is num) {
+      final i = v.toInt();
+      return i < 0 ? null : i;
+    }
+    final p = int.tryParse(v.toString().trim());
+    return (p != null && p >= 0) ? p : null;
+  }
+
+  /// Max running balance from embedded transaction previews when headline `current_balance` lags
+  /// (e.g. poll winner row shows [new_balance] 450000 while summary field still 442000).
+  static int? _maxRunningBalanceFromEmbeddedTransactions(
+    Map<String, dynamic> data,
+  ) {
+    final raw =
+        data['transactions'] ??
+        data['recent_transactions'] ??
+        data['ledger_preview'];
+    if (raw is! List || raw.isEmpty) return null;
+    int? maxBal;
+    for (var i = 0; i < raw.length; i++) {
+      final e = raw[i];
+      try {
+        if (e is! Map) continue;
+        final m = Map<String, dynamic>.from(e);
+        for (final k in const [
+          'new_balance',
+          'points_balance',
+          'balance_after',
+          'running_balance',
+          'current_balance',
+        ]) {
+          if (!m.containsKey(k)) continue;
+          final n = _parseOptionalNonNegativeInt(m[k]);
+          if (n != null && (maxBal == null || n > maxBal)) {
+            maxBal = n;
+          }
+        }
+      } catch (e, st) {
+        Logger.warning(
+          'Skipping malformed embedded ledger row at index=$i: $e',
+          tag: 'PointService',
+          error: e,
+          stackTrace: st,
+        );
+      }
+    }
+    return maxBal;
+  }
+
+  /*
+  Old Code: single private coalesce helper only — no shared API for embedded preview rule.
+  */
+  /// Same merge as [getPointBalance]: `max(headline current_balance, embedded row hints)`.
+  /// [PointProvider.loadBalance] applies balances produced by [getPointBalance], which uses this.
+  static int coalesceHeadlineWithEmbeddedLedgerPreview(
+    Map<String, dynamic> data,
+    int headlineBalance,
+  ) {
+    final hint = _maxRunningBalanceFromEmbeddedTransactions(data);
+    if (hint == null) return headlineBalance;
+    if (hint > headlineBalance) {
+      Logger.info(
+        'Point balance coalesce: headline=$headlineBalance embeddedMax=$hint '
+        '(using embedded snapshot)',
+        tag: 'PointService',
+      );
+      return hint;
+    }
+    return headlineBalance;
   }
 
   /// Authoritative ledger field: missing key ⇒ treat as unreadable payload (not zero).
@@ -332,6 +413,23 @@ class PointService {
           data = raw;
         }
 
+        /*
+        Old Code:
+        (no merge — headline-only balance)
+        */
+        // Merge embedded lists from root when wrapper omits them from inner `data`.
+        if (!data.containsKey('transactions') && raw['transactions'] is List) {
+          data['transactions'] = raw['transactions'];
+        }
+        if (!data.containsKey('recent_transactions') &&
+            raw['recent_transactions'] is List) {
+          data['recent_transactions'] = raw['recent_transactions'];
+        }
+        if (!data.containsKey('ledger_preview') &&
+            raw['ledger_preview'] is List) {
+          data['ledger_preview'] = raw['ledger_preview'];
+        }
+
         final int? mandatoryBalance = _tryParseMandatoryCurrentBalance(data);
         if (mandatoryBalance == null) {
           Logger.error(
@@ -347,9 +445,36 @@ class PointService {
           return null;
         }
 
+        /*
+        Old Code:
         final balance = PointBalance(
           userId: userId,
           currentBalance: mandatoryBalance,
+          lifetimeEarned: _parseBalanceInt(data, 'lifetime_earned'),
+          lifetimeRedeemed: _parseBalanceInt(data, 'lifetime_redeemed'),
+          lifetimeExpired: _parseBalanceInt(data, 'lifetime_expired'),
+          lastUpdated: _parseLastUpdatedOrNow(data['last_updated']),
+        );
+        */
+        int resolvedBalance = mandatoryBalance;
+        try {
+          resolvedBalance = coalesceHeadlineWithEmbeddedLedgerPreview(
+            data,
+            mandatoryBalance,
+          );
+        } catch (e, st) {
+          Logger.warning(
+            'Point balance embedded coalesce failed; using headline balance only '
+            '(userId=$userId): $e',
+            tag: 'PointService',
+            error: e,
+            stackTrace: st,
+          );
+        }
+
+        final balance = PointBalance(
+          userId: userId,
+          currentBalance: resolvedBalance,
           lifetimeEarned: _parseBalanceInt(data, 'lifetime_earned'),
           lifetimeRedeemed: _parseBalanceInt(data, 'lifetime_redeemed'),
           lifetimeExpired: _parseBalanceInt(data, 'lifetime_expired'),

@@ -572,6 +572,10 @@ class TWork_Poll_Auto_Run {
             $response_data['user_bet_pnp'] = (int) $user_bet_pnp;
             $response_data['user_detailed_bets'] = $user_detailed_bets; // SEND EXACT MAP TO APP
             $response_data['awarded_txn_id'] = (int) $awarded_txn_id;
+            // Hint for clients: winner resolved in-app but ledger row may not be credited yet (cron/throttled award).
+            $winner_pending_award = ($user_won && $points_earned <= 0);
+            $response_data['winner_pending_award'] = $winner_pending_award;
+            $response_data['force_balance_refresh'] = $winner_pending_award;
         }
 
         return new WP_REST_Response(array(

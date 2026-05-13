@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/network_image_service.dart';
+import '../utils/app_config.dart';
 
 /// Enhanced Product Image Widget with comprehensive error handling and debugging
 /// Handles both network and asset images with detailed error reporting
@@ -84,8 +85,15 @@ class ProductImageWidget extends StatelessWidget {
       fadeInDuration: const Duration(milliseconds: 300),
       fadeOutDuration: const Duration(milliseconds: 300),
       // Add HTTP headers for better compatibility
-      httpHeaders: const {
-        'User-Agent': 'HomeAid-Flutter-App/1.0',
+      // OLD CODE:
+      // httpHeaders: const {
+      //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+      //   'Accept': 'image/*',
+      //   'Accept-Encoding': 'gzip, deflate',
+      //   'Connection': 'keep-alive',
+      // },
+      httpHeaders: const <String, String>{
+        'User-Agent': AppConfig.defaultUserAgent,
         'Accept': 'image/*',
         'Accept-Encoding': 'gzip, deflate',
         'Connection': 'keep-alive',
@@ -146,10 +154,7 @@ class ProductImageWidget extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               'Loading...',
-              style: TextStyle(
-                fontSize: 10,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 10, color: Colors.grey[600]),
             ),
           ],
         ),
@@ -178,10 +183,7 @@ class ProductImageWidget extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               errorType,
-              style: TextStyle(
-                fontSize: 8,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 8, color: Colors.grey[600]),
               textAlign: TextAlign.center,
             ),
             if (debugMode && imageUrl.isNotEmpty)
@@ -191,10 +193,7 @@ class ProductImageWidget extends StatelessWidget {
                   imageUrl.length > 30
                       ? '${imageUrl.substring(0, 30)}...'
                       : imageUrl,
-                  style: TextStyle(
-                    fontSize: 6,
-                    color: Colors.grey[500],
-                  ),
+                  style: TextStyle(fontSize: 6, color: Colors.grey[500]),
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -224,10 +223,7 @@ class ProductImageWidget extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               reason,
-              style: TextStyle(
-                fontSize: 8,
-                color: Colors.grey[600],
-              ),
+              style: TextStyle(fontSize: 8, color: Colors.grey[600]),
               textAlign: TextAlign.center,
             ),
           ],

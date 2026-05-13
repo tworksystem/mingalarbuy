@@ -2237,6 +2237,60 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
   }
 }
 
+/// Bundles [PointProvider] slices used by Home My PNP so a single [Selector] minimizes rebuilds.
+@immutable
+class _MyPnpPointVm {
+  const _MyPnpPointVm({
+    required this.balance,
+    required this.pointIsLoading,
+    required this.pointErrorMessage,
+    required this.pointInitialHydrateDone,
+    required this.hasPointBalanceObject,
+    required this.isSyncingBalance,
+    required this.balanceSyncLoadingSubtitle,
+    required this.balanceSyncUsesExtendedPollWinUi,
+    required this.syncNoticeMessage,
+  });
+
+  final int balance;
+  final bool pointIsLoading;
+  final String? pointErrorMessage;
+  final bool pointInitialHydrateDone;
+  final bool hasPointBalanceObject;
+  final bool isSyncingBalance;
+  final String balanceSyncLoadingSubtitle;
+  final bool balanceSyncUsesExtendedPollWinUi;
+  final String? syncNoticeMessage;
+
+  @override
+  bool operator ==(Object other) {
+    return other is _MyPnpPointVm &&
+        other.balance == balance &&
+        other.pointIsLoading == pointIsLoading &&
+        other.pointErrorMessage == pointErrorMessage &&
+        other.pointInitialHydrateDone == pointInitialHydrateDone &&
+        other.hasPointBalanceObject == hasPointBalanceObject &&
+        other.isSyncingBalance == isSyncingBalance &&
+        other.balanceSyncLoadingSubtitle == balanceSyncLoadingSubtitle &&
+        other.balanceSyncUsesExtendedPollWinUi ==
+            balanceSyncUsesExtendedPollWinUi &&
+        other.syncNoticeMessage == syncNoticeMessage;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    balance,
+    pointIsLoading,
+    pointErrorMessage,
+    pointInitialHydrateDone,
+    hasPointBalanceObject,
+    isSyncingBalance,
+    balanceSyncLoadingSubtitle,
+    balanceSyncUsesExtendedPollWinUi,
+    syncNoticeMessage,
+  );
+}
+
 /// Creative My Point Widget - Displays user's point balance in a beautiful card
 class _MyPointWidget extends StatefulWidget {
   const _MyPointWidget({super.key});
@@ -2471,34 +2525,17 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
     );
     */
 
-    // Keep auth subscription at top level; point value uses Selector below.
+    // Keep auth subscription at top level; point slices use one Selector<_MyPnpPointVm> below.
     return Consumer<AuthProvider>(
       builder: (context, authProvider, _) {
-        final pointProvider = context.read<PointProvider>();
-        final int balanceFromProvider = context.select<PointProvider, int>(
-          (p) => p.currentBalance,
-        );
-        final bool pointIsLoading = context.select<PointProvider, bool>(
-          (p) => p.isLoading,
-        );
-        final String? pointErrorMessage = context
-            .select<PointProvider, String?>((p) => p.errorMessage);
-        final bool pointInitialHydrateDone = context
-            .select<PointProvider, bool>(
-              (p) => p.hasCompletedSessionInitialBalanceLoad,
-            );
-        final bool hasPointBalanceObject = context.select<PointProvider, bool>(
-          (p) => p.balance != null,
-        );
-        final bool isSyncingBalance = context.select<PointProvider, bool>(
-          (p) => p.isSyncingBalance,
-        );
-        Logger.info(
-          'DEBUG_SYNC: My PNP Widget Rebuilt with balance: $balanceFromProvider '
-          '(auth=${authProvider.isAuthenticated}, isLoading=$pointIsLoading, '
-          'error=$pointErrorMessage, isSyncingBalance=$isSyncingBalance)',
-          tag: 'MyPointWidget',
-        );
+        /*
+        Old Code — multiple independent [context.select] calls on [PointProvider] per build.
+
+        ...
+        (
+          ...
+        ); // duplicated slice reads — replaced by Selector<_MyPnpPointVm> for fewer rebuild deps.
+        */
         final theme = Theme.of(context);
         final colorScheme = theme.colorScheme;
 
@@ -2506,417 +2543,385 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
           return const SizedBox.shrink();
         }
 
-        final syncNotice = context.select<PointProvider, String?>(
-          (p) => p.syncNoticeMessage,
-        );
-        if (syncNotice != null && syncNotice.isNotEmpty) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            final msg = pointProvider.consumeSyncNoticeMessage();
-            if (msg == null || msg.isEmpty || !context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(msg),
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          });
-        }
+        final pointProvider = context.read<PointProvider>();
 
-        /*
+        return Selector<PointProvider, _MyPnpPointVm>(
+          selector: (_, p) => _MyPnpPointVm(
+            balance: p.currentBalance,
+            pointIsLoading: p.isLoading,
+            pointErrorMessage: p.errorMessage,
+            pointInitialHydrateDone: p.hasCompletedSessionInitialBalanceLoad,
+            hasPointBalanceObject: p.balance != null,
+            isSyncingBalance: p.isSyncingBalance,
+            balanceSyncLoadingSubtitle: p.balanceSyncLoadingSubtitle,
+            balanceSyncUsesExtendedPollWinUi:
+                p.balanceSyncUsesExtendedPollWinUi,
+            syncNoticeMessage: p.syncNoticeMessage,
+          ),
+          builder: (context, vm, _) {
+            Logger.info(
+              'DEBUG_SYNC: My PNP vm balance=${vm.balance} isLoading=${vm.pointIsLoading} '
+              'isSyncingBalance=${vm.isSyncingBalance}',
+              tag: 'MyPointWidget',
+            );
+
+            final syncNotice = vm.syncNoticeMessage;
+            if (syncNotice != null && syncNotice.isNotEmpty) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                final msg = pointProvider.consumeSyncNoticeMessage();
+                if (msg == null || msg.isEmpty || !context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(msg),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              });
+            }
+
+            /*
         // Old Code:
         final user = authProvider.user!;
         */
 
-        /*
+            /*
         // Old Code:
         // Priority 1: Check for my_point or my_points (primary source for display)
-        final myPointValue = user.customFields['my_point'] ??
-            user.customFields['my_points'] ??
-            user.customFields['My Point Value'];
+        ...
+        */
 
-        // Priority 2: Get points_balance from user object (alternative source)
-        final pointsBalanceFromBackend = user.customFields['points_balance'];
+            // Home My PNP — single source of truth: [PointProvider.currentBalance] only.
+            Logger.info(
+              'MyPointWidget - Using PointProvider balance directly: ${vm.balance}',
+              tag: 'MyPointWidget',
+            );
+            /*
+        // OLD CODE:
+        ...
+        */
 
-        // Fallback to PointProvider if backend value is not available
-        final balanceFromProvider = pointProvider.currentBalance;
-        Logger.info(
-            'MyPointWidget - DEBUG: PointProvider balance: $balanceFromProvider',
-            tag: 'MyPointWidget');
-
-        // Determine which value to use — use MAX of all sources so poll win / push snapshot
-        // is never hidden when one source updates before another.
-        final fromMyPoint = (myPointValue != null && myPointValue.isNotEmpty)
-            ? (int.tryParse(_extractBalanceValue(myPointValue)) ?? 0)
-            : 0;
-        final fromPointsBalance =
-            (pointsBalanceFromBackend != null && pointsBalanceFromBackend.isNotEmpty)
-                ? (int.tryParse(_extractBalanceValue(pointsBalanceFromBackend)) ?? 0)
+            // NEW FIX: Do not show misleading "0" before first trustworthy hydrate; use ··· / strip.
+            final bool trustworthyBalanceForUi =
+                vm.pointInitialHydrateDone || vm.hasPointBalanceObject;
+            final bool showBalancePlaceholder = !trustworthyBalanceForUi;
+            final int displayBalanceValue = trustworthyBalanceForUi
+                ? vm.balance
                 : 0;
-        final maxBalance = [
-          fromMyPoint,
-          fromPointsBalance,
-          balanceFromProvider,
-        ].reduce((a, b) => a > b ? a : b);
-        String displayBalance = maxBalance.toString();
+            final bool showLoadingStrip =
+                _isRefreshing || (vm.pointIsLoading && showBalancePlaceholder);
+            final bool showSyncWarning =
+                !showLoadingStrip &&
+                vm.pointErrorMessage != null &&
+                vm.pointErrorMessage!.isNotEmpty;
 
-        // Ensure we always have a valid display value (even if 0)
-        if (displayBalance.isEmpty || displayBalance == 'null') {
-          displayBalance = '0';
-        }
+            final bool myPnpPointsReconciling =
+                vm.isSyncingBalance ||
+                (vm.pointIsLoading && trustworthyBalanceForUi);
 
-        // Determine loading state - stop loading as soon as we have displayable data
-        // Show loading if:
-        // 1. We're actively refreshing, OR
-        // 2. PointProvider is loading AND we have no backend value (my_point/points_balance)
-        final hasBackendValue = (myPointValue != null &&
-                myPointValue.isNotEmpty &&
-                myPointValue != '0') ||
-            (pointsBalanceFromBackend != null &&
-                pointsBalanceFromBackend.isNotEmpty &&
-                pointsBalanceFromBackend != '0');
-        final isLoading = _isRefreshing ||
-            (pointProvider.isLoading && !hasBackendValue);
-        */
-
-        // Home My PNP — single source of truth: [PointProvider.currentBalance] only.
-        // Do not use [AuthProvider.userPointsBalance] here (meta can lag the points REST ledger).
-        Logger.info(
-          'MyPointWidget - Using PointProvider balance directly: $balanceFromProvider',
-          tag: 'MyPointWidget',
-        );
-        /*
-        // OLD CODE:
-        final String displayBalance = balanceFromProvider.toString();
-        */
-
-        /*
-        // OLD Code: first hydrate could hide a positive balance behind a loading bar
-        after an in-session snapshot (e.g. poll win) before session flag completed.
-        final isLoading = _isRefreshing ||
-            (pointProvider.isLoading &&
-                !pointProvider.hasCompletedSessionInitialBalanceLoad);
-        */
-        /*
-        // OLD CODE:
-        // New Code: if we already have a positive balance, show it immediately.
-        final bool awaitingInitialHydrate =
-            !pointProvider.hasCompletedSessionInitialBalanceLoad;
-        final bool hasDisplayableBalance = pointProvider.currentBalance > 0;
-        final isLoading = _isRefreshing ||
-            (pointProvider.isLoading &&
-                awaitingInitialHydrate &&
-                !hasDisplayableBalance);
-        */
-
-        // NEW FIX: Do not show misleading "0" before first trustworthy hydrate; use ··· / strip.
-        final bool trustworthyBalanceForUi =
-            pointInitialHydrateDone || hasPointBalanceObject;
-        final bool showBalancePlaceholder = !trustworthyBalanceForUi;
-        final int displayBalanceValue = trustworthyBalanceForUi
-            ? balanceFromProvider
-            : 0;
-        final bool showLoadingStrip =
-            _isRefreshing || (pointIsLoading && showBalancePlaceholder);
-        final bool showSyncWarning =
-            !showLoadingStrip &&
-            pointErrorMessage != null &&
-            pointErrorMessage.isNotEmpty;
-
-        final String balanceSyncSubtitle = context
-            .select<PointProvider, String>((p) => p.balanceSyncLoadingSubtitle);
-        final bool balanceSyncStrictUi = context.select<PointProvider, bool>(
-          (p) => p.balanceSyncUsesExtendedPollWinUi,
-        );
-        final bool myPnpPointsReconciling =
-            isSyncingBalance || (pointIsLoading && trustworthyBalanceForUi);
-
-        return RepaintBoundary(
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  colorScheme.primary.withValues(alpha: 0.1),
-                  colorScheme.secondary.withValues(alpha: 0.05),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: colorScheme.primary.withValues(alpha: 0.2),
-                width: 1.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: colorScheme.primary.withValues(alpha: 0.1),
-                  blurRadius: 12,
-                  spreadRadius: 0,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Material(
-              color: Colors.transparent,
-              child: AbsorbPointer(
-                absorbing: myPnpPointsReconciling,
-                child: InkWell(
-                  onTap: () {
-                    // Navigate to My Points page (Point History with Exchange Process)
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const PointHistoryPage(),
-                      ),
-                    );
-                  },
+            return RepaintBoundary(
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      colorScheme.primary.withValues(alpha: 0.1),
+                      colorScheme.secondary.withValues(alpha: 0.05),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
                   borderRadius: BorderRadius.circular(20),
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Row(
-                      children: [
-                        // Icon with gradient background
-                        Container(
-                          width: 56,
-                          height: 56,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                colorScheme.primary,
-                                colorScheme.secondary,
-                              ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                            borderRadius: BorderRadius.circular(16),
-                            boxShadow: [
-                              BoxShadow(
-                                color: colorScheme.primary.withValues(
-                                  alpha: 0.3,
-                                ),
-                                blurRadius: 8,
-                                spreadRadius: 0,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
+                  border: Border.all(
+                    color: colorScheme.primary.withValues(alpha: 0.2),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: colorScheme.primary.withValues(alpha: 0.1),
+                      blurRadius: 12,
+                      spreadRadius: 0,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: AbsorbPointer(
+                    absorbing: myPnpPointsReconciling,
+                    child: InkWell(
+                      onTap: () {
+                        // Navigate to My Points page (Point History with Exchange Process)
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const PointHistoryPage(),
                           ),
-                          child: const Icon(
-                            Icons.account_balance_wallet_rounded,
-                            color: Colors.white,
-                            size: 28,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        // Point balance info
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                'My PNP',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  color: colorScheme.onSurface.withValues(
-                                    alpha: 0.6,
-                                  ),
-                                  fontWeight: FontWeight.w500,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              if (showLoadingStrip)
-                                SizedBox(
-                                  height: 24,
-                                  width: 80,
-                                  child: LinearProgressIndicator(
-                                    backgroundColor:
-                                        colorScheme.surfaceContainerHighest,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      colorScheme.primary,
-                                    ),
-                                    minHeight: 2,
-                                  ),
-                                )
-                              else if (showBalancePlaceholder)
-                                SizedBox(
-                                  height: 32,
-                                  child: Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Text(
-                                      '···',
-                                      style: theme.textTheme.headlineMedium
-                                          ?.copyWith(
-                                            color: colorScheme.primary,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 28,
-                                            height: 1.2,
-                                            letterSpacing: 6,
-                                          ),
-                                    ),
-                                  ),
-                                )
-                              else if (isSyncingBalance)
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      height: 28,
-                                      width: 140,
-                                      child: Shimmer.fromColors(
-                                        baseColor:
-                                            colorScheme.surfaceContainerHighest,
-                                        highlightColor: colorScheme.primary
-                                            .withValues(
-                                              alpha: balanceSyncStrictUi
-                                                  ? 0.42
-                                                  : 0.25,
-                                            ),
-                                        period: Duration(
-                                          milliseconds: balanceSyncStrictUi
-                                              ? 700
-                                              : 1300,
-                                        ),
-                                        child: Container(
-                                          height: 26,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white,
-                                            borderRadius: BorderRadius.circular(
-                                              8,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      balanceSyncSubtitle,
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(
-                                            color: colorScheme.onSurface
-                                                .withValues(alpha: 0.55),
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                    ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(20),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Row(
+                          children: [
+                            // Icon with gradient background
+                            Container(
+                              width: 56,
+                              height: 56,
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [
+                                    colorScheme.primary,
+                                    colorScheme.secondary,
                                   ],
-                                )
-                              else
-                                // Display PointProvider balance (canonical).
-                                Opacity(
-                                  opacity:
-                                      (myPnpPointsReconciling &&
-                                          !isSyncingBalance)
-                                      ? 0.48
-                                      : 1.0,
-                                  child: Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.baseline,
-                                    textBaseline: TextBaseline.alphabetic,
-                                    children: [
-                                      Text(
-                                        'ⓟ',
-                                        style: theme.textTheme.bodyMedium
-                                            ?.copyWith(
-                                              color: colorScheme.onSurface
-                                                  .withValues(alpha: 0.7),
-                                              fontWeight: FontWeight.w500,
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                ),
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: colorScheme.primary.withValues(
+                                      alpha: 0.3,
+                                    ),
+                                    blurRadius: 8,
+                                    spreadRadius: 0,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.account_balance_wallet_rounded,
+                                color: Colors.white,
+                                size: 28,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            // Point balance info
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    'My PNP',
+                                    style: theme.textTheme.labelMedium
+                                        ?.copyWith(
+                                          color: colorScheme.onSurface
+                                              .withValues(alpha: 0.6),
+                                          fontWeight: FontWeight.w500,
+                                          letterSpacing: 0.5,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  if (showLoadingStrip)
+                                    SizedBox(
+                                      height: 24,
+                                      width: 80,
+                                      child: LinearProgressIndicator(
+                                        backgroundColor:
+                                            colorScheme.surfaceContainerHighest,
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                              colorScheme.primary,
                                             ),
+                                        minHeight: 2,
                                       ),
-                                      const SizedBox(width: 6),
+                                    )
+                                  else if (showBalancePlaceholder)
+                                    SizedBox(
+                                      height: 32,
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text(
+                                          '···',
+                                          style: theme.textTheme.headlineMedium
+                                              ?.copyWith(
+                                                color: colorScheme.primary,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 28,
+                                                height: 1.2,
+                                                letterSpacing: 6,
+                                              ),
+                                        ),
+                                      ),
+                                    )
+                                  else if (vm.isSyncingBalance)
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                          height: 28,
+                                          width: 140,
+                                          child: Shimmer.fromColors(
+                                            baseColor: colorScheme
+                                                .surfaceContainerHighest,
+                                            highlightColor: colorScheme.primary
+                                                .withValues(
+                                                  alpha:
+                                                      vm.balanceSyncUsesExtendedPollWinUi
+                                                      ? 0.42
+                                                      : 0.25,
+                                                ),
+                                            period: Duration(
+                                              milliseconds:
+                                                  vm.balanceSyncUsesExtendedPollWinUi
+                                                  ? 700
+                                                  : 1300,
+                                            ),
+                                            child: Container(
+                                              height: 26,
+                                              decoration: BoxDecoration(
+                                                color: Colors.white,
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          vm.balanceSyncLoadingSubtitle,
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                                color: colorScheme.onSurface
+                                                    .withValues(alpha: 0.55),
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                        ),
+                                      ],
+                                    )
+                                  else
+                                    Opacity(
+                                      opacity:
+                                          (myPnpPointsReconciling &&
+                                              !vm.isSyncingBalance)
+                                          ? 0.48
+                                          : 1.0,
+                                      child: Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.baseline,
+                                        textBaseline: TextBaseline.alphabetic,
+                                        children: [
+                                          Text(
+                                            'ⓟ',
+                                            style: theme.textTheme.bodyMedium
+                                                ?.copyWith(
+                                                  color: colorScheme.onSurface
+                                                      .withValues(alpha: 0.7),
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                          ),
+                                          const SizedBox(width: 6),
+
+                                          /*
+                                      Old Code — nested Selector on balance (redundant once vm bundles rebuilds):
+
                                       Selector<PointProvider, int>(
                                         selector: (_, provider) =>
                                             provider.currentBalance,
-                                        builder:
-                                            (context, animatedBalance, __) {
+                                        builder: (context, animatedBalance, __) {
                                               final target =
                                                   trustworthyBalanceForUi
-                                                  ? animatedBalance
-                                                  : displayBalanceValue;
+                                                      ? animatedBalance
+                                                      : displayBalanceValue;
                                               return _AnimatedPointCounter(
                                                 value: target,
-                                                duration: const Duration(
-                                                  milliseconds: 650,
-                                                ),
-                                                style: theme
-                                                    .textTheme
-                                                    .headlineMedium
-                                                    ?.copyWith(
-                                                      color:
-                                                          colorScheme.primary,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      fontSize: 28,
-                                                      height: 1.2,
-                                                    ),
+                                              ...
                                               );
                                             },
                                       ),
-                                      if (showSyncWarning) ...[
-                                        const SizedBox(width: 8),
-                                        Tooltip(
-                                          message: pointErrorMessage,
-                                          child: IconButton(
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                            constraints: const BoxConstraints(
-                                              minWidth: 28,
-                                              minHeight: 28,
+                                      */
+                                          _AnimatedPointCounter(
+                                            value: displayBalanceValue,
+                                            duration: const Duration(
+                                              milliseconds: 650,
                                             ),
-                                            padding: EdgeInsets.zero,
-                                            splashRadius: 16,
-                                            icon: Icon(
-                                              Icons.error_outline_rounded,
-                                              size: 18,
-                                              color: Colors.orange.shade700,
-                                            ),
-                                            onPressed: () async {
-                                              final user = authProvider.user;
-                                              if (user == null) return;
-                                              final uid = user.id.toString();
-                                              await pointProvider.loadBalance(
-                                                uid,
-                                                forceRefresh: true,
-                                              );
-                                              if (!context.mounted) return;
-                                              final msg =
-                                                  pointProvider.errorMessage;
-                                              if (msg != null &&
-                                                  msg.isNotEmpty) {
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  SnackBar(content: Text(msg)),
-                                                );
-                                              }
-                                            },
+                                            style: theme
+                                                .textTheme
+                                                .headlineMedium
+                                                ?.copyWith(
+                                                  color: colorScheme.primary,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 28,
+                                                  height: 1.2,
+                                                ),
                                           ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ),
+                                          if (showSyncWarning) ...[
+                                            const SizedBox(width: 8),
+                                            Tooltip(
+                                              message:
+                                                  vm.pointErrorMessage ?? '',
+                                              child: IconButton(
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                constraints:
+                                                    const BoxConstraints(
+                                                      minWidth: 28,
+                                                      minHeight: 28,
+                                                    ),
+                                                padding: EdgeInsets.zero,
+                                                splashRadius: 16,
+                                                icon: Icon(
+                                                  Icons.error_outline_rounded,
+                                                  size: 18,
+                                                  color: Colors.orange.shade700,
+                                                ),
+                                                onPressed: () async {
+                                                  final user =
+                                                      authProvider.user;
+                                                  if (user == null) return;
+                                                  final uid = user.id
+                                                      .toString();
+                                                  await pointProvider
+                                                      .loadBalance(
+                                                        uid,
+                                                        forceRefresh: true,
+                                                      );
+                                                  if (!context.mounted) return;
+                                                  final msg = pointProvider
+                                                      .errorMessage;
+                                                  if (msg != null &&
+                                                      msg.isNotEmpty) {
+                                                    ScaffoldMessenger.of(
+                                                      context,
+                                                    ).showSnackBar(
+                                                      SnackBar(
+                                                        content: Text(msg),
+                                                      ),
+                                                    );
+                                                  }
+                                                },
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            // Arrow icon
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: colorScheme.primaryContainer,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(
+                                Icons.arrow_forward_ios_rounded,
+                                color: colorScheme.onPrimaryContainer,
+                                size: 16,
+                              ),
+                            ),
+                          ],
                         ),
-                        // Arrow icon
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Icon(
-                            Icons.arrow_forward_ios_rounded,
-                            color: colorScheme.onPrimaryContainer,
-                            size: 16,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );

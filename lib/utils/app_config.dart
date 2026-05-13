@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 /// Professional app configuration management
@@ -6,6 +8,36 @@ class AppConfig {
   static const String appVersion = '1.0.0';
   static const String buildNumber = '1';
 
+  /// Single [User-Agent] for all app HTTP clients (Dio, background tasks, etc.)
+  /// so WAFs (e.g. Imunify360) see a consistent, browser-like client identity.
+  static const String defaultUserAgent =
+      'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36';
+
+  // OLD CODE: browser-only Sec-Fetch-* / X-Requested-With on a non-browser client
+  // triggered WAF / bot heuristics.
+  // static const Map<String, String> defaultBrowserHeaders = {
+  //   'User-Agent':
+  //       'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+  //   'Accept': 'application/json, text/plain, ...',
+  //   'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
+  //   'Accept-Encoding': 'gzip, deflate, br',
+  //   'Connection': 'keep-alive',
+  //   'Sec-Fetch-Dest': 'empty',
+  //   'Sec-Fetch-Mode': 'cors',
+  //   'Sec-Fetch-Site': 'same-origin',
+  //   'X-Requested-With': 'XMLHttpRequest',
+  // };
+  /// Sensible client defaults for APIs (no Sec-Fetch-* / X-Requested-With on mobile).
+  /// Merge into [Dio] [BaseOptions.headers] with `...AppConfig.defaultBrowserHeaders`.
+  static const Map<String, String> defaultBrowserHeaders = {
+    'User-Agent':
+        'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+  };
+
   // API Configuration (WooCommerce - mingalarbuy.com)
   static const String baseUrl = 'https://mingalarbuy.com/wp-json/wc/v3';
   static const String wpBaseUrl = 'https://mingalarbuy.com/wp-json/wp/v2';
@@ -13,6 +45,14 @@ class AppConfig {
       'ck_9838e0a0aa35fee12d90c29026441c096863f0c6';
   static const String consumerSecret =
       'cs_2542de3bf738e35aed466029a0c789579a2034d6';
+
+  /// WooCommerce REST `Authorization: Basic base64(consumer_key:consumer_secret)`.
+  /// Optional helper for callers that set their own `Authorization`; app API traffic
+  /// uses Bearer JWT on `Authorization` and WC keys in query string where required.
+  static String get woocommerceBasicAuthorizationHeader {
+    final List<int> bytes = utf8.encode('$consumerKey:$consumerSecret');
+    return 'Basic ${base64Encode(bytes)}';
+  }
 
   // Backend Server Configuration (for FCM notifications)
   //
@@ -39,7 +79,8 @@ class AppConfig {
   static const String tworkPointsEarnEndpoint = '$tworkApiBasePath/points/earn';
   static const String tworkPointsRedeemEndpoint =
       '$tworkApiBasePath/points/redeem';
-  static const String tworkPointsBalancePath = '$tworkApiBasePath/points/balance';
+  static const String tworkPointsBalancePath =
+      '$tworkApiBasePath/points/balance';
   static const String tworkPointsTransactionsPath =
       '$tworkApiBasePath/points/transactions';
   static const String tworkEngagementFeedPath =
@@ -115,10 +156,16 @@ class AppConfig {
 
   /// Get headers for API requests
   static Map<String, String> getApiHeaders() {
+    // OLD CODE:
+    // return {
+    //   'Content-Type': 'application/json',
+    //   'Authorization': 'Basic ${_getAuthToken()}',
+    //   'User-Agent': '$appName/$appVersion',
+    // };
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Basic ${_getAuthToken()}',
-      'User-Agent': '$appName/$appVersion',
+      'User-Agent': defaultUserAgent,
     };
   }
 

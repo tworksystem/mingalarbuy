@@ -29,8 +29,8 @@ class WalletProvider with ChangeNotifier {
   String? _currentUserId;
   bool _hasLoadedForCurrentUser = false;
   DateTime?
-      _lastBalanceUpdateTime; // Track when balance was last updated locally
-  
+  _lastBalanceUpdateTime; // Track when balance was last updated locally
+
   // OPTIMIZED: Debounce timer to prevent excessive notifications
   Timer? _notificationDebounceTimer;
   static const Duration _debounceDelay = Duration(milliseconds: 100);
@@ -53,11 +53,20 @@ class WalletProvider with ChangeNotifier {
   }) async {
     if (isAuthenticated && userId != null) {
       if (_currentUserId != userId || !_hasLoadedForCurrentUser) {
+        final bool switchedAccount =
+            _currentUserId != null && _currentUserId != userId;
+        if (switchedAccount) {
+          _balance = null;
+          _hasLoadedForCurrentUser = false;
+          _lastBalanceUpdateTime = null;
+          notifyListeners();
+        }
         _currentUserId = userId;
         Logger.info(
-            'User authenticated, loading wallet balance for user: $userId',
-            tag: 'WalletProvider');
-        await loadBalance(userId);
+          'User authenticated, loading wallet balance for user: $userId',
+          tag: 'WalletProvider',
+        );
+        await loadBalance(userId, forceRefresh: switchedAccount);
         _hasLoadedForCurrentUser = true;
       }
     } else {
@@ -67,8 +76,10 @@ class WalletProvider with ChangeNotifier {
       _balance = null;
       _lastBalanceUpdateTime = null;
       notifyListeners();
-      Logger.info('User logged out, cleared wallet data',
-          tag: 'WalletProvider');
+      Logger.info(
+        'User logged out, cleared wallet data',
+        tag: 'WalletProvider',
+      );
     }
   }
 
@@ -81,13 +92,18 @@ class WalletProvider with ChangeNotifier {
   /// the current balance.
   /// However, if forceRefresh is true, it will still load but will preserve recent updates.
   Future<void> loadBalance(String userId, {bool forceRefresh = false}) async {
+    if (forceRefresh) {
+      _hasLoadedForCurrentUser = false;
+    }
     // Skip if already loaded for this user and not forcing refresh
     if (!forceRefresh &&
         _currentUserId == userId &&
         _hasLoadedForCurrentUser &&
         _balance != null) {
-      Logger.info('Wallet balance already loaded for user $userId, skipping',
-          tag: 'WalletProvider');
+      Logger.info(
+        'Wallet balance already loaded for user $userId, skipping',
+        tag: 'WalletProvider',
+      );
       return;
     }
 
@@ -100,12 +116,14 @@ class WalletProvider with ChangeNotifier {
         _lastBalanceUpdateTime != null &&
         _currentUserId == userId &&
         _balance != null) {
-      final timeSinceUpdate =
-          DateTime.now().difference(_lastBalanceUpdateTime!);
+      final timeSinceUpdate = DateTime.now().difference(
+        _lastBalanceUpdateTime!,
+      );
       if (timeSinceUpdate.inSeconds < 3) {
         Logger.info(
-            'Balance was recently updated (${timeSinceUpdate.inSeconds}s ago), skipping loadBalance to prevent overwrite. Current balance: \$${_balance!.currentBalance}',
-            tag: 'WalletProvider');
+          'Balance was recently updated (${timeSinceUpdate.inSeconds}s ago), skipping loadBalance to prevent overwrite. Current balance: \$${_balance!.currentBalance}',
+          tag: 'WalletProvider',
+        );
         // Still notify listeners to ensure UI is updated
         notifyListeners();
         return;
@@ -122,12 +140,20 @@ class WalletProvider with ChangeNotifier {
       if (connectivityService.isConnected) {
         // Load balance from API first (source of truth)
         final balance = await WalletService.getWalletBalance(userId);
-        if (balance != null) {
+        if (_currentUserId != userId) {
+          Logger.info(
+            'Discarding wallet API response: active user is $_currentUserId, '
+            'completed request was for $userId',
+            tag: 'WalletProvider',
+          );
+        } else if (balance != null) {
           // Only update if the new balance is not older than our current balance
           // or if we don't have a recent update
-          final shouldUpdate = _lastBalanceUpdateTime == null ||
-              balance.lastUpdated
-                  .isAfter(_balance?.lastUpdated ?? DateTime(1970)) ||
+          final shouldUpdate =
+              _lastBalanceUpdateTime == null ||
+              balance.lastUpdated.isAfter(
+                _balance?.lastUpdated ?? DateTime(1970),
+              ) ||
               DateTime.now().difference(_lastBalanceUpdateTime!).inSeconds >= 3;
 
           if (shouldUpdate) {
@@ -135,29 +161,35 @@ class WalletProvider with ChangeNotifier {
             _hasLoadedForCurrentUser = true;
             notifyListeners();
             Logger.info(
-                'Wallet balance loaded from API: \$${balance.currentBalance}',
-                tag: 'WalletProvider');
+              'Wallet balance loaded from API: \$${balance.currentBalance}',
+              tag: 'WalletProvider',
+            );
           } else {
             Logger.info(
-                'Skipping API balance update - local balance is more recent. Local: \$${_balance!.currentBalance}, API: \$${balance.currentBalance}',
-                tag: 'WalletProvider');
+              'Skipping API balance update - local balance is more recent. Local: \$${_balance!.currentBalance}, API: \$${balance.currentBalance}',
+              tag: 'WalletProvider',
+            );
             // Still notify to ensure UI is updated
             notifyListeners();
           }
         } else {
           // If API fails, try cache
-          await _loadCachedBalance();
+          await _loadCachedBalance(userId);
         }
       } else {
         // Load from cache if offline
-        await _loadCachedBalance();
+        await _loadCachedBalance(userId);
       }
     } catch (e, stackTrace) {
-      Logger.error('Error loading wallet balance: $e',
-          tag: 'WalletProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error loading wallet balance: $e',
+        tag: 'WalletProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       _setError('Failed to load wallet balance');
       // Try to load from cache on error
-      await _loadCachedBalance();
+      await _loadCachedBalance(userId);
     } finally {
       _setLoading(false);
     }
@@ -166,26 +198,28 @@ class WalletProvider with ChangeNotifier {
   /// Update wallet balance when the backend has already applied a credit and returns
   /// the new balance (avoids calling the add-to-wallet API again).
   Future<WalletUpdateResult> updateBalanceFromClaim(
-      String userId, double newBalanceValue, String description) async {
+    String userId,
+    double newBalanceValue,
+    String description,
+  ) async {
     if (_currentUserId == null) {
       _currentUserId = userId;
     }
 
     if (_currentUserId != userId) {
       Logger.warning(
-          'User ID mismatch in updateBalanceFromClaim. Expected: $_currentUserId, Got: $userId',
-          tag: 'WalletProvider');
-      return WalletUpdateResult(
-        success: false,
-        message: 'User ID mismatch',
+        'User ID mismatch in updateBalanceFromClaim. Expected: $_currentUserId, Got: $userId',
+        tag: 'WalletProvider',
       );
+      return WalletUpdateResult(success: false, message: 'User ID mismatch');
     }
 
     // Validate balance value
     if (newBalanceValue < 0) {
       Logger.warning(
-          'updateBalanceFromClaim called with negative balance: $newBalanceValue',
-          tag: 'WalletProvider');
+        'updateBalanceFromClaim called with negative balance: $newBalanceValue',
+        tag: 'WalletProvider',
+      );
       return WalletUpdateResult(
         success: false,
         message: 'Invalid balance value',
@@ -194,8 +228,9 @@ class WalletProvider with ChangeNotifier {
 
     final previousBalance = _balance?.currentBalance ?? 0.0;
     Logger.info(
-        'Updating wallet balance from claim result: \$${newBalanceValue.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)})',
-        tag: 'WalletProvider');
+      'Updating wallet balance from claim result: \$${newBalanceValue.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)})',
+      tag: 'WalletProvider',
+    );
 
     _isLoading = true;
     _clearError();
@@ -223,8 +258,9 @@ class WalletProvider with ChangeNotifier {
       _notifyListenersImmediate();
 
       Logger.info(
-          '✅ Wallet balance updated from claim: \$${newBalanceValue.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)})',
-          tag: 'WalletProvider');
+        '✅ Wallet balance updated from claim: \$${newBalanceValue.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)})',
+        tag: 'WalletProvider',
+      );
 
       return WalletUpdateResult(
         success: true,
@@ -235,16 +271,17 @@ class WalletProvider with ChangeNotifier {
         transactionId: 'CLAIM-${DateTime.now().millisecondsSinceEpoch}',
       );
     } catch (e, stackTrace) {
-      Logger.error('Error updating balance from claim: $e',
-          tag: 'WalletProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error updating balance from claim: $e',
+        tag: 'WalletProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       _isLoading = false;
       final errorMsg = 'Failed to update wallet balance: ${e.toString()}';
       _setError(errorMsg);
       notifyListeners();
-      return WalletUpdateResult(
-        success: false,
-        message: errorMsg,
-      );
+      return WalletUpdateResult(success: false, message: errorMsg);
     }
   }
 
@@ -254,10 +291,14 @@ class WalletProvider with ChangeNotifier {
   /// In test mode or when API fails, updates local balance directly
   /// This method ensures immediate UI updates by calling notifyListeners() multiple times
   Future<WalletUpdateResult> addToBalance(
-      double amount, String description) async {
+    double amount,
+    String description,
+  ) async {
     if (_currentUserId == null) {
-      Logger.warning('addToBalance called but user not authenticated',
-          tag: 'WalletProvider');
+      Logger.warning(
+        'addToBalance called but user not authenticated',
+        tag: 'WalletProvider',
+      );
       return WalletUpdateResult(
         success: false,
         message: 'User not authenticated',
@@ -266,8 +307,10 @@ class WalletProvider with ChangeNotifier {
 
     // Validate amount
     if (amount <= 0) {
-      Logger.warning('addToBalance called with invalid amount: $amount',
-          tag: 'WalletProvider');
+      Logger.warning(
+        'addToBalance called with invalid amount: $amount',
+        tag: 'WalletProvider',
+      );
       return WalletUpdateResult(
         success: false,
         message: 'Invalid amount. Amount must be greater than 0.',
@@ -279,15 +322,18 @@ class WalletProvider with ChangeNotifier {
     // This prevents race conditions where we might be working with stale data
     if (_balance == null || !_hasLoadedForCurrentUser) {
       Logger.info(
-          'Balance not loaded yet, loading first for user: $_currentUserId',
-          tag: 'WalletProvider');
+        'Balance not loaded yet, loading first for user: $_currentUserId',
+        tag: 'WalletProvider',
+      );
       // Force refresh to get latest balance from server
       await loadBalance(_currentUserId!, forceRefresh: true);
 
       // If still null after loading, initialize with 0
       if (_balance == null) {
-        Logger.info('Balance still null after load, initializing with 0.0',
-            tag: 'WalletProvider');
+        Logger.info(
+          'Balance still null after load, initializing with 0.0',
+          tag: 'WalletProvider',
+        );
         _balance = WalletBalance(
           userId: _currentUserId!,
           currentBalance: 0.0,
@@ -302,8 +348,9 @@ class WalletProvider with ChangeNotifier {
 
     final previousBalance = _balance!.currentBalance;
     Logger.info(
-        'Adding \$${amount.toStringAsFixed(2)} to wallet. Current: \$${previousBalance.toStringAsFixed(2)}',
-        tag: 'WalletProvider');
+      'Adding \$${amount.toStringAsFixed(2)} to wallet. Current: \$${previousBalance.toStringAsFixed(2)}',
+      tag: 'WalletProvider',
+    );
 
     _isLoading = true;
     _clearError();
@@ -340,27 +387,31 @@ class WalletProvider with ChangeNotifier {
           _notifyListenersImmediate();
 
           Logger.info(
-              '✅ Wallet balance updated via API: \$${newBalanceValue.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)}, added \$${amount.toStringAsFixed(2)})',
-              tag: 'WalletProvider');
+            '✅ Wallet balance updated via API: \$${newBalanceValue.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)}, added \$${amount.toStringAsFixed(2)})',
+            tag: 'WalletProvider',
+          );
           return result;
         } else {
           Logger.warning(
-              'API returned unexpected balance: \$${newBalanceValue.toStringAsFixed(2)} (expected ~\$${(previousBalance + amount).toStringAsFixed(2)}). Using local calculation.',
-              tag: 'WalletProvider');
+            'API returned unexpected balance: \$${newBalanceValue.toStringAsFixed(2)} (expected ~\$${(previousBalance + amount).toStringAsFixed(2)}). Using local calculation.',
+            tag: 'WalletProvider',
+          );
           // Fall through to local update
         }
       } else {
         Logger.info(
-            'API call returned success=false or null balance. Result: success=${result.success}, newBalance=${result.newBalance?.currentBalance}. Updating locally.',
-            tag: 'WalletProvider');
+          'API call returned success=false or null balance. Result: success=${result.success}, newBalance=${result.newBalance?.currentBalance}. Updating locally.',
+          tag: 'WalletProvider',
+        );
         // Fall through to local update
       }
 
       // If API fails or returns unexpected result, update local balance directly
       // This handles test mode, offline scenarios, or API inconsistencies
       Logger.info(
-          'Updating local balance directly: + \$${amount.toStringAsFixed(2)}',
-          tag: 'WalletProvider');
+        'Updating local balance directly: + \$${amount.toStringAsFixed(2)}',
+        tag: 'WalletProvider',
+      );
 
       final currentBalanceValue = _balance!.currentBalance;
       final newBalanceValue = currentBalanceValue + amount;
@@ -368,8 +419,9 @@ class WalletProvider with ChangeNotifier {
       // Validate the calculation
       if (newBalanceValue < currentBalanceValue) {
         Logger.error(
-            'Invalid balance calculation: $currentBalanceValue + $amount = $newBalanceValue',
-            tag: 'WalletProvider');
+          'Invalid balance calculation: $currentBalanceValue + $amount = $newBalanceValue',
+          tag: 'WalletProvider',
+        );
         _isLoading = false;
         _setError('Invalid balance calculation');
         notifyListeners();
@@ -398,14 +450,16 @@ class WalletProvider with ChangeNotifier {
       _notifyListenersImmediate();
 
       Logger.info(
-          '✅ Wallet balance updated locally: \$${updatedBalance.currentBalance.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)}, added \$${amount.toStringAsFixed(2)})',
-          tag: 'WalletProvider');
+        '✅ Wallet balance updated locally: \$${updatedBalance.currentBalance.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)}, added \$${amount.toStringAsFixed(2)})',
+        tag: 'WalletProvider',
+      );
 
       // Verify the balance was actually updated
       if (_balance?.currentBalance != newBalanceValue) {
         Logger.error(
-            'Balance state mismatch after update! Expected: \$${newBalanceValue.toStringAsFixed(2)}, Actual: \$${_balance?.currentBalance.toStringAsFixed(2)}',
-            tag: 'WalletProvider');
+          'Balance state mismatch after update! Expected: \$${newBalanceValue.toStringAsFixed(2)}, Actual: \$${_balance?.currentBalance.toStringAsFixed(2)}',
+          tag: 'WalletProvider',
+        );
         // Force set it again
         _balance = updatedBalance;
         _notifyListenersImmediate();
@@ -418,8 +472,12 @@ class WalletProvider with ChangeNotifier {
         transactionId: 'LOCAL-${DateTime.now().millisecondsSinceEpoch}',
       );
     } catch (e, stackTrace) {
-      Logger.error('Error adding to wallet balance: $e',
-          tag: 'WalletProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error adding to wallet balance: $e',
+        tag: 'WalletProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
 
       // Fallback: Update local balance even on error
       try {
@@ -445,8 +503,9 @@ class WalletProvider with ChangeNotifier {
         _notifyListenersImmediate();
 
         Logger.info(
-            '✅ Wallet balance updated locally (fallback): \$${updatedBalance.currentBalance.toStringAsFixed(2)} (was \$${currentBalanceValue.toStringAsFixed(2)}, added \$${amount.toStringAsFixed(2)})',
-            tag: 'WalletProvider');
+          '✅ Wallet balance updated locally (fallback): \$${updatedBalance.currentBalance.toStringAsFixed(2)} (was \$${currentBalanceValue.toStringAsFixed(2)}, added \$${amount.toStringAsFixed(2)})',
+          tag: 'WalletProvider',
+        );
 
         return WalletUpdateResult(
           success: true,
@@ -455,54 +514,70 @@ class WalletProvider with ChangeNotifier {
           transactionId: 'LOCAL-${DateTime.now().millisecondsSinceEpoch}',
         );
       } catch (fallbackError, fallbackStackTrace) {
-        Logger.error('Error in fallback balance update: $fallbackError',
-            tag: 'WalletProvider',
-            error: fallbackError,
-            stackTrace: fallbackStackTrace);
+        Logger.error(
+          'Error in fallback balance update: $fallbackError',
+          tag: 'WalletProvider',
+          error: fallbackError,
+          stackTrace: fallbackStackTrace,
+        );
         _isLoading = false;
         final errorMsg =
             'Failed to update wallet balance: ${fallbackError.toString()}';
         _setError(errorMsg);
         notifyListeners();
-        return WalletUpdateResult(
-          success: false,
-          message: errorMsg,
-        );
+        return WalletUpdateResult(success: false, message: errorMsg);
       }
     }
   }
 
-  /// Load cached balance from local storage
-  Future<void> _loadCachedBalance() async {
-    if (_currentUserId == null) return;
-
+  /// Load cached balance from local storage for [forUserId].
+  /// Ignores the result if the active user changed before the read completed.
+  Future<void> _loadCachedBalance(String forUserId) async {
     try {
-      final balance = await WalletService.getCachedBalance(_currentUserId!);
+      final balance = await WalletService.getCachedBalance(forUserId);
+      if (_currentUserId != forUserId) {
+        Logger.info(
+          'Ignoring cached wallet result: active user is $_currentUserId, '
+          'cache read was for $forUserId',
+          tag: 'WalletProvider',
+        );
+        return;
+      }
       if (balance != null) {
         _balance = balance;
         _hasLoadedForCurrentUser = true;
         notifyListeners();
-        Logger.info('Cached wallet balance loaded: \$${balance.currentBalance}',
-            tag: 'WalletProvider');
+        Logger.info(
+          'Cached wallet balance loaded: \$${balance.currentBalance}',
+          tag: 'WalletProvider',
+        );
       } else {
         // Initialize with zero balance if no cache exists
         _balance = WalletBalance(
-          userId: _currentUserId!,
+          userId: forUserId,
           currentBalance: 0.0,
           currency: 'USD',
           lastUpdated: DateTime.now(),
         );
         _hasLoadedForCurrentUser = true;
         notifyListeners();
-        Logger.info('No cached balance found, initialized with 0.00 Ks',
-            tag: 'WalletProvider');
+        Logger.info(
+          'No cached balance found, initialized with 0.00 Ks',
+          tag: 'WalletProvider',
+        );
       }
     } catch (e) {
-      Logger.error('Error loading cached wallet balance: $e',
-          tag: 'WalletProvider', error: e);
+      Logger.error(
+        'Error loading cached wallet balance: $e',
+        tag: 'WalletProvider',
+        error: e,
+      );
+      if (_currentUserId != forUserId) {
+        return;
+      }
       // Initialize with zero balance on error
       _balance = WalletBalance(
-        userId: _currentUserId!,
+        userId: forUserId,
         currentBalance: 0.0,
         currency: 'USD',
         lastUpdated: DateTime.now(),
@@ -551,8 +626,9 @@ class WalletProvider with ChangeNotifier {
       final currentBalance = _balance?.currentBalance ?? 0.0;
       if (kDebugMode) {
         Logger.debug(
-            'WalletProvider: Balance updated - \$${currentBalance.toStringAsFixed(2)}',
-          tag: 'WalletProvider');
+          'WalletProvider: Balance updated - \$${currentBalance.toStringAsFixed(2)}',
+          tag: 'WalletProvider',
+        );
       }
     });
   }
@@ -563,17 +639,18 @@ class WalletProvider with ChangeNotifier {
     // Cancel any pending debounce to notify immediately
     _notificationDebounceTimer?.cancel();
     _notificationDebounceTimer = null;
-    
+
     // Single immediate notification
     notifyListeners();
 
     if (kDebugMode) {
       Logger.debug(
-          'WalletProvider: forceNotifyListeners called - Balance: \$${currentBalance.toStringAsFixed(2)}',
-        tag: 'WalletProvider');
+        'WalletProvider: forceNotifyListeners called - Balance: \$${currentBalance.toStringAsFixed(2)}',
+        tag: 'WalletProvider',
+      );
     }
   }
-  
+
   @override
   void dispose() {
     _notificationDebounceTimer?.cancel();
@@ -596,10 +673,13 @@ class WalletProvider with ChangeNotifier {
   ///
   /// Supported methods: KPay, AYA Pay, Wave Pay, Bank Transfer
   Future<WithdrawalResult> withdrawFromBalance(
-      WithdrawalRequest request) async {
+    WithdrawalRequest request,
+  ) async {
     if (_currentUserId == null) {
-      Logger.warning('withdrawFromBalance called but user not authenticated',
-          tag: 'WalletProvider');
+      Logger.warning(
+        'withdrawFromBalance called but user not authenticated',
+        tag: 'WalletProvider',
+      );
       return WithdrawalResult.failure(
         message: 'User not authenticated',
         errorCode: 'NOT_AUTHENTICATED',
@@ -610,8 +690,9 @@ class WalletProvider with ChangeNotifier {
     // Validate user ID matches
     if (request.userId != _currentUserId) {
       Logger.warning(
-          'User ID mismatch. Request userId: ${request.userId}, Current userId: $_currentUserId',
-          tag: 'WalletProvider');
+        'User ID mismatch. Request userId: ${request.userId}, Current userId: $_currentUserId',
+        tag: 'WalletProvider',
+      );
       return WithdrawalResult.failure(
         message: 'User ID mismatch',
         errorCode: 'USER_MISMATCH',
@@ -622,8 +703,9 @@ class WalletProvider with ChangeNotifier {
     // Ensure balance is loaded
     if (_balance == null || !_hasLoadedForCurrentUser) {
       Logger.info(
-          'Balance not loaded yet, loading first for user: $_currentUserId',
-          tag: 'WalletProvider');
+        'Balance not loaded yet, loading first for user: $_currentUserId',
+        tag: 'WalletProvider',
+      );
       await loadBalance(_currentUserId!, forceRefresh: true);
 
       if (_balance == null) {
@@ -640,8 +722,9 @@ class WalletProvider with ChangeNotifier {
     final currentBalance = _balance!.currentBalance;
     if (currentBalance < request.amount) {
       Logger.warning(
-          'Insufficient balance. Current: \$${currentBalance.toStringAsFixed(2)}, Requested: \$${request.amount.toStringAsFixed(2)}',
-          tag: 'WalletProvider');
+        'Insufficient balance. Current: \$${currentBalance.toStringAsFixed(2)}, Requested: \$${request.amount.toStringAsFixed(2)}',
+        tag: 'WalletProvider',
+      );
       return WithdrawalResult.failure(
         message:
             'Insufficient balance. Available: \$${currentBalance.toStringAsFixed(2)}',
@@ -652,8 +735,9 @@ class WalletProvider with ChangeNotifier {
 
     final previousBalance = currentBalance;
     Logger.info(
-        'Processing withdrawal: \$${request.amount.toStringAsFixed(2)} via ${request.method.displayName}. Current balance: \$${previousBalance.toStringAsFixed(2)}',
-        tag: 'WalletProvider');
+      'Processing withdrawal: \$${request.amount.toStringAsFixed(2)} via ${request.method.displayName}. Current balance: \$${previousBalance.toStringAsFixed(2)}',
+      tag: 'WalletProvider',
+    );
 
     _isLoading = true;
     _clearError();
@@ -687,8 +771,9 @@ class WalletProvider with ChangeNotifier {
         _notifyListenersImmediate();
 
         Logger.info(
-            '✅ Withdrawal processed successfully: \$${request.amount.toStringAsFixed(2)} via ${request.method.displayName}. New balance: \$${updatedBalance.currentBalance.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)})',
-            tag: 'WalletProvider');
+          '✅ Withdrawal processed successfully: \$${request.amount.toStringAsFixed(2)} via ${request.method.displayName}. New balance: \$${updatedBalance.currentBalance.toStringAsFixed(2)} (was \$${previousBalance.toStringAsFixed(2)})',
+          tag: 'WalletProvider',
+        );
 
         // Return result with updated balance
         return WithdrawalResult.success(
@@ -705,14 +790,19 @@ class WalletProvider with ChangeNotifier {
         notifyListeners();
 
         Logger.warning(
-            '❌ Withdrawal failed: ${result.message} (Error code: ${result.errorCode})',
-            tag: 'WalletProvider');
+          '❌ Withdrawal failed: ${result.message} (Error code: ${result.errorCode})',
+          tag: 'WalletProvider',
+        );
 
         return result;
       }
     } catch (e, stackTrace) {
-      Logger.error('Error processing withdrawal: $e',
-          tag: 'WalletProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error processing withdrawal: $e',
+        tag: 'WalletProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
 
       _isLoading = false;
       final errorMsg = 'Failed to process withdrawal. Please try again.';
@@ -731,10 +821,7 @@ class WalletProvider with ChangeNotifier {
   /// Validates if user can withdraw the specified amount
   Future<Map<String, dynamic>> checkWithdrawalEligibility(double amount) async {
     if (_currentUserId == null) {
-      return {
-        'eligible': false,
-        'message': 'User not authenticated',
-      };
+      return {'eligible': false, 'message': 'User not authenticated'};
     }
 
     // Check current balance
@@ -770,7 +857,9 @@ class WalletProvider with ChangeNotifier {
 
     // Check with service for additional eligibility criteria
     final eligibility = await WithdrawalService.checkWithdrawalEligibility(
-        _currentUserId!, amount);
+      _currentUserId!,
+      amount,
+    );
 
     return eligibility;
   }
@@ -778,16 +867,22 @@ class WalletProvider with ChangeNotifier {
   /// Get withdrawal history
   Future<List<WithdrawalHistoryEntry>> getWithdrawalHistory() async {
     if (_currentUserId == null) {
-      Logger.warning('getWithdrawalHistory called but user not authenticated',
-          tag: 'WalletProvider');
+      Logger.warning(
+        'getWithdrawalHistory called but user not authenticated',
+        tag: 'WalletProvider',
+      );
       return [];
     }
 
     try {
       return await WithdrawalService.getWithdrawalHistory(_currentUserId!);
     } catch (e, stackTrace) {
-      Logger.error('Error fetching withdrawal history: $e',
-          tag: 'WalletProvider', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Error fetching withdrawal history: $e',
+        tag: 'WalletProvider',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return [];
     }
   }

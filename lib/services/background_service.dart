@@ -8,6 +8,48 @@ import 'package:ecommerce_int2/utils/app_config.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+/// Background isolates can start before encrypted storage finishes hydrating; retry reads briefly.
+Future<String?> _readSecureNonEmptyWithRetry(
+  FlutterSecureStorage storage, {
+  required String key,
+  int maxAttempts = 18,
+  Duration interval = const Duration(milliseconds: 120),
+}) async {
+  for (var i = 0; i < maxAttempts; i++) {
+    final v = await storage.read(key: key);
+    if (v != null && v.isNotEmpty) {
+      return v;
+    }
+    if (i < maxAttempts - 1) {
+      await Future<void>.delayed(interval);
+    }
+  }
+  return null;
+}
+
+/// Same as [_readSecureNonEmptyWithRetry] but also polls [AuthService.getStoredToken] each cycle for `auth_token`.
+Future<String?> _readAuthTokenReliable({
+  required FlutterSecureStorage secureStorage,
+  required String authTokenKey,
+  int maxAttempts = 18,
+  Duration interval = const Duration(milliseconds: 125),
+}) async {
+  for (var i = 0; i < maxAttempts; i++) {
+    final fromKey = await secureStorage.read(key: authTokenKey);
+    if (fromKey != null && fromKey.isNotEmpty) {
+      return fromKey;
+    }
+    final fromService = await AuthService.getStoredToken();
+    if (fromService != null && fromService.isNotEmpty) {
+      return fromService;
+    }
+    if (i < maxAttempts - 1) {
+      await Future<void>.delayed(interval);
+    }
+  }
+  return null;
+}
+
 /// Background service for periodic order checking using Workmanager
 class BackgroundService {
   static const String _taskName = 'orderCheckTask';
@@ -18,8 +60,10 @@ class BackgroundService {
   /// Initialize Workmanager with callback configuration
   static Future<void> initialize() async {
     if (_isInitialized) {
-      Logger.info('Background service already initialized',
-          tag: 'BackgroundService');
+      Logger.info(
+        'Background service already initialized',
+        tag: 'BackgroundService',
+      );
       return;
     }
 
@@ -33,16 +77,20 @@ class BackgroundService {
       // New Code:
       // Use explicit top-level entry-point that handles multiple background tasks
       // (order sync + auto-run poll server tick).
-      await Workmanager().initialize(
-        autoRunPollBackgroundEntryPoint,
-      );
+      await Workmanager().initialize(autoRunPollBackgroundEntryPoint);
 
       _isInitialized = true;
-      Logger.info('Background service initialized successfully',
-          tag: 'BackgroundService');
+      Logger.info(
+        'Background service initialized successfully',
+        tag: 'BackgroundService',
+      );
     } catch (e, stackTrace) {
-      Logger.error('Failed to initialize background service: $e',
-          tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to initialize background service: $e',
+        tag: 'BackgroundService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       rethrow;
     }
   }
@@ -53,8 +101,10 @@ class BackgroundService {
   /// but we register it to run as often as possible
   static Future<bool> registerPeriodicTask() async {
     if (!_isInitialized) {
-      Logger.warning('Background service not initialized. Initializing now...',
-          tag: 'BackgroundService');
+      Logger.warning(
+        'Background service not initialized. Initializing now...',
+        tag: 'BackgroundService',
+      );
       await initialize();
     }
 
@@ -98,12 +148,17 @@ class BackgroundService {
       );
 
       Logger.info(
-          'Periodic background tasks registered (order check + auto-run poll tick)',
-          tag: 'BackgroundService');
+        'Periodic background tasks registered (order check + auto-run poll tick)',
+        tag: 'BackgroundService',
+      );
       return true;
     } catch (e, stackTrace) {
-      Logger.error('Failed to register periodic task: $e',
-          tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to register periodic task: $e',
+        tag: 'BackgroundService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -114,19 +169,27 @@ class BackgroundService {
       await Workmanager().cancelByUniqueName(_taskName);
       await Workmanager().cancelByUniqueName(_autoRunPollTaskName);
       await Workmanager().cancelByUniqueName(_autoRunPollOneOffTaskName);
-      Logger.info('Periodic order check task cancelled',
-          tag: 'BackgroundService');
+      Logger.info(
+        'Periodic order check task cancelled',
+        tag: 'BackgroundService',
+      );
     } catch (e, stackTrace) {
-      Logger.error('Failed to cancel periodic task: $e',
-          tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to cancel periodic task: $e',
+        tag: 'BackgroundService',
+        error: e,
+        stackTrace: stackTrace,
+      );
     }
   }
 
   /// Register one-off task for immediate order checking
   static Future<bool> registerOneOffTask() async {
     if (!_isInitialized) {
-      Logger.warning('Background service not initialized. Initializing now...',
-          tag: 'BackgroundService');
+      Logger.warning(
+        'Background service not initialized. Initializing now...',
+        tag: 'BackgroundService',
+      );
       await initialize();
     }
 
@@ -135,29 +198,36 @@ class BackgroundService {
         'immediateOrderCheck',
         'immediateOrderCheck',
         inputData: {},
-        constraints: Constraints(
-          networkType: NetworkType.connected,
-        ),
+        constraints: Constraints(networkType: NetworkType.connected),
         initialDelay: Duration(seconds: 5),
       );
 
-      Logger.info('One-off order check task registered successfully',
-          tag: 'BackgroundService');
+      Logger.info(
+        'One-off order check task registered successfully',
+        tag: 'BackgroundService',
+      );
       return true;
     } catch (e, stackTrace) {
-      Logger.error('Failed to register one-off task: $e',
-          tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to register one-off task: $e',
+        tag: 'BackgroundService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
 
   /// Schedule a one-off auto-run poll tick when app moves background/terminate.
   /// This is best-effort and complements periodic tasks; backend remains source of truth.
-  static Future<bool> registerAutoRunPollOneOffTick(
-      {Duration initialDelay = const Duration(seconds: 20)}) async {
+  static Future<bool> registerAutoRunPollOneOffTick({
+    Duration initialDelay = const Duration(seconds: 20),
+  }) async {
     if (!_isInitialized) {
-      Logger.warning('Background service not initialized. Initializing now...',
-          tag: 'BackgroundService');
+      Logger.warning(
+        'Background service not initialized. Initializing now...',
+        tag: 'BackgroundService',
+      );
       await initialize();
     }
 
@@ -177,12 +247,18 @@ class BackgroundService {
         ),
         initialDelay: initialDelay,
       );
-      Logger.info('One-off auto-run poll tick registered',
-          tag: 'BackgroundService');
+      Logger.info(
+        'One-off auto-run poll tick registered',
+        tag: 'BackgroundService',
+      );
       return true;
     } catch (e, stackTrace) {
-      Logger.error('Failed to register one-off auto-run poll tick: $e',
-          tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Failed to register one-off auto-run poll tick: $e',
+        tag: 'BackgroundService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -215,12 +291,18 @@ void autoRunPollBackgroundEntryPoint() {
         return Future.value(ok);
       }
 
-      Logger.warning('Unknown background task: $task',
-          tag: 'BackgroundService');
+      Logger.warning(
+        'Unknown background task: $task',
+        tag: 'BackgroundService',
+      );
       return Future.value(false);
     } catch (e, stackTrace) {
-      Logger.error('Background task failed: $e',
-          tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+      Logger.error(
+        'Background task failed: $e',
+        tag: 'BackgroundService',
+        error: e,
+        stackTrace: stackTrace,
+      );
       return Future.value(false);
     }
   });
@@ -230,11 +312,20 @@ Future<bool> _runOrderCheckTask() async {
   // Get stored user data from FlutterSecureStorage
   const FlutterSecureStorage secureStorage = FlutterSecureStorage();
 
+  /*
+  Old Code:
   final userJson = await secureStorage.read(key: 'user_data');
+  */
+  final userJson = await _readSecureNonEmptyWithRetry(
+    secureStorage,
+    key: 'user_data',
+  );
 
   if (userJson == null) {
-    Logger.warning('No user data found, skipping order check',
-        tag: 'BackgroundService');
+    Logger.warning(
+      'No user data found, skipping order check',
+      tag: 'BackgroundService',
+    );
     return false;
   }
 
@@ -242,8 +333,10 @@ Future<bool> _runOrderCheckTask() async {
   final userId = userData['id']?.toString();
 
   if (userId == null || userId.isEmpty || userId == '0') {
-    Logger.warning('No valid user ID found, skipping order check',
-        tag: 'BackgroundService');
+    Logger.warning(
+      'No valid user ID found, skipping order check',
+      tag: 'BackgroundService',
+    );
     return false;
   }
 
@@ -266,8 +359,10 @@ Future<bool> _runOrderCheckTask() async {
   }
 
   if (!orderProvider.isInitialized) {
-    Logger.warning('OrderProvider failed to initialize after 2 seconds',
-        tag: 'BackgroundService');
+    Logger.warning(
+      'OrderProvider failed to initialize after 2 seconds',
+      tag: 'BackgroundService',
+    );
     return false;
   }
 
@@ -277,26 +372,39 @@ Future<bool> _runOrderCheckTask() async {
     skipNotifications: true,
   );
 
-  Logger.info('Background order check completed successfully',
-      tag: 'BackgroundService');
+  Logger.info(
+    'Background order check completed successfully',
+    tag: 'BackgroundService',
+  );
   return true;
 }
 
 Future<bool> _runAutoRunPollTickTask() async {
   const FlutterSecureStorage secureStorage = FlutterSecureStorage();
   const String authTokenKey = 'auth_token';
+  /*
+  Old Code:
   final userJson = await secureStorage.read(key: 'user_data');
+  */
+  final userJson = await _readSecureNonEmptyWithRetry(
+    secureStorage,
+    key: 'user_data',
+  );
   if (userJson == null) {
-    Logger.warning('No user data found, skipping auto-run poll tick',
-        tag: 'BackgroundService');
+    Logger.warning(
+      'No user data found, skipping auto-run poll tick',
+      tag: 'BackgroundService',
+    );
     return false;
   }
 
   final userData = json.decode(userJson) as Map<String, dynamic>;
   final userId = userData['id']?.toString();
   if (userId == null || userId.isEmpty || userId == '0') {
-    Logger.warning('No valid user ID found, skipping auto-run poll tick',
-        tag: 'BackgroundService');
+    Logger.warning(
+      'No valid user ID found, skipping auto-run poll tick',
+      tag: 'BackgroundService',
+    );
     return false;
   }
 
@@ -311,8 +419,9 @@ Future<bool> _runAutoRunPollTickTask() async {
     );
     return false;
   }
-  final authContextHeaders =
-      await _readOptionalBackgroundAuthContext(secureStorage);
+  final authContextHeaders = await _readOptionalBackgroundAuthContext(
+    secureStorage,
+  );
 
   /*
   Old Code:
@@ -323,19 +432,19 @@ Future<bool> _runAutoRunPollTickTask() async {
     headers: const {'Content-Type': 'application/json'},
   ));
   */
-  // New Code: inject bearer token for background isolate requests.
   final dio = Dio(
     BaseOptions(
       connectTimeout: const Duration(seconds: 20),
       receiveTimeout: const Duration(seconds: 20),
       sendTimeout: const Duration(seconds: 20),
       headers: <String, dynamic>{
+        ...AppConfig.defaultBrowserHeaders,
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
         'Authorization': 'Bearer $token',
         ...authContextHeaders,
       },
-      validateStatus: (status) => status != null && status >= 200 && status < 600,
+      validateStatus: (status) =>
+          status != null && status >= 200 && status < 600,
     ),
   );
 
@@ -347,11 +456,14 @@ Future<bool> _runAutoRunPollTickTask() async {
       '${AppConfig.backendUrl}/wp-json/twork/v1/engagement/feed/$userId',
     ).replace(queryParameters: _wooQueryParams());
     */
-    final feedUri = _buildSignedUri('${AppConfig.tworkEngagementFeedPath}/$userId');
+    final feedUri = _buildSignedUri(
+      '${AppConfig.tworkEngagementFeedPath}/$userId',
+    );
     _logRequestDiagnostics(
       scope: 'feed',
       uri: feedUri,
       hasAuthHeader: hasAuthHeader,
+      wcBasicAuthInHeaders: false,
     );
 
     var feedRes = await dio.getUri(feedUri);
@@ -377,15 +489,19 @@ Future<bool> _runAutoRunPollTickTask() async {
     }
     final feedData = feedRes.data;
     if (feedData is! Map || feedData['success'] != true) {
-      Logger.warning('Background poll tick: feed response invalid',
-          tag: 'BackgroundService');
+      Logger.warning(
+        'Background poll tick: feed response invalid',
+        tag: 'BackgroundService',
+      );
       return false;
     }
 
     final rawItems = feedData['data'];
     if (rawItems is! List || rawItems.isEmpty) {
-      Logger.info('Background poll tick: no engagement items',
-          tag: 'BackgroundService');
+      Logger.info(
+        'Background poll tick: no engagement items',
+        tag: 'BackgroundService',
+      );
       return true;
     }
 
@@ -406,8 +522,10 @@ Future<bool> _runAutoRunPollTickTask() async {
     }
 
     if (autoRunPollIds.isEmpty) {
-      Logger.info('Background poll tick: no AUTO_RUN polls in feed',
-          tag: 'BackgroundService');
+      Logger.info(
+        'Background poll tick: no AUTO_RUN polls in feed',
+        tag: 'BackgroundService',
+      );
       return true;
     }
 
@@ -419,11 +537,14 @@ Future<bool> _runAutoRunPollTickTask() async {
         '${AppConfig.backendUrl}/wp-json/twork/v1/poll/state/$pollId',
       ).replace(queryParameters: _wooQueryParams());
       */
-      final stateUri = _buildSignedUri('${AppConfig.tworkPollStatePath}/$pollId');
+      final stateUri = _buildSignedUri(
+        '${AppConfig.tworkPollStatePath}/$pollId',
+      );
       _logRequestDiagnostics(
         scope: 'state:$pollId',
         uri: stateUri,
         hasAuthHeader: hasAuthHeader,
+        wcBasicAuthInHeaders: false,
       );
 
       try {
@@ -441,8 +562,10 @@ Future<bool> _runAutoRunPollTickTask() async {
           successCount++;
         }
       } catch (e) {
-        Logger.warning('Background poll tick failed for pollId=$pollId: $e',
-            tag: 'BackgroundService');
+        Logger.warning(
+          'Background poll tick failed for pollId=$pollId: $e',
+          tag: 'BackgroundService',
+        );
       }
     }
 
@@ -452,8 +575,12 @@ Future<bool> _runAutoRunPollTickTask() async {
     );
     return successCount > 0;
   } catch (e, stackTrace) {
-    Logger.error('Background auto-run poll tick failed: $e',
-        tag: 'BackgroundService', error: e, stackTrace: stackTrace);
+    Logger.error(
+      'Background auto-run poll tick failed: $e',
+      tag: 'BackgroundService',
+      error: e,
+      stackTrace: stackTrace,
+    );
     return false;
   } finally {
     dio.close(force: true);
@@ -461,9 +588,7 @@ Future<bool> _runAutoRunPollTickTask() async {
 }
 
 Uri _buildSignedUri(String path, [Map<String, dynamic>? extraQuery]) {
-  final merged = <String, String>{
-    ..._wooQueryParams(),
-  };
+  final merged = <String, String>{..._wooQueryParams()};
   if (extraQuery != null) {
     for (final entry in extraQuery.entries) {
       final value = entry.value;
@@ -471,43 +596,42 @@ Uri _buildSignedUri(String path, [Map<String, dynamic>? extraQuery]) {
       merged[entry.key] = value.toString();
     }
   }
-  return Uri.parse('${AppConfig.backendUrl}$path').replace(queryParameters: merged);
+  return Uri.parse(
+    '${AppConfig.backendUrl}$path',
+  ).replace(queryParameters: merged);
 }
 
 void _logRequestDiagnostics({
   required String scope,
   required Uri uri,
   required bool hasAuthHeader,
+  required bool wcBasicAuthInHeaders,
 }) {
   final hasConsumerKeyParam = uri.queryParameters.containsKey('consumer_key');
-  final hasConsumerSecretParam =
-      uri.queryParameters.containsKey('consumer_secret');
+  final hasConsumerSecretParam = uri.queryParameters.containsKey(
+    'consumer_secret',
+  );
   Logger.info(
     'Background request diagnostic [$scope]: '
     'hasAuthHeader=$hasAuthHeader, '
+    'wcBasicAuthInHeaders=$wcBasicAuthInHeaders, '
     'hasConsumerKeyParam=$hasConsumerKeyParam, '
     'hasConsumerSecretParam=$hasConsumerSecretParam',
     tag: 'BackgroundService',
   );
 }
 
+/// WooCommerce REST credentials on the request URL (same as foreground [EngagementService]).
 Map<String, String> _wooQueryParams() {
-  /*
-  Old Code:
-  return {
-    'consumer_key': AppConfig.consumerKey,
-    'consumer_secret': AppConfig.consumerSecret,
-  };
-  */
-  // New Code: centralized WC signing parameters for all background requests.
-  return {
+  return <String, String>{
     'consumer_key': AppConfig.consumerKey,
     'consumer_secret': AppConfig.consumerSecret,
   };
 }
 
 Future<Map<String, String>> _readOptionalBackgroundAuthContext(
-    FlutterSecureStorage secureStorage) async {
+  FlutterSecureStorage secureStorage,
+) async {
   final nonce = await secureStorage.read(key: 'wp_nonce');
   final cookie = await secureStorage.read(key: 'wp_cookie');
   final headers = <String, String>{};
@@ -525,9 +649,24 @@ Future<String?> _resolveUsableBackgroundToken({
   required String authTokenKey,
   String? previousToken,
 }) async {
+  /*
+  Old Code:
   String? token = await secureStorage.read(key: authTokenKey);
   if ((token == null || token.isEmpty) && previousToken == null) {
     token = await AuthService.getStoredToken();
+  }
+  */
+  String? token;
+  if (previousToken == null) {
+    token = await _readAuthTokenReliable(
+      secureStorage: secureStorage,
+      authTokenKey: authTokenKey,
+    );
+  } else {
+    token = await secureStorage.read(key: authTokenKey);
+    if (token == null || token.isEmpty) {
+      token = await AuthService.getStoredToken();
+    }
   }
   if (token == null || token.isEmpty) {
     return null;
@@ -551,17 +690,33 @@ Future<String?> _resolveUsableBackgroundToken({
 }
 
 Future<bool> _isWpTokenValid(String token) async {
+  // OLD CODE:
+  // final dio = Dio(
+  //   BaseOptions(
+  //     connectTimeout: const Duration(seconds: 12),
+  //     receiveTimeout: const Duration(seconds: 12),
+  //     sendTimeout: const Duration(seconds: 12),
+  //     headers: <String, dynamic>{
+  //       'Content-Type': 'application/json',
+  //       'Accept': 'application/json',
+  //       'Authorization': 'Bearer $token',
+  //       'User-Agent': AppConfig.defaultUserAgent,
+  //     },
+  //     validateStatus: (status) => status != null && status >= 200 && status < 600,
+  //   ),
+  // );
   final dio = Dio(
     BaseOptions(
       connectTimeout: const Duration(seconds: 12),
       receiveTimeout: const Duration(seconds: 12),
       sendTimeout: const Duration(seconds: 12),
       headers: <String, dynamic>{
+        ...AppConfig.defaultBrowserHeaders,
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
         'Authorization': 'Bearer $token',
       },
-      validateStatus: (status) => status != null && status >= 200 && status < 600,
+      validateStatus: (status) =>
+          status != null && status >= 200 && status < 600,
     ),
   );
   try {

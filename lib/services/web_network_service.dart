@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../api_service.dart';
+import '../utils/app_config.dart';
 
 /// Web-specific network service to handle CORS and connectivity issues
 class WebNetworkService {
@@ -19,9 +20,14 @@ class WebNetworkService {
         () => ApiService.getUri(
           Uri.parse('https://httpbin.org/get'),
           skipAuth: true,
+          // OLD CODE:
+          // headers: const <String, dynamic>{
+          //   'Accept': 'application/json',
+          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+          // },
           headers: const <String, dynamic>{
             'Accept': 'application/json',
-            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'User-Agent': AppConfig.defaultUserAgent,
           },
         ),
         context: 'webNetwork.browserConnectivity',
@@ -30,7 +36,8 @@ class WebNetworkService {
       final isConnected =
           response != null && ApiService.isSuccessResponse(response);
       print(
-          '🌐 Browser connectivity test: ${isConnected ? "✅ Connected" : "❌ Failed"}');
+        '🌐 Browser connectivity test: ${isConnected ? "✅ Connected" : "❌ Failed"}',
+      );
       return isConnected;
     } catch (e) {
       print('❌ Browser connectivity test failed: $e');
@@ -48,10 +55,19 @@ class WebNetworkService {
         () => ApiService.getUri(
           Uri.parse('https://www.homeaid.com.mm'),
           skipAuth: true,
+          // OLD CODE:
+          // headers: const <String, dynamic>{
+          //   'Accept':
+          //       'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+          //   'Accept-Language': 'en-US,en;q=0.5',
+          //   'Accept-Encoding': 'gzip, deflate',
+          //   'Connection': 'keep-alive',
+          // },
           headers: const <String, dynamic>{
             'Accept':
                 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'User-Agent': AppConfig.defaultUserAgent,
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
             'Connection': 'keep-alive',
@@ -63,7 +79,8 @@ class WebNetworkService {
       final isAccessible =
           response != null && ApiService.isSuccessResponse(response);
       print(
-          '🌐 WooCommerce web access: ${isAccessible ? "✅ Accessible" : "❌ Failed"}');
+        '🌐 WooCommerce web access: ${isAccessible ? "✅ Accessible" : "❌ Failed"}',
+      );
       return isAccessible;
     } catch (e) {
       print('❌ WooCommerce web access failed: $e');
@@ -82,9 +99,17 @@ class WebNetworkService {
         () => ApiService.headUri(
           Uri.parse(imageUrl),
           skipAuth: true,
+          // OLD CODE:
+          // headers: const <String, dynamic>{
+          //   'Accept': 'image/*',
+          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+          //   'Accept-Encoding': 'gzip, deflate',
+          //   'Connection': 'keep-alive',
+          //   'Cache-Control': 'no-cache',
+          // },
           headers: const <String, dynamic>{
             'Accept': 'image/*',
-            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'User-Agent': AppConfig.defaultUserAgent,
             'Accept-Encoding': 'gzip, deflate',
             'Connection': 'keep-alive',
             'Cache-Control': 'no-cache',
@@ -96,7 +121,8 @@ class WebNetworkService {
       final isAccessible =
           response != null && ApiService.isSuccessResponse(response);
       print(
-          '🖼️ Image URL web test: ${isAccessible ? "✅ Accessible" : "❌ Failed"} (${response?.statusCode})');
+        '🖼️ Image URL web test: ${isAccessible ? "✅ Accessible" : "❌ Failed"} (${response?.statusCode})',
+      );
 
       if (isAccessible) {
         final contentType = response?.headers.value('content-type') ?? '';
@@ -151,8 +177,11 @@ class WebNetworkService {
   static bool get isWeb => kIsWeb;
 
   /// Get user agent string for web requests
+  // OLD CODE:
+  // static String get userAgent =>
+  //     kIsWeb ? html.window.navigator.userAgent : 'HomeAid-Flutter-App/1.0';
   static String get userAgent =>
-      kIsWeb ? html.window.navigator.userAgent : 'HomeAid-Flutter-App/1.0';
+      kIsWeb ? html.window.navigator.userAgent : AppConfig.defaultUserAgent;
 
   /// Test CORS policy for specific domain
   static Future<bool> testCORSPolicy(String domain) async {
@@ -164,18 +193,23 @@ class WebNetworkService {
         () => ApiService.getUri(
           Uri.parse(testUrl),
           skipAuth: true,
+          // OLD CODE: headers: <String, dynamic>{
+          //   'Origin': html.window.location.origin,
+          //   'User-Agent': userAgent,
+          // },
           headers: <String, dynamic>{
             'Origin': html.window.location.origin,
-            'User-Agent': userAgent,
+            'User-Agent': AppConfig.defaultUserAgent,
           },
         ),
         context: 'webNetwork.corsPolicy',
       );
 
-      final hasCORS = response?.headers.value('access-control-allow-origin') !=
-          null;
+      final hasCORS =
+          response?.headers.value('access-control-allow-origin') != null;
       print(
-          '🌐 CORS policy for $domain: ${hasCORS ? "✅ Allowed" : "❌ Restricted"}');
+        '🌐 CORS policy for $domain: ${hasCORS ? "✅ Allowed" : "❌ Restricted"}',
+      );
       return hasCORS;
     } catch (e) {
       print('❌ CORS test failed for $domain: $e');

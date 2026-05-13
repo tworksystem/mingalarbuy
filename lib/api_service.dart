@@ -38,13 +38,17 @@ class ApiService {
       //   Headers.acceptHeader: Headers.jsonContentType,
       // },
       //
-      // New Code:
+      // OLD CODE:
+      // headers: <String, dynamic>{
+      //   Headers.contentTypeHeader: Headers.jsonContentType,
+      //   Headers.acceptHeader: Headers.jsonContentType,
+      //   'Accept': 'application/json',
+      //   'User-Agent': AppConfig.defaultUserAgent,
+      // },
       headers: <String, dynamic>{
+        ...AppConfig.defaultBrowserHeaders,
+        'Accept-Encoding': 'identity', // ဤလိုင်းကို ထည့်ပါ
         Headers.contentTypeHeader: Headers.jsonContentType,
-        Headers.acceptHeader: Headers.jsonContentType,
-        'Accept': 'application/json',
-        'User-Agent':
-            'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
       },
       validateStatus: (status) =>
           status != null && status >= 200 && status < 600,
@@ -93,6 +97,13 @@ class ApiService {
                   options.extra['sentAuth'] = true;
                 }
               }
+              // GET/HEAD without body: avoid Content-Type: application/json (WAF / cache oddities).
+              final String methodUpper = options.method.toUpperCase();
+              if (methodUpper == 'GET' || methodUpper == 'HEAD') {
+                options.headers.remove(Headers.contentTypeHeader);
+                options.headers.remove('content-type');
+                options.headers.remove('Content-Type');
+              }
               handler.next(options);
             },
         onResponse:
@@ -121,6 +132,35 @@ class ApiService {
           final int? code = err.response?.statusCode;
           if (code == 401 || code == 403) {
             await _onUnauthorized(err.requestOptions, code!);
+          }
+          handler.next(err);
+        },
+      ),
+    );
+
+    // Runs after auth injection so logs reflect final outgoing headers.
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (RequestOptions options, RequestInterceptorHandler handler) {
+          // Optional noisy request logging (uncomment when debugging headers / routes).
+          // print('🚀 [Dio Request] ${options.method} ${options.uri}');
+          // print('📦 [Headers] ${options.headers}');
+          handler.next(options);
+        },
+        onResponse: (Response response, ResponseInterceptorHandler handler) {
+          // print('✅ [Dio Response] ${response.statusCode} - ${response.requestOptions.uri}');
+          handler.next(response);
+        },
+        onError: (DioException err, ErrorInterceptorHandler handler) {
+          // print('❌ [Dio Error] Status: ${err.response?.statusCode} - ${err.requestOptions.uri}');
+          if (err.response?.data != null) {
+            // Keep pre-parse / raw body capture + truncation for quick re-enable (JSON/plain issues).
+            // ignore: unused_local_variable
+            String rawError = err.response?.data.toString() ?? '';
+            if (rawError.length > 500) {
+              rawError = '${rawError.substring(0, 500)}... (truncated)';
+            }
+            // print('❌ [Dio Raw Error Body] $rawError');
           }
           handler.next(err);
         },
@@ -219,24 +259,253 @@ class ApiService {
     return null;
   }
 
+  // OLD CODE:
+  // static const int _apiParseBodyPreviewMaxChars = 500;
+  //
+  // /// Same string conversion as [responseBodyString] for parse diagnostics (kept
+  // /// above that method so helpers can sit next to JSON parsers).
+  // static String _fullRawBodyStringForApiParseLog(Response<dynamic>? response) {
+  //   final Object? data = response?.data;
+  //   if (data == null) {
+  //     return '';
+  //   }
+  //   if (data is String) {
+  //     return data;
+  //   }
+  //   try {
+  //     return json.encode(data);
+  //   } catch (_) {
+  //     return data.toString();
+  //   }
+  // }
+  //
+  // static String _previewRawBodyForApiParseLog(Response<dynamic>? response) {
+  //   final String full = _fullRawBodyStringForApiParseLog(response);
+  //   if (full.length <= _apiParseBodyPreviewMaxChars) {
+  //     return full;
+  //   }
+  //   return '${full.substring(0, _apiParseBodyPreviewMaxChars)}... (truncated, ${full.length} chars total)';
+  // }
+  //
+  // static void _logApiParseFailure(
+  //   Response<dynamic>? response, {
+  //   required String helperName,
+  //   required Object error,
+  //   StackTrace? stackTrace,
+  //   String? detail,
+  // }) {
+  //   final int? status = response?.statusCode;
+  //   final String preview = _previewRawBodyForApiParseLog(response);
+  //   final String detailPart = detail != null ? ' — $detail' : '';
+  //   Logger.warning(
+  //     'API Parse Error: $helperName — HTTP status=$status$detailPart — rawBodyPreview="$preview" — error=$error',
+  //     tag: 'ApiService',
+  //     error: error,
+  //     stackTrace: stackTrace,
+  //   );
+  // }
+  //
+  // // OLD CODE:
+  // // /// JSON array from [Response.data] (List or JSON string).
+  // // static List<dynamic>? responseAsJsonList(Response<dynamic>? response) {
+  // //   final Object? data = response?.data;
+  // //   if (data is List<dynamic>) {
+  // //     return data;
+  // //   }
+  // //   if (data is List) {
+  // //     return List<dynamic>.from(data);
+  // //   }
+  // //   if (data is String) {
+  // //     try {
+  // //       final Object? decoded = json.decode(data);
+  // //       if (decoded is List) {
+  // //         return List<dynamic>.from(decoded);
+  // //       }
+  // //     } catch (_) {}
+  // //   }
+  // //   return null;
+  // // }
+  //
+  // /// JSON array from [Response.data] (List or JSON string).
+  // static List<dynamic>? responseAsJsonList(Response<dynamic>? response) {
+  //   final Object? data = response?.data;
+  //   if (data is List<dynamic>) {
+  //     return data;
+  //   }
+  //   if (data is List) {
+  //     return List<dynamic>.from(data);
+  //   }
+  //   if (data is String) {
+  //     try {
+  //       final Object? decoded = json.decode(data);
+  //       if (decoded is List) {
+  //         return List<dynamic>.from(decoded);
+  //       }
+  //       _logApiParseFailure(
+  //         response,
+  //         helperName: 'responseAsJsonList',
+  //         error: 'Decoded JSON root is not a List',
+  //         stackTrace: StackTrace.current,
+  //         detail: decoded == null
+  //             ? 'decoded=null'
+  //             : 'decodedType=${decoded.runtimeType}',
+  //       );
+  //       return null;
+  //     } on FormatException catch (e, st) {
+  //       _logApiParseFailure(
+  //         response,
+  //         helperName: 'responseAsJsonList',
+  //         error: e,
+  //         stackTrace: st,
+  //       );
+  //       return null;
+  //     } catch (e, st) {
+  //       _logApiParseFailure(
+  //         response,
+  //         helperName: 'responseAsJsonList',
+  //         error: e,
+  //         stackTrace: st,
+  //       );
+  //       return null;
+  //     }
+  //   }
+  //   return null;
+  // }
+  //
+  // static bool isSuccessResponse(Response<dynamic>? response) {
+  //   final int? code = response?.statusCode;
+  //   return code != null && code >= 200 && code < 300;
+  // }
+  //
+  // // OLD CODE:
+  // // /// JSON object from [Response.data] (Map or JSON string).
+  // // static Map<String, dynamic>? responseAsJsonMap(Response<dynamic>? response) {
+  // //   final Object? data = response?.data;
+  // //   if (data == null) {
+  // //     return null;
+  // //   }
+  // //   if (data is Map<String, dynamic>) {
+  // //     return data;
+  // //   }
+  // //   if (data is Map) {
+  // //     return Map<String, dynamic>.from(data);
+  // //   }
+  // //   if (data is String) {
+  // //     try {
+  // //       final Object? decoded = json.decode(data);
+  // //       if (decoded is Map<String, dynamic>) {
+  // //         return decoded;
+  // //       }
+  // //       if (decoded is Map) {
+  // //         return Map<String, dynamic>.from(decoded);
+  // //       }
+  // //     } catch (_) {}
+  // //   }
+  // //   return null;
+  // // }
+  //
+  // /// JSON object from [Response.data] (Map or JSON string).
+  // static Map<String, dynamic>? responseAsJsonMap(Response<dynamic>? response) {
+  //   final Object? data = response?.data;
+  //   if (data == null) {
+  //     return null;
+  //   }
+  //   if (data is Map<String, dynamic>) {
+  //     return data;
+  //   }
+  //   if (data is Map) {
+  //     return Map<String, dynamic>.from(data);
+  //   }
+  //   if (data is String) {
+  //     try {
+  //       final Object? decoded = json.decode(data);
+  //       if (decoded is Map<String, dynamic>) {
+  //         return decoded;
+  //       }
+  //       if (decoded is Map) {
+  //         return Map<String, dynamic>.from(decoded);
+  //       }
+  //       _logApiParseFailure(
+  //         response,
+  //         helperName: 'responseAsJsonMap',
+  //         error: 'Decoded JSON root is not a Map',
+  //         stackTrace: StackTrace.current,
+  //         detail: decoded == null
+  //             ? 'decoded=null'
+  //             : 'decodedType=${decoded.runtimeType}',
+  //       );
+  //       return null;
+  //     } on FormatException catch (e, st) {
+  //       _logApiParseFailure(
+  //         response,
+  //         helperName: 'responseAsJsonMap',
+  //         error: e,
+  //         stackTrace: st,
+  //       );
+  //       return null;
+  //     } catch (e, st) {
+  //       _logApiParseFailure(
+  //         response,
+  //         helperName: 'responseAsJsonMap',
+  //         error: e,
+  //         stackTrace: st,
+  //       );
+  //       return null;
+  //     }
+  //   }
+  //   return null;
+  // }
+
   /// JSON array from [Response.data] (List or JSON string).
   static List<dynamic>? responseAsJsonList(Response<dynamic>? response) {
     final Object? data = response?.data;
-    if (data is List<dynamic>) {
-      return data;
-    }
-    if (data is List) {
-      return List<dynamic>.from(data);
-    }
+    if (data == null) return null;
+
+    if (data is List<dynamic>) return data;
+    if (data is List) return List<dynamic>.from(data);
+
     if (data is String) {
       try {
         final Object? decoded = json.decode(data);
-        if (decoded is List) {
-          return List<dynamic>.from(decoded);
-        }
-      } catch (_) {}
+        if (decoded is List) return List<dynamic>.from(decoded);
+
+        _logApiParseFailure(
+          'responseAsJsonList (Type Mismatch)',
+          response,
+          FormatException('Expected List but got ${decoded.runtimeType}'),
+          StackTrace.current,
+        );
+      } catch (e, st) {
+        _logApiParseFailure('responseAsJsonList', response, e, st);
+      }
     }
     return null;
+  }
+
+  /// HTML Error Page အရှည်ကြီးတွေ ပြန်လာရင် Console မှာ Memory မပြည့်အောင်
+  /// ပထမဆုံး စာလုံး ၅၀၀ ကိုပဲ ဖြတ်ယူမယ့် Helper Function
+  static String _previewRawBodyForApiParseLog(String rawBody) {
+    if (rawBody.length <= 500) return rawBody;
+    return '${rawBody.substring(0, 500)}... (truncated, ${rawBody.length} chars total)';
+  }
+
+  /// JSON Parse လုပ်လို့မရတဲ့ အခြေအနေတိုင်းမှာ သေချာ Log ထုတ်ပေးမယ့် Helper
+  static void _logApiParseFailure(
+    String helperName,
+    Response<dynamic>? response,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    final int? statusCode = response?.statusCode;
+    final String rawData = response?.data?.toString() ?? 'null';
+    final String bodyPreview = _previewRawBodyForApiParseLog(rawData);
+
+    Logger.warning(
+      'API Parse Error: $helperName — HTTP status=$statusCode — rawBodyPreview="$bodyPreview"',
+      tag: 'ApiService',
+      error: error,
+      stackTrace: stackTrace,
+    );
   }
 
   static bool isSuccessResponse(Response<dynamic>? response) {
@@ -247,25 +516,26 @@ class ApiService {
   /// JSON object from [Response.data] (Map or JSON string).
   static Map<String, dynamic>? responseAsJsonMap(Response<dynamic>? response) {
     final Object? data = response?.data;
-    if (data == null) {
-      return null;
-    }
-    if (data is Map<String, dynamic>) {
-      return data;
-    }
-    if (data is Map) {
-      return Map<String, dynamic>.from(data);
-    }
+    if (data == null) return null;
+
+    if (data is Map<String, dynamic>) return data;
+    if (data is Map) return Map<String, dynamic>.from(data);
+
     if (data is String) {
       try {
         final Object? decoded = json.decode(data);
-        if (decoded is Map<String, dynamic>) {
-          return decoded;
-        }
-        if (decoded is Map) {
-          return Map<String, dynamic>.from(decoded);
-        }
-      } catch (_) {}
+        if (decoded is Map<String, dynamic>) return decoded;
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+
+        _logApiParseFailure(
+          'responseAsJsonMap (Type Mismatch)',
+          response,
+          FormatException('Expected Map but got ${decoded.runtimeType}'),
+          StackTrace.current,
+        );
+      } catch (e, st) {
+        _logApiParseFailure('responseAsJsonMap', response, e, st);
+      }
     }
     return null;
   }
@@ -495,26 +765,29 @@ class ApiService {
     if (merge?.extra != null) {
       extra.addAll(merge!.extra!);
     }
-    final Map<String, dynamic> mergedHeaders = <String, dynamic>{};
+
+    final Map<String, dynamic> mergedHeaders = <String, dynamic>{
+      ...AppConfig.defaultBrowserHeaders,
+    };
+
+    // GZip Compression ကို ပိတ်ရန် (Server မှ compressed data ပို့ခြင်းကို တားဆီးရန်)
+    mergedHeaders['Accept-Encoding'] = 'identity';
+
     if (merge?.headers != null) {
       mergedHeaders.addAll(merge!.headers!);
     }
     if (headers != null) {
       mergedHeaders.addAll(headers);
     }
-    // Old Code: request-specific headers were passed through without guaranteed UA/Accept.
-    //
-    // New Code: enforce browser-like headers on every request (unless explicitly overridden).
+
     mergedHeaders.putIfAbsent('Accept', () => 'application/json');
-    mergedHeaders.putIfAbsent(
-      'User-Agent',
-      () =>
-          'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
-    );
+    mergedHeaders.putIfAbsent('User-Agent', () => AppConfig.defaultUserAgent);
+
     return Options(
       extra: extra,
       headers: mergedHeaders.isEmpty ? null : mergedHeaders,
-      responseType: merge?.responseType,
+      // ဤနေရာတွင် ပြင်ဆင်ထားသည် (Dio အလိုအလျောက် Parse မလုပ်စေရန်)
+      responseType: merge?.responseType ?? ResponseType.plain,
       followRedirects: merge?.followRedirects,
       validateStatus: merge?.validateStatus,
       receiveDataWhenStatusError: merge?.receiveDataWhenStatusError,
@@ -541,13 +814,27 @@ class ApiService {
           //   Headers.contentTypeHeader: Headers.jsonContentType,
           // },
           //
-          // New Code:
-          headers: <String, dynamic>{
-            Headers.contentTypeHeader: Headers.jsonContentType,
-            'Accept': 'application/json',
-            'User-Agent':
-                'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
-          },
+          // OLD CODE:
+          // headers: <String, dynamic>{
+          //   Headers.contentTypeHeader: Headers.jsonContentType,
+          //   'Accept': 'application/json',
+          //   'User-Agent':
+          //       'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+          // },
+          // OLD CODE:
+          // headers: <String, dynamic>{
+          //   Headers.contentTypeHeader: Headers.jsonContentType,
+          //   'Accept': 'application/json',
+          //   'User-Agent': AppConfig.defaultUserAgent,
+          // },
+          /*
+          // OLD CODE: GET carried Content-Type: application/json.
+          // headers: <String, dynamic>{
+          //   ...AppConfig.defaultBrowserHeaders,
+          //   Headers.contentTypeHeader: Headers.jsonContentType,
+          // },
+          */
+          headers: <String, dynamic>{...AppConfig.defaultBrowserHeaders},
         ),
       );
 

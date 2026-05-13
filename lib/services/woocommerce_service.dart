@@ -6,8 +6,8 @@ import 'package:dio/dio.dart';
 import 'package:ecommerce_int2/api_service.dart';
 import 'package:ecommerce_int2/config/woocommerce_config.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:ecommerce_int2/utils/app_config.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 
 /// WooCommerce API Service
 ///
@@ -16,10 +16,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 class WooCommerceService {
   WooCommerceService();
 
-  Future<Response<dynamic>> _getUri(
-    Uri uri, {
-    int? timeoutSeconds,
-  }) async {
+  Future<Response<dynamic>> _getUri(Uri uri, {int? timeoutSeconds}) async {
     final int sec = timeoutSeconds ?? WooCommerceConfig.timeout;
     return ApiService.dio.getUri<dynamic>(
       uri,
@@ -27,7 +24,13 @@ class WooCommerceService {
         extra: const <String, Object?>{'skipAuth': true},
         sendTimeout: Duration(seconds: sec),
         receiveTimeout: Duration(seconds: sec),
-        headers: const <String, dynamic>{
+        // OLD CODE:
+        // headers: const <String, dynamic>{
+        //   'Content-Type': 'application/json',
+        //   'Accept': 'application/json',
+        // },
+        headers: <String, dynamic>{
+          ...AppConfig.defaultBrowserHeaders,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
@@ -73,11 +76,10 @@ class WooCommerceService {
       }
 
       // Build URI
-      final uri = Uri.parse(WooCommerceConfig.getProductsUrl(
-        page: page,
-        perPage: perPage,
-      ));
-      
+      final uri = Uri.parse(
+        WooCommerceConfig.getProductsUrl(page: page, perPage: perPage),
+      );
+
       // Add query parameters manually
       final finalUri = Uri(
         scheme: uri.scheme,
@@ -101,8 +103,9 @@ class WooCommerceService {
         }
         debugPrint('✅ Fetched ${jsonList.length} products successfully');
 
-        final products =
-            jsonList.map((json) => WooCommerceProduct.fromJson(json)).toList();
+        final products = jsonList
+            .map((json) => WooCommerceProduct.fromJson(json))
+            .toList();
 
         return products;
       } else if (response.statusCode == 401) {
@@ -116,8 +119,9 @@ class WooCommerceService {
           statusCode: 404,
         );
       } else {
-        final Map<String, dynamic>? errorBody =
-            ApiService.responseAsJsonMap(response);
+        final Map<String, dynamic>? errorBody = ApiService.responseAsJsonMap(
+          response,
+        );
         throw WooCommerceException(
           errorBody?['message']?.toString() ?? 'Failed to fetch products',
           statusCode: response.statusCode,
@@ -177,9 +181,8 @@ class WooCommerceService {
     try {
       debugPrint('🛒 Fetching product ID: $productId');
 
-      final uri = Uri.parse(WooCommerceConfig.getProductUrl(productId))
-          ;
-      
+      final uri = Uri.parse(WooCommerceConfig.getProductUrl(productId));
+
       final authUri = Uri(
         scheme: uri.scheme,
         host: uri.host,
@@ -191,8 +194,9 @@ class WooCommerceService {
       final Response<dynamic> response = await _getUri(authUri);
 
       if (response.statusCode == 200) {
-        final Map<String, dynamic>? jsonData =
-            ApiService.responseAsJsonMap(response);
+        final Map<String, dynamic>? jsonData = ApiService.responseAsJsonMap(
+          response,
+        );
         if (jsonData == null) {
           throw const FormatException('Product response is not JSON object');
         }
@@ -250,11 +254,7 @@ class WooCommerceService {
     int page = 1,
     int perPage = 20,
   }) async {
-    return fetchProducts(
-      page: page,
-      perPage: perPage,
-      featured: true,
-    );
+    return fetchProducts(page: page, perPage: perPage, featured: true);
   }
 
   /// Get on-sale products
@@ -271,9 +271,8 @@ class WooCommerceService {
   /// Get categories
   Future<List<dynamic>> getCategories({int page = 1, int? perPage}) async {
     try {
-      final uri = Uri.parse(WooCommerceConfig.getCategoriesUrl(page: page))
-          ;
-      
+      final uri = Uri.parse(WooCommerceConfig.getCategoriesUrl(page: page));
+
       final authUri = Uri(
         scheme: uri.scheme,
         host: uri.host,
@@ -321,9 +320,8 @@ class WooCommerceService {
     try {
       debugPrint('🔍 Testing WooCommerce API connection...');
 
-      final uri = Uri.parse(WooCommerceConfig.getProductsUrl(perPage: 1))
-          ;
-      
+      final uri = Uri.parse(WooCommerceConfig.getProductsUrl(perPage: 1));
+
       final authUri = Uri(
         scheme: uri.scheme,
         host: uri.host,
@@ -332,8 +330,10 @@ class WooCommerceService {
         queryParameters: WooCommerceConfig.authParams,
       );
 
-      final Response<dynamic> response =
-          await _getUri(authUri, timeoutSeconds: 10);
+      final Response<dynamic> response = await _getUri(
+        authUri,
+        timeoutSeconds: 10,
+      );
 
       if (response.statusCode == 200) {
         debugPrint('✅ API connection successful');
@@ -358,11 +358,7 @@ class WooCommerceException implements Exception {
   final int? statusCode;
   final dynamic originalError;
 
-  WooCommerceException(
-    this.message, {
-    this.statusCode,
-    this.originalError,
-  });
+  WooCommerceException(this.message, {this.statusCode, this.originalError});
 
   @override
   String toString() {

@@ -59,6 +59,25 @@ class AuthProvider with ChangeNotifier {
     _initializeAuth();
   }
 
+  /// Clears session caches and logs out when stored or remote user id is invalid (e.g. `0`).
+  Future<void> _recoverCorruptedSession(String reason) async {
+    Logger.warning(
+      'Auth auto-recovery: $reason — clearing session caches and logging out.',
+      tag: 'AuthProvider',
+    );
+    try {
+      await AuthSessionCacheService.clearAllSessionCaches();
+    } catch (e, st) {
+      Logger.error(
+        'clearAllSessionCaches failed during recovery: $e',
+        tag: 'AuthProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+    await logout();
+  }
+
   /// Initialize authentication state
   Future<void> _initializeAuth() async {
     if (_hasInitialized && _status != AuthStatus.initial) {
@@ -76,6 +95,11 @@ class AuthProvider with ChangeNotifier {
       final isLoggedIn = await AuthService.isLoggedIn();
 
       if (isLoggedIn && storedUser != null) {
+        if (storedUser.id == 0) {
+          await _recoverCorruptedSession('stored_user_id_zero');
+          return;
+        }
+
         Logger.debug(
           'User is logged in, verifying token...',
           tag: 'AuthProvider',
@@ -119,6 +143,10 @@ class AuthProvider with ChangeNotifier {
                 });
 
             if (currentUser != null) {
+              if (currentUser.id == 0) {
+                await _recoverCorruptedSession('verify_remote_user_id_zero');
+                return;
+              }
               Logger.debug(
                 'Token is valid, user authenticated',
                 tag: 'AuthProvider',
@@ -172,6 +200,10 @@ class AuthProvider with ChangeNotifier {
         final isLoggedIn = await AuthService.isLoggedIn();
 
         if (isLoggedIn && storedUser != null) {
+          if (storedUser.id == 0) {
+            await _recoverCorruptedSession('fallback_stored_user_id_zero');
+            return;
+          }
           Logger.warning(
             'Error occurred but keeping user logged in with stored data',
             tag: 'AuthProvider',
@@ -239,6 +271,12 @@ class AuthProvider with ChangeNotifier {
 
       if (response.success && response.user != null) {
         final newUser = response.user!;
+        if (newUser.id == 0) {
+          await _recoverCorruptedSession('login_response_user_id_zero');
+          return AuthResponse.error(
+            message: 'Invalid account state. Please sign in again.',
+          );
+        }
         // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — no explicit cache clear on login switch.
         // if (response.success && response.user != null) {
         //   _user = response.user;
@@ -295,6 +333,12 @@ class AuthProvider with ChangeNotifier {
 
       if (response.success && response.user != null) {
         final newUser = response.user!;
+        if (newUser.id == 0) {
+          await _recoverCorruptedSession('register_response_user_id_zero');
+          return AuthResponse.error(
+            message: 'Invalid account state. Please try again.',
+          );
+        }
         final bool switchedAccount =
             previousUserId != null && previousUserId != newUser.id;
         if (switchedAccount) {
@@ -509,6 +553,10 @@ class AuthProvider with ChangeNotifier {
 
         final currentUser = await AuthService.getCurrentUser();
         if (currentUser != null) {
+          if (currentUser.id == 0) {
+            await _recoverCorruptedSession('refresh_user_id_zero');
+            return;
+          }
           Logger.info(
             'Refreshed user data - Name: ${currentUser.firstName} ${currentUser.lastName}, Phone: ${currentUser.phone}',
             tag: 'AuthProvider',

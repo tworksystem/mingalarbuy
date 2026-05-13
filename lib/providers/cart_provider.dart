@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +11,12 @@ class CartProvider with ChangeNotifier {
   List<CartItem> _items = [];
   bool _isLoading = false;
   static const String _cartKey = 'cart_items';
+
+  /// Bumped on [clearCart] / session invalidation so in-flight [_loadCartFromStorage]
+  /// cannot re-apply stale SharedPreferences JSON after a clear or user switch.
+  int _cartHydrateEpoch = 0;
+
+  String? _sessionUserId;
 
   // Getters
   List<CartItem> get items => List.unmodifiable(_items);
@@ -28,22 +35,53 @@ class CartProvider with ChangeNotifier {
   String get formattedTotalPrice => '${totalPrice.toStringAsFixed(2)} Ks';
 
   CartProvider() {
-    _loadCartFromStorage();
+    // OLD CODE: constructor called [_loadCartFromStorage] synchronously without
+    // invalidation token, so it could race with [clearCart] during auth switch.
+    // _loadCartFromStorage();
+    Future.microtask(() => _loadCartFromStorage());
+  }
+
+  /// Clears in-memory cart and persists; bumps [_cartHydrateEpoch] to cancel
+  /// stale storage hydration.
+  Future<void> handleAuthStateChange({
+    required bool isAuthenticated,
+    String? userId,
+  }) async {
+    if (!isAuthenticated) {
+      _sessionUserId = null;
+      await clearCart();
+      return;
+    }
+    if (userId == null) return;
+    final switched = _sessionUserId != null && _sessionUserId != userId;
+    _sessionUserId = userId;
+    if (switched) {
+      await clearCart();
+    }
   }
 
   /// Load cart from SharedPreferences
   Future<void> _loadCartFromStorage() async {
+    final loadToken = _cartHydrateEpoch;
     _setLoading(true);
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (loadToken != _cartHydrateEpoch) {
+        return;
+      }
       final cartJson = prefs.getString(_cartKey);
 
       if (cartJson != null) {
         final List<dynamic> cartData = json.decode(cartJson);
+        if (loadToken != _cartHydrateEpoch) {
+          return;
+        }
         _items = cartData
             .map((item) => CartItem.fromJson(item as Map<String, dynamic>))
             .toList();
         print('DEBUG: Cart loaded from storage - ${_items.length} items');
+      } else if (loadToken == _cartHydrateEpoch) {
+        _items = [];
       }
     } catch (e) {
       print('Error loading cart from storage: $e');
@@ -56,8 +94,9 @@ class CartProvider with ChangeNotifier {
   Future<void> _saveCartToStorage() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cartJson =
-          json.encode(_items.map((item) => item.toJson()).toList());
+      final cartJson = json.encode(
+        _items.map((item) => item.toJson()).toList(),
+      );
       await prefs.setString(_cartKey, cartJson);
       print('DEBUG: Cart saved to storage - ${_items.length} items');
     } catch (e) {
@@ -82,7 +121,9 @@ class CartProvider with ChangeNotifier {
         _items[existingItemIndex] = _items[existingItemIndex].copyWith(
           quantity: _items[existingItemIndex].quantity + quantity,
         );
-        print('DEBUG: Updated existing cart item quantity to ${_items[existingItemIndex].quantity}');
+        print(
+          'DEBUG: Updated existing cart item quantity to ${_items[existingItemIndex].quantity}',
+        );
       } else {
         // Add new item to cart
         _items.add(CartItem(product: product, quantity: quantity));
@@ -90,26 +131,25 @@ class CartProvider with ChangeNotifier {
       }
 
       await _saveCartToStorage();
-      
+
       // Queue for offline sync if offline
       if (!ConnectivityService().isConnected) {
-        await OfflineQueueService().addToQueue(
-          OfflineQueueItemType.addToCart,
-          {
-            'product': {
-              'image': product.image,
-              'name': product.name,
-              'description': product.description,
-              'price': product.price,
-            },
-            'quantity': quantity,
+        await OfflineQueueService().addToQueue(OfflineQueueItemType.addToCart, {
+          'product': {
+            'image': product.image,
+            'name': product.name,
+            'description': product.description,
+            'price': product.price,
           },
-        );
+          'quantity': quantity,
+        });
       }
-      
+
       // Notify listeners BEFORE setting loading to false to ensure UI updates immediately
       notifyListeners();
-      print('DEBUG: Cart updated - Total items: $itemCount, Total price: $formattedTotalPrice');
+      print(
+        'DEBUG: Cart updated - Total items: $itemCount, Total price: $formattedTotalPrice',
+      );
     } catch (e) {
       print('Error adding to cart: $e');
     } finally {
@@ -131,7 +171,7 @@ class CartProvider with ChangeNotifier {
       );
 
       await _saveCartToStorage();
-      
+
       // Queue for offline sync if offline (for future server-side cart sync)
       if (!ConnectivityService().isConnected) {
         await OfflineQueueService().addToQueue(
@@ -146,7 +186,7 @@ class CartProvider with ChangeNotifier {
           },
         );
       }
-      
+
       // Notify listeners immediately to update UI
       notifyListeners();
       print('DEBUG: Removed item from cart - Total items: $itemCount');
@@ -178,7 +218,7 @@ class CartProvider with ChangeNotifier {
       if (itemIndex != -1) {
         _items[itemIndex] = _items[itemIndex].copyWith(quantity: newQuantity);
         await _saveCartToStorage();
-        
+
         // Queue for offline sync if offline
         if (!ConnectivityService().isConnected) {
           await OfflineQueueService().addToQueue(
@@ -194,10 +234,12 @@ class CartProvider with ChangeNotifier {
             },
           );
         }
-        
+
         // Notify listeners immediately to update UI
         notifyListeners();
-        print('DEBUG: Updated cart item quantity to $newQuantity - Total items: $itemCount');
+        print(
+          'DEBUG: Updated cart item quantity to $newQuantity - Total items: $itemCount',
+        );
       }
     } catch (e) {
       print('Error updating quantity: $e');
@@ -210,17 +252,26 @@ class CartProvider with ChangeNotifier {
 
   /// Clear entire cart
   Future<void> clearCart() async {
+    // OLD CODE: no [_cartHydrateEpoch] bump, so a concurrent [_loadCartFromStorage]
+    // could repopulate [_items] after prefs were cleared.
+    // _setLoading(true);
+    // try {
+    //   _items.clear();
+    _cartHydrateEpoch++;
+    final loadToken = _cartHydrateEpoch;
     _setLoading(true);
 
     try {
       _items.clear();
       await _saveCartToStorage();
-      notifyListeners();
       print('DEBUG: Cart cleared');
     } catch (e) {
       print('Error clearing cart: $e');
     } finally {
-      _setLoading(false);
+      if (loadToken == _cartHydrateEpoch) {
+        _setLoading(false);
+      }
+      notifyListeners();
     }
   }
 

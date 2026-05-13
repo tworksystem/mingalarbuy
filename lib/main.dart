@@ -20,6 +20,7 @@ import 'package:ecommerce_int2/widgets/point_auth_listener.dart';
 import 'package:ecommerce_int2/widgets/wallet_auth_listener.dart';
 import 'package:ecommerce_int2/widgets/order_auth_listener.dart';
 import 'package:ecommerce_int2/widgets/engagement_auth_listener.dart';
+import 'package:ecommerce_int2/widgets/session_scoped_auth_listener.dart';
 import 'package:ecommerce_int2/providers/in_app_notification_provider.dart';
 import 'package:ecommerce_int2/services/notification_service.dart';
 import 'package:ecommerce_int2/services/background_service.dart';
@@ -239,6 +240,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     minutes: 2,
   );
 
+  /// [MultiProvider] is returned from [build]; [State.context] on [_MyAppState] is **above**
+  /// that subtree, so [Provider.of] must use a descendant context (e.g. navigator overlay).
+  BuildContext? get _navigatorProviderContext {
+    final BuildContext? ctx = AppKeys.navigatorKey.currentContext;
+    if (ctx != null && ctx.mounted) return ctx;
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -286,7 +295,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     _lastWebVisibilityBalanceRefresh = now;
 
     try {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final authProvider = AuthProvider();
       if (!authProvider.isAuthenticated || authProvider.user == null) {
         return;
       }
@@ -322,8 +331,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       // Clear any stale sessions first
       await UsageTrackingService.clearStaleSessions();
 
-      // Get auth provider to check if user is logged in
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      // Auth is a singleton; avoid [Provider.of] with [MyApp] state context (above [MultiProvider]).
+      final authProvider = AuthProvider();
 
       if (authProvider.isAuthenticated && authProvider.user != null) {
         final userId = authProvider.user!.id.toString();
@@ -354,6 +363,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       Map<String, dynamic> data,
     ) async {
       try {
+        final BuildContext? providerCtx = _navigatorProviderContext;
+        if (providerCtx == null) {
+          Logger.warning(
+            'FCM order update: no navigator context for providers',
+            tag: 'Main',
+          );
+          return;
+        }
+
         Logger.info(
           'FCM notification received, refreshing orders immediately',
           tag: 'Main',
@@ -361,10 +379,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
         // Get providers from context
         final orderProvider = Provider.of<OrderProvider>(
-          context,
+          providerCtx,
           listen: false,
         );
-        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final authProvider = Provider.of<AuthProvider>(
+          providerCtx,
+          listen: false,
+        );
         // Use singleton instance to ensure we're updating the same provider instance used in UI
         final notificationProvider = InAppNotificationProvider.instance;
 
@@ -414,9 +435,18 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       try {
         Logger.info('Navigating to order details: $orderId', tag: 'Main');
 
+        final BuildContext? providerCtx = _navigatorProviderContext;
+        if (providerCtx == null) {
+          Logger.warning(
+            'Order navigation: no navigator context for providers',
+            tag: 'Main',
+          );
+          return;
+        }
+
         // Get order provider to find the order
         final orderProvider = Provider.of<OrderProvider>(
-          context,
+          providerCtx,
           listen: false,
         );
 
@@ -439,7 +469,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
           // If order not found, sync orders first
           final authProvider = Provider.of<AuthProvider>(
-            context,
+            providerCtx,
             listen: false,
           );
           if (authProvider.isAuthenticated && authProvider.user != null) {
@@ -633,9 +663,20 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     // Setup callback for real-time engagement feed refresh on FCM updates
     PushNotificationService().setEngagementFeedRefreshCallback(() async {
       try {
-        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final BuildContext? providerCtx = _navigatorProviderContext;
+        if (providerCtx == null) {
+          Logger.warning(
+            'Engagement refresh callback skipped: no navigator context',
+            tag: 'Main',
+          );
+          return;
+        }
+        final authProvider = Provider.of<AuthProvider>(
+          providerCtx,
+          listen: false,
+        );
         final engagementProvider = Provider.of<EngagementProvider>(
-          context,
+          providerCtx,
           listen: false,
         );
 
@@ -798,7 +839,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Handle usage tracking when app resumes
   Future<void> _handleUsageTrackingResume() async {
     try {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final authProvider = AuthProvider();
 
       if (authProvider.isAuthenticated && authProvider.user != null) {
         final userId = authProvider.user!.id.toString();
@@ -819,7 +860,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Handle usage tracking when app pauses
   Future<void> _handleUsageTrackingPause() async {
     try {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final authProvider = AuthProvider();
 
       if (authProvider.isAuthenticated && authProvider.user != null) {
         final userId = authProvider.user!.id.toString();
@@ -840,7 +881,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Handle usage tracking when app is detached (terminated)
   Future<void> _handleUsageTrackingDetached() async {
     try {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final authProvider = AuthProvider();
 
       if (authProvider.isAuthenticated && authProvider.user != null) {
         final userId = authProvider.user!.id.toString();
@@ -864,8 +905,28 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Start active sync with retry in case auth is not ready yet
   Future<void> _startActiveSyncWithRetry({int retry = 0}) async {
     try {
-      final orderProvider = Provider.of<OrderProvider>(context, listen: false);
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final BuildContext? providerCtx = _navigatorProviderContext;
+      if (providerCtx == null) {
+        if (retry < 15) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          await _startActiveSyncWithRetry(retry: retry + 1);
+        } else {
+          Logger.warning(
+            'Active sync: navigator context never became available',
+            tag: 'Main',
+          );
+        }
+        return;
+      }
+
+      final orderProvider = Provider.of<OrderProvider>(
+        providerCtx,
+        listen: false,
+      );
+      final authProvider = Provider.of<AuthProvider>(
+        providerCtx,
+        listen: false,
+      );
 
       if (authProvider.isAuthenticated && authProvider.user != null) {
         await ActiveSyncService().startPolling(
@@ -890,8 +951,22 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// Start active sync polling for near-instant notifications
   Future<void> _startActiveSync() async {
     try {
-      final orderProvider = Provider.of<OrderProvider>(context, listen: false);
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final BuildContext? providerCtx = _navigatorProviderContext;
+      if (providerCtx == null) {
+        Logger.warning(
+          'Active sync on resume skipped: no navigator context',
+          tag: 'Main',
+        );
+        return;
+      }
+      final orderProvider = Provider.of<OrderProvider>(
+        providerCtx,
+        listen: false,
+      );
+      final authProvider = Provider.of<AuthProvider>(
+        providerCtx,
+        listen: false,
+      );
 
       if (authProvider.isAuthenticated && authProvider.user != null) {
         await ActiveSyncService().startPolling(
@@ -957,10 +1032,22 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
 
       final userIdString = authProvider.user!.id.toString();
-      // Periodic history sync; ledger balance reconcile is global resume (above).
+      /*
+      Old Code: periodic history-only sync — balance drifted until manual refresh.
       await PointProvider.instance.loadTransactions(
         userIdString,
         forceRefresh: true,
+      );
+      */
+      await PointProvider.instance.loadBalance(
+        userIdString,
+        forceRefresh: true,
+        notifyLoading: false,
+      );
+      await PointProvider.instance.loadTransactions(
+        userIdString,
+        forceRefresh: true,
+        notifyLoading: false,
       );
       Logger.info(
         'Release fallback sync completed for user=$userIdString',
@@ -999,18 +1086,20 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ChangeNotifierProvider.value(value: OfflineQueueService()),
       ],
       child: _AuthCartBinder(
-        child: PointAuthListener(
-          child: WalletAuthListener(
-            child: OrderAuthListener(
-              child: EngagementAuthListener(
-                child: MaterialApp(
-                  navigatorKey: AppKeys
-                      .navigatorKey, // Global navigator key for navigation from anywhere
-                  scaffoldMessengerKey: AppKeys.scaffoldMessengerKey,
-                  title: 'PlanetMM',
-                  debugShowCheckedModeBanner: false,
-                  theme: AppTheme.lightTheme,
-                  home: SplashScreen(),
+        child: SessionScopedAuthListener(
+          child: PointAuthListener(
+            child: WalletAuthListener(
+              child: OrderAuthListener(
+                child: EngagementAuthListener(
+                  child: MaterialApp(
+                    navigatorKey: AppKeys
+                        .navigatorKey, // Global navigator key for navigation from anywhere
+                    scaffoldMessengerKey: AppKeys.scaffoldMessengerKey,
+                    title: 'PlanetMM',
+                    debugShowCheckedModeBanner: false,
+                    theme: AppTheme.lightTheme,
+                    home: SplashScreen(),
+                  ),
                 ),
               ),
             ),

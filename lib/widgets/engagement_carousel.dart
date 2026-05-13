@@ -10,7 +10,6 @@ import '../providers/engagement_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/point_provider.dart';
 import '../services/engagement_service.dart';
-import '../services/poll_winner_popup_service.dart';
 import '../services/canonical_point_balance_sync.dart';
 import '../theme/app_theme.dart';
 import '../utils/logger.dart' as app_logger;
@@ -42,7 +41,6 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   int? _lastUserId; // Track last user ID to detect user changes
   int?
   _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
-  String _lastWinnerScanSignature = '';
   final Set<String> _forcedOverlaySessionKeys = <String>{};
   final Map<String, DateTime> _handoverTriggeredAt = <String, DateTime>{};
 
@@ -363,65 +361,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     });
   }
 
-  bool _isPollResultEligibleForWinnerCheck(EngagementItem item) {
-    if (item.type != EngagementType.poll || !item.hasInteracted) return false;
-    final schedule = item.pollVotingSchedule;
-    final status = (schedule?['voting_status']?.toString() ?? '').toLowerCase();
-    final result = item.pollResult;
-    if (result == null) return false;
-    final hasWinning =
-        result['winning_option'] != null ||
-        (result['winning_index'] != null && result['winning_index'] >= 0) ||
-        ((result['options'] as List?)?.isNotEmpty ?? false);
-    final isResultLikeStatus =
-        status == 'showing_result' ||
-        status == 'showing_results' ||
-        status == 'ended' ||
-        status == 'result' ||
-        status == 'results';
-    return isResultLikeStatus &&
-        (((result['total_votes'] ?? 0) > 0) || hasWinning);
-  }
-
-  String _winnerScanSignature(List<EngagementItem> items) {
-    final parts = <String>[];
-    for (final item in items) {
-      if (!_isPollResultEligibleForWinnerCheck(item)) continue;
-      final r = item.pollResult;
-      final sch = item.pollVotingSchedule;
-      parts.add(
-        '${item.id}:${item.hasInteracted ? 1 : 0}:'
-        '${sch?['voting_status'] ?? ''}:'
-        '${r?['winning_index'] ?? ''}:${r?['total_votes'] ?? ''}:'
-        '${r?['vote_counts'] ?? ''}:${sch?['result_display_ends_at'] ?? ''}',
-      );
-    }
-    return parts.join('|');
-  }
-
-  /// Non-blocking: each poll sync runs independently so My PNP is not serialized
-  /// behind slow `/poll/state` + `/poll/results` chains.
-  void _triggerWinnerChecksForVisibleFeedPolls(List<EngagementItem> items) {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    final uid = auth.user?.id ?? 0;
-    if (uid <= 0) return;
-    for (final item in items) {
-      if (!mounted) return;
-      if (!_isPollResultEligibleForWinnerCheck(item)) continue;
-      final schedule = item.pollVotingSchedule;
-      final feedSessionId = schedule?['current_session_id']?.toString();
-      unawaited(
-        PollWinnerPopupService.checkAndShowPollWinnerPopup(
-          context: context,
-          pollId: item.id,
-          userId: uid,
-          itemTitle: item.title.isNotEmpty ? item.title : null,
-          feedSessionId: feedSessionId,
-          feedPollResult: item.pollResult,
-        ),
-      );
-    }
-  }
+  // Formerly: feed-visible poll cards called [PollWinnerPopupService.checkAndShowPollWinnerPopup]
+  // here. Point reconcile runs from [AutoRunPollWidget]._fetchResultsWithRetry only (not timer end).
 
   @override
   Widget build(BuildContext context) {
@@ -464,20 +405,6 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 tag: 'EngagementCarousel',
               );
               return const SizedBox.shrink();
-            }
-
-            // Silent poll-win balance sync for every eligible result card (no popup UI).
-            final winnerSig = _winnerScanSignature(engagementProvider.items);
-            if (winnerSig.isNotEmpty && winnerSig != _lastWinnerScanSignature) {
-              _lastWinnerScanSignature = winnerSig;
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (!mounted) return;
-                _triggerWinnerChecksForVisibleFeedPolls(
-                  engagementProvider.items,
-                );
-              });
-            } else if (winnerSig.isEmpty) {
-              _lastWinnerScanSignature = '';
             }
 
             // If rotationDurationSeconds changed for current item (e.g. Global Rotation Settings updated),
@@ -2966,12 +2893,41 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   String _optionWisePnpSummaryLine() {
     try {
       final unitValue = _resolveUnitValue();
-      // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — manual vote_counts loop only.
-      // if (unitValue == null || unitValue <= 0) return '--';
-      // ... vote_counts × unit ...
+      int? overrideUnit = unitValue;
+      if (overrideUnit == null || overrideUnit <= 0) {
+        final sched = widget.item.pollVotingSchedule;
+        if (sched != null) {
+          for (final k in [
+            'pnp_per_vote',
+            'bet_amount_step',
+            'unit_value',
+            'poll_base_cost',
+            'per_vote_cost',
+            'vote_cost',
+          ]) {
+            final raw = sched[k];
+            if (raw is int && raw > 0) {
+              overrideUnit = raw;
+              break;
+            }
+            if (raw is num) {
+              final v = raw.toInt();
+              if (v > 0) {
+                overrideUnit = v;
+                break;
+              }
+            }
+            final p = int.tryParse(raw?.toString().trim() ?? '');
+            if (p != null && p > 0) {
+              overrideUnit = p;
+              break;
+            }
+          }
+        }
+      }
       return formatPollOptionAmountsSummaryLine(
         widget.item,
-        unitValue: unitValue,
+        unitValue: overrideUnit,
       );
     } catch (_) {
       return '--';
@@ -3133,11 +3089,18 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
             : '--';
     */
     final optionTotalsLine = _optionWisePnpSummaryLine();
-    // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် —
-    // final userCountLabel = _formatCompactNumber(
-    //   widget.item.interactionCount > 0 ? widget.item.interactionCount : 0,
-    // );
-    final participation = resolvePollParticipationCount(widget.item);
+    int? participation;
+    try {
+      participation = resolvePollParticipationCount(widget.item);
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'resolvePollParticipationCount failed for item ${widget.item.id}: $e',
+        tag: 'EngagementCarousel',
+        error: e,
+        stackTrace: st,
+      );
+      participation = null;
+    }
     final userCountLabel = participation != null
         ? _formatCompactNumber(participation)
         : '--';
@@ -3374,22 +3337,28 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     if (userId == null) return;
     final userIdStr = userId.toString();
 
-    Future<void> runAttempt(String label) async {
+    // After countdown hits zero: refresh user meta only. Point sync + shimmer run from
+    // [auto_run_poll_widget.dart] after poll result is confirmed — not here (avoids timer-end shimmer).
+    Future<void> runTimerEndMetaSync(String label) async {
       try {
-        await PointProvider.instance.refreshPointState(
-          userId: userIdStr,
-          forceRefresh: true,
-          refreshBalance: true,
-          refreshTransactions: false,
-          refreshUserCallback: authProvider.refreshUser,
-        );
+        await authProvider.refreshUser();
+        if (!mounted) return;
         app_logger.Logger.info(
-          'Poll timer-end force refresh success ($label) for user=$userIdStr',
+          'Poll timer-end user meta sync success ($label) for user=$userIdStr',
           tag: 'EngagementCarousel',
         );
+        /*
+        await PointProvider.instance.reconcileAfterPollResult(
+          userId: userIdStr,
+          authoritativePollBalance: null,
+          balanceSyncDebugTag: 'poll_timer_end_overlay_$label',
+          canonicalSource: 'poll_timer_end_reconcile',
+          shouldContinue: () => mounted,
+        );
+        */
       } catch (e, st) {
         app_logger.Logger.warning(
-          'Poll timer-end force refresh failed ($label): $e',
+          'Poll timer-end user meta sync failed ($label): $e',
           tag: 'EngagementCarousel',
           error: e,
           stackTrace: st,
@@ -3397,20 +3366,12 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
       }
     }
 
-    // Fire immediately, then retry at +1s and +3s to absorb backend propagation lag.
-    unawaited(runAttempt('immediate'));
-    unawaited(
-      Future<void>.delayed(const Duration(seconds: 1), () async {
-        if (!mounted) return;
-        await runAttempt('after_1s');
-      }),
-    );
-    unawaited(
-      Future<void>.delayed(const Duration(seconds: 3), () async {
-        if (!mounted) return;
-        await runAttempt('after_3s');
-      }),
-    );
+    /*
+    Old Code: triple [refreshPointState] (+1s/+3s retries) queued many
+    [PointBalanceSyncLock] operations and congested My PNP [loadBalance].
+    Later: single [refreshPointState] on timer end still duplicated interaction-time sync.
+    */
+    unawaited(runTimerEndMetaSync('single'));
   }
 
   @override
@@ -3988,7 +3949,8 @@ Widget _pollDetailedReceiptSection(
 
 /// In-place poll result in the carousel (chart/percentages live in [_PollResultCard]).
 /// **Not** a dialog — winner celebration popups are suppressed elsewhere ([PointNotificationModal]).
-/// Poll winner balance sync: [_triggerWinnerChecksForVisibleFeedPolls] (silent).
+/// Poll result UI only; balance sync runs after auto-run result fetch ([reconcileAfterPollResult]),
+/// not on overlay timer end.
 class _PollResultWinnerPopupHost extends StatelessWidget {
   final EngagementItem item;
 
@@ -5943,7 +5905,7 @@ class _PollDialogState extends State<_PollDialog> {
     );
   }
 
-  /// Server-reported balance after poll vote (`new_balance` / `current_balance`); no client math.
+  /// Server-reported balance after poll vote; tries known REST aliases — no client math.
   int? _serverBalanceFromPollSubmitResult(Map<String, dynamic> result) {
     int? parseDyn(dynamic v) {
       if (v == null) return null;
@@ -5954,6 +5916,8 @@ class _PollDialogState extends State<_PollDialog> {
       return int.tryParse(s);
     }
 
+    /*
+    Old Code:
     final fromData = result['data'];
     if (fromData is Map) {
       final m = Map<String, dynamic>.from(fromData);
@@ -5962,6 +5926,100 @@ class _PollDialogState extends State<_PollDialog> {
     }
     return parseDyn(result['new_balance']) ??
         parseDyn(result['current_balance']);
+    */
+    const balanceKeys = <String>[
+      'new_balance',
+      'current_balance',
+      'points_balance',
+      'pnp_balance',
+      'balance',
+      'currentBalance',
+      'pointsBalance',
+      'balance_after',
+      'running_balance',
+      'ledger_balance',
+    ];
+
+    int? pickFromMap(Map<String, dynamic> m) {
+      for (final k in balanceKeys) {
+        final v = parseDyn(m[k]);
+        if (v != null) return v;
+      }
+      return null;
+    }
+
+    final fromData = result['data'];
+    if (fromData is Map) {
+      final fromMap = pickFromMap(Map<String, dynamic>.from(fromData));
+      if (fromMap != null) return fromMap;
+    }
+    final top = pickFromMap(Map<String, dynamic>.from(result));
+    if (top != null) return top;
+    return parseDyn(result['new_balance']) ??
+        parseDyn(result['current_balance']);
+  }
+
+  int _pointsEarnedFromPollSubmitResult(Map<String, dynamic> result) {
+    int parseEarn(dynamic v) {
+      if (v == null) return 0;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      final s = v.toString().trim().replaceAll(RegExp(r'[^0-9-]'), '');
+      if (s.isEmpty || s == '-') return 0;
+      return int.tryParse(s) ?? 0;
+    }
+
+    var maxEarn = parseEarn(result['points_earned']);
+    if (maxEarn == 0) {
+      maxEarn = parseEarn(result['points_awarded']);
+    }
+    final fromData = result['data'];
+    if (fromData is Map) {
+      final m = Map<String, dynamic>.from(fromData);
+      for (final k in ['points_earned', 'points_awarded', 'reward_points']) {
+        final e = parseEarn(m[k]);
+        if (e > maxEarn) maxEarn = e;
+      }
+    }
+    return maxEarn;
+  }
+
+  /// True when interaction outcome is a win / earn so we must not drop authoritative POST balance.
+  bool _pollOutcomeIndicatesEarnOrWin(
+    Map<String, dynamic> result,
+    int pointsEarned,
+  ) {
+    if (pointsEarned > 0) return true;
+    if (result['is_correct'] == true) return true;
+    final topOc = result['outcome']?.toString().toLowerCase();
+    if (topOc == 'win' || topOc == 'winner' || topOc == 'won') return true;
+    if (result.containsKey('poll_reward') ||
+        result.containsKey('winner_reward')) {
+      return true;
+    }
+    final topRt = result['reward_type']?.toString().toLowerCase();
+    if (topRt != null && topRt.contains('poll') && topRt.contains('win')) {
+      return true;
+    }
+    final fromData = result['data'];
+    if (fromData is Map) {
+      final m = Map<String, dynamic>.from(fromData);
+      if (m['is_correct'] == true) return true;
+      for (final k in ['won', 'is_winner', 'winner', 'is_win']) {
+        final v = m[k];
+        if (v == true || v == 1 || v == '1') return true;
+      }
+      final oc = m['outcome']?.toString().toLowerCase();
+      if (oc == 'win' || oc == 'winner' || oc == 'won') return true;
+      if (m.containsKey('poll_reward') || m.containsKey('winner_reward')) {
+        return true;
+      }
+      final rt = m['reward_type']?.toString().toLowerCase();
+      if (rt != null && (rt.contains('poll') && rt.contains('win'))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _submitVote({
@@ -6221,215 +6279,292 @@ class _PollDialogState extends State<_PollDialog> {
       final String balanceSyncLease = PointProvider.instance.beginBalanceSync(
         'carousel_vote_${widget.item.id}',
       );
-      final Map<String, dynamic> result;
       try {
-        result = await engagementProvider.submitInteraction(
-          userId: currentUserId,
-          token: token,
-          itemId: widget.item.id,
-          answer: answerStr,
-          sessionId: sessionId,
-          selectedOptionIds: answer,
-          betAmount: amountPerOption == null
-              ? (amount <= 0 ? 1 : amount)
-              : null,
-          betAmountPerOption: amountPerOption,
-        );
-      } finally {
-        PointProvider.instance.endBalanceSync(balanceSyncLease);
-      }
-
-      if (!mounted) return;
-
-      // Capture messenger before pop - context may be invalid after Navigator.pop
-      final messenger = ScaffoldMessenger.of(context);
-
-      // PROFESSIONAL FIX: Reset submitting state BEFORE popping dialog
-      // This ensures state is reset even if widget gets disposed after pop
-      if (mounted) {
-        setState(() {
-          _isSubmitting = false;
-        });
-      }
-
-      // Pop poll dialog before showing result
-      if (mounted) {
-        Navigator.pop(context);
-      }
-
-      if (result['success'] == true) {
-        /*
-        Old Code:
-        // manual deduct canonical (balanceBefore - totalCost).
-        final int newBalance = balanceBefore - totalCost;
-        unawaited(
-          CanonicalPointBalanceSync.apply(
-            userId: currentUserId.toString(),
-            currentBalance: newBalance,
-            source: 'poll_vote_deduct_carousel',
-            emitBroadcast: false,
-            pointProvider: pointProvider,
-          ),
-        );
-        */
-
-        int? serverBal = _serverBalanceFromPollSubmitResult(result);
-        if (serverBal == null) {
-          await pointProvider.loadBalance(
-            currentUserId.toString(),
-            forceRefresh: true,
+        final Map<String, dynamic> result;
+        try {
+          result = await engagementProvider.submitInteraction(
+            userId: currentUserId,
+            token: token,
+            itemId: widget.item.id,
+            answer: answerStr,
+            sessionId: sessionId,
+            selectedOptionIds: answer,
+            betAmount: amountPerOption == null
+                ? (amount <= 0 ? 1 : amount)
+                : null,
+            betAmountPerOption: amountPerOption,
           );
-          serverBal = pointProvider.currentBalance;
+        } catch (e, st) {
+          app_logger.Logger.error(
+            'submitInteraction threw: $e',
+            tag: 'EngagementCarousel',
+            error: e,
+            stackTrace: st,
+          );
+          rethrow;
         }
 
-        // ============================================================================
-        // CRITICAL: Points deducted on backend; canonical balance from API only.
-        // ============================================================================
+        if (!mounted) {
+          return;
+        }
 
-        app_logger.Logger.info(
-          '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, preSubmitEstimate=$balanceBefore, serverCanonical=$serverBal',
-          tag: 'EngagementCarousel',
-        );
+        // Capture messenger before pop - context may be invalid after Navigator.pop
+        final messenger = ScaffoldMessenger.of(context);
 
-        await CanonicalPointBalanceSync.apply(
-          userId: currentUserId.toString(),
-          currentBalance: serverBal,
-          source: 'poll_vote_deduct_carousel',
-          emitBroadcast: false,
-          pointProvider: pointProvider,
-        );
+        // PROFESSIONAL FIX: Reset submitting state BEFORE popping dialog
+        // This ensures state is reset even if widget gets disposed after pop
+        if (mounted) {
+          setState(() {
+            _isSubmitting = false;
+          });
+        }
 
-        // Show success feedback so user knows points were deducted
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(
-              'ကစားမှု အောင်မြင်ပါသည်။ $totalCost points နှုတ်ယူပြီးပါပြီ။',
+        // Pop poll dialog before showing result
+        if (mounted) {
+          Navigator.pop(context);
+        }
+
+        if (result['success'] == true) {
+          final String uidStr = currentUserId.toString();
+          int? authoritativeBal = _serverBalanceFromPollSubmitResult(result);
+          final int pointsEarned = _pointsEarnedFromPollSubmitResult(result);
+
+          /*
+          Old Code:
+          var pointsEarned = 0;
+          final rawPe = result['points_earned'];
+          if (rawPe is int) {
+            pointsEarned = rawPe;
+          } else if (rawPe is num) {
+            pointsEarned = rawPe.toInt();
+          }
+
+          // Deduct-only success: post balance cannot exceed pre-submit if server did not
+          // report a net earn — otherwise treat as corrupt payload and use ceiling ledger path.
+          if (authoritativeBal != null &&
+              totalCost > 0 &&
+              pointsEarned <= 0 &&
+              authoritativeBal > balanceBefore) {
+            app_logger.Logger.warning(
+              'Poll vote: ignoring inconsistent authoritativeBal=$authoritativeBal '
+              '> balanceBefore=$balanceBefore (deduct-only, no points_earned) — '
+              'using maxAcceptable ledger verification instead',
+              tag: 'EngagementCarousel',
+            );
+            authoritativeBal = null;
+          }
+          */
+          // Deduct-only success: ignore inconsistent POST balance only when outcome is not a win/earn.
+          if (authoritativeBal != null &&
+              totalCost > 0 &&
+              pointsEarned <= 0 &&
+              authoritativeBal > balanceBefore &&
+              !_pollOutcomeIndicatesEarnOrWin(result, pointsEarned)) {
+            app_logger.Logger.warning(
+              'Poll vote: ignoring inconsistent authoritativeBal=$authoritativeBal '
+              '> balanceBefore=$balanceBefore (deduct-only, no earn/win signals) — '
+              'using maxAcceptable ledger verification instead',
+              tag: 'EngagementCarousel',
+            );
+            authoritativeBal = null;
+          }
+
+          if (authoritativeBal != null) {
+            await CanonicalPointBalanceSync.apply(
+              userId: uidStr,
+              currentBalance: authoritativeBal,
+              source: 'poll_vote_submit_authoritative_balance',
+              emitBroadcast: false,
+              pointProvider: pointProvider,
+            );
+            if (_pollOutcomeIndicatesEarnOrWin(result, pointsEarned)) {
+              await PointProvider.instance.loadBalance(
+                uidStr,
+                forceRefresh: true,
+                notifyLoading: false,
+                balanceCacheBypassTimestampMs:
+                    DateTime.now().microsecondsSinceEpoch,
+              );
+            }
+          }
+
+          // Show success feedback so user knows points were deducted
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                'ကစားမှု အောင်မြင်ပါသည်။ $totalCost points နှုတ်ယူပြီးပါပြီ။',
+              ),
+              backgroundColor: Colors.green,
             ),
-            backgroundColor: Colors.green,
-          ),
-        );
+          );
 
-        // Refresh user (my_point, my_points, points_balance) so Home Page My PNP updates
-        authProvider.refreshUser().catchError((error) {
-          app_logger.Logger.warning(
-            'Failed to refresh user after vote: $error',
+          // Ledger verification loop (matches poll-win / AutoRun pattern): keep My PNP
+          // [isSyncingBalance] until GET /points matches authoritative POST or ledger catches up.
+          if (authoritativeBal != null) {
+            await PointProvider.instance.refreshPointStateUntilBalanceConfirmed(
+              userId: uidStr,
+              expectedBalance: authoritativeBal,
+              refreshUserCallback: authProvider.refreshUser,
+              shouldContinue: () => mounted,
+            );
+          } else if (pointsEarned > 0) {
+            // Server did not echo balance: use local expectation for one-shot canonical apply (trimmed refresh).
+            final inferredAuth = balanceBefore + pointsEarned;
+            await PointProvider.instance.refreshPointStateAfterPollWin(
+              userId: uidStr,
+              priorBalanceExclusive: balanceBefore,
+              authoritativePollBalance: inferredAuth,
+              authProvider: authProvider,
+              canonicalPollWinSource: 'poll_vote_submit_points_earned_finalize',
+              refreshUserCallback: authProvider.refreshUser,
+              shouldContinue: () => mounted,
+            );
+          } else {
+            final ceiling = balanceBefore - totalCost;
+            await PointProvider.instance
+                .refreshPointStateUntilDeductionVisibleOnLedger(
+                  userId: uidStr,
+                  maxAcceptableFromApi: ceiling < 0 ? 0 : ceiling,
+                  refreshUserCallback: authProvider.refreshUser,
+                  shouldContinue: () => mounted,
+                );
+          }
+
+          // Final coordinated reconcile: transactions + user meta (balance already verified).
+          try {
+            await PointProvider.instance.refreshPointState(
+              userId: uidStr,
+              forceRefresh: true,
+              refreshBalance: true,
+              refreshTransactions: true,
+              notifyBalanceLoading: false,
+              refreshUserCallback: authProvider.refreshUser,
+            );
+            if (authoritativeBal == null) {
+              await CanonicalPointBalanceSync.apply(
+                userId: uidStr,
+                currentBalance: PointProvider.instance.currentBalance,
+                source: 'poll_vote_deduct_carousel',
+                emitBroadcast: false,
+                pointProvider: pointProvider,
+              );
+            }
+            app_logger.Logger.info(
+              'Poll vote refreshPointState done; currentBalance=${PointProvider.instance.currentBalance}',
+              tag: 'EngagementCarousel',
+            );
+          } catch (error, st) {
+            app_logger.Logger.warning(
+              'refreshPointState after poll vote failed: $error',
+              tag: 'EngagementCarousel',
+              error: error,
+              stackTrace: st,
+            );
+          }
+
+          app_logger.Logger.info(
+            '✓ Poll vote submitted — DEDUCTION SUCCESS! Item: ${widget.item.id}, Cost: $totalCost, preSubmitEstimate=$balanceBefore, authoritativeBal=$authoritativeBal, finalBalance=${PointProvider.instance.currentBalance}',
             tag: 'EngagementCarousel',
           );
-        });
 
-        // Refresh points balance (non-blocking)
-        pointProvider
-            .loadBalance(authProvider.user!.id.toString(), forceRefresh: true)
-            .then((_) {
-              // loadBalance returns void, so we read the updated balance from the provider
-              final refreshedBalance = pointProvider.currentBalance;
-              app_logger.Logger.info(
-                'Balance refreshed after poll vote: $refreshedBalance (after submit canonical: $serverBal)',
-                tag: 'EngagementCarousel',
-              );
-            })
-            .catchError((error) {
-              app_logger.Logger.warning(
-                'Failed to refresh points balance: $error',
-                tag: 'EngagementCarousel',
-              );
-            });
-
-        // PROFESSIONAL FIX: Refresh engagement feed asynchronously without blocking
-        // This allows subsequent vote submissions to proceed even during refresh
-        engagementProvider
-            .refresh(userId: authProvider.user!.id, token: token)
-            .catchError((error) {
-              app_logger.Logger.warning(
-                'Failed to refresh engagement feed: $error',
-                tag: 'EngagementCarousel',
-              );
-            });
-      } else {
-        // PROFESSIONAL FIX: Handle duplicate and insufficient_balance errors
-        final message =
-            result['message']?.toString() ?? 'ကစားမှု မအောင်မြင်ပါ။';
-        final isDuplicate = result['is_duplicate'] == true;
-        final isInsufficient =
-            result['code']?.toString().toLowerCase() == 'insufficient_balance';
-
-        app_logger.Logger.warning(
-          'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient',
-          tag: 'EngagementCarousel',
-        );
-
-        // Old Code: `confirmedBalance` / `serverSaysZero` / `weHadBalance` / `requiredInt` / layered displayMessage (server `insufficient_balance` already authoritative).
-        // Old Code:        final int? confirmedBalance = _confirmedBalanceForSubmit;
-        // Old Code:        final int requiredInt = requiredVal is int
-        // Old Code:            ? requiredVal
-        // Old Code:            : (requiredVal is num
-        // Old Code:                ? requiredVal.toInt()
-        // Old Code:                : int.tryParse(requiredVal.toString()) ?? 0);
-        // Old Code:        final bool serverSaysZero =
-        // Old Code:            isInsufficient && serverBalanceVal != null && serverBalanceVal == 0;
-        // Old Code:        final bool weHadBalance = confirmedBalance != null &&
-        // Old Code:            confirmedBalance > 0 &&
-        // Old Code:            requiredVal != null &&
-        // Old Code:            confirmedBalance >= requiredInt;
-        // Old Code:        final String displayMessage;
-        // Old Code:        if (isInsufficient && requiredVal != null) {
-        // Old Code:          if (serverSaysZero && weHadBalance) {
-        // Old Code:            displayMessage = ...;
-        // Old Code:          } else if (serverBalanceVal != null) {
-        // Old Code:            displayMessage = ...;
-        // Old Code:          } else {
-        // Old Code:            displayMessage = message;
-        // Old Code:          }
-        // Old Code:        } else {
-        // Old Code:          displayMessage = message;
-        // Old Code:        }
-
-        final String displayMessage;
-        if (isInsufficient) {
-          final m = message.trim();
-          displayMessage = m.isNotEmpty
-              ? m
-              : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
+          // PROFESSIONAL FIX: Refresh engagement feed asynchronously without blocking
+          engagementProvider
+              .refresh(userId: authProvider.user!.id, token: token)
+              .catchError((error) {
+                app_logger.Logger.warning(
+                  'Failed to refresh engagement feed: $error',
+                  tag: 'EngagementCarousel',
+                );
+              });
         } else {
-          displayMessage = message;
-        }
+          // PROFESSIONAL FIX: Handle duplicate and insufficient_balance errors
+          final message =
+              result['message']?.toString() ?? 'ကစားမှု မအောင်မြင်ပါ။';
+          final isDuplicate = result['is_duplicate'] == true;
+          final isInsufficient =
+              result['code']?.toString().toLowerCase() ==
+              'insufficient_balance';
 
-        // If duplicate or user mismatch, refresh engagement feed to sync state (non-blocking)
-        if (isDuplicate ||
-            message.toLowerCase().contains('user') ||
-            message.toLowerCase().contains('account')) {
-          final authProvider = Provider.of<AuthProvider>(
-            context,
-            listen: false,
+          app_logger.Logger.warning(
+            'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient',
+            tag: 'EngagementCarousel',
           );
-          if (authProvider.user != null) {
-            engagementProvider
-                .refresh(
-                  userId: authProvider.user!.id,
-                  token: authProvider.token,
-                )
-                .catchError((error) {
-                  app_logger.Logger.warning(
-                    'Failed to refresh engagement feed after error: $error',
-                    tag: 'EngagementCarousel',
-                  );
-                });
-          }
-        }
 
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(
-              isDuplicate
-                  ? 'ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။'
-                  : displayMessage,
+          // Old Code: `confirmedBalance` / `serverSaysZero` / `weHadBalance` / `requiredInt` / layered displayMessage (server `insufficient_balance` already authoritative).
+          // Old Code:        final int? confirmedBalance = _confirmedBalanceForSubmit;
+          // Old Code:        final int requiredInt = requiredVal is int
+          // Old Code:            ? requiredVal
+          // Old Code:            : (requiredVal is num
+          // Old Code:                ? requiredVal.toInt()
+          // Old Code:                : int.tryParse(requiredVal.toString()) ?? 0);
+          // Old Code:        final bool serverSaysZero =
+          // Old Code:            isInsufficient && serverBalanceVal != null && serverBalanceVal == 0;
+          // Old Code:        final bool weHadBalance = confirmedBalance != null &&
+          // Old Code:            confirmedBalance > 0 &&
+          // Old Code:            requiredVal != null &&
+          // Old Code:            confirmedBalance >= requiredInt;
+          // Old Code:        final String displayMessage;
+          // Old Code:        if (isInsufficient && requiredVal != null) {
+          // Old Code:          if (serverSaysZero && weHadBalance) {
+          // Old Code:            displayMessage = ...;
+          // Old Code:          } else if (serverBalanceVal != null) {
+          // Old Code:            displayMessage = ...;
+          // Old Code:          } else {
+          // Old Code:            displayMessage = message;
+          // Old Code:          }
+          // Old Code:        } else {
+          // Old Code:          displayMessage = message;
+          // Old Code:        }
+
+          final String displayMessage;
+          if (isInsufficient) {
+            final m = message.trim();
+            displayMessage = m.isNotEmpty
+                ? m
+                : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
+          } else {
+            displayMessage = message;
+          }
+
+          // If duplicate or user mismatch, refresh engagement feed to sync state (non-blocking)
+          if (isDuplicate ||
+              message.toLowerCase().contains('user') ||
+              message.toLowerCase().contains('account')) {
+            final authProvider = Provider.of<AuthProvider>(
+              context,
+              listen: false,
+            );
+            if (authProvider.user != null) {
+              engagementProvider
+                  .refresh(
+                    userId: authProvider.user!.id,
+                    token: authProvider.token,
+                  )
+                  .catchError((error) {
+                    app_logger.Logger.warning(
+                      'Failed to refresh engagement feed after error: $error',
+                      tag: 'EngagementCarousel',
+                    );
+                  });
+            }
+          }
+
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                isDuplicate
+                    ? 'ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။'
+                    : displayMessage,
+              ),
+              backgroundColor: isDuplicate ? Colors.orange : Colors.red,
+              duration: Duration(
+                seconds: isDuplicate ? 3 : (isInsufficient ? 5 : 2),
+              ),
             ),
-            backgroundColor: isDuplicate ? Colors.orange : Colors.red,
-            duration: Duration(
-              seconds: isDuplicate ? 3 : (isInsufficient ? 5 : 2),
-            ),
-          ),
-        );
+          );
+        }
+      } finally {
+        PointProvider.instance.endBalanceSync(balanceSyncLease);
       }
     } catch (e, stackTrace) {
       // PROFESSIONAL FIX: Handle any exceptions gracefully

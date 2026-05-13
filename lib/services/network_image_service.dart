@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 
 import '../api_service.dart';
+import '../utils/app_config.dart';
 
 /// Professional Network Image Service with retry mechanism and error handling
 class NetworkImageService {
@@ -18,8 +19,12 @@ class NetworkImageService {
         () => ApiService.getUri(
           Uri.parse('https://www.google.com'),
           skipAuth: true,
+          // OLD CODE:
+          // headers: const <String, dynamic>{
+          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+          // },
           headers: const <String, dynamic>{
-            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'User-Agent': AppConfig.defaultUserAgent,
           },
         ),
         context: 'networkImage.connectivity',
@@ -39,8 +44,12 @@ class NetworkImageService {
         () => ApiService.getUri(
           Uri.parse('https://www.homeaid.com.mm'),
           skipAuth: true,
+          // OLD CODE:
+          // headers: const <String, dynamic>{
+          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+          // },
           headers: const <String, dynamic>{
-            'User-Agent': 'HomeAid-Flutter-App/1.0',
+            'User-Agent': AppConfig.defaultUserAgent,
           },
         ),
         context: 'networkImage.wooConnectivity',
@@ -49,7 +58,8 @@ class NetworkImageService {
       final isConnected =
           response != null && ApiService.isSuccessResponse(response);
       print(
-          '🔗 WooCommerce server connectivity: ${isConnected ? "✅ Connected" : "❌ Failed"}');
+        '🔗 WooCommerce server connectivity: ${isConnected ? "✅ Connected" : "❌ Failed"}',
+      );
       return isConnected;
     } catch (e) {
       print('❌ WooCommerce connectivity test failed: $e');
@@ -58,8 +68,10 @@ class NetworkImageService {
   }
 
   /// Test specific image URL with retry mechanism
-  static Future<ImageTestResult> testImageUrl(String imageUrl,
-      {int maxRetries = _maxRetries}) async {
+  static Future<ImageTestResult> testImageUrl(
+    String imageUrl, {
+    int maxRetries = _maxRetries,
+  }) async {
     print('🖼️ Testing image URL: $imageUrl');
 
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
@@ -70,8 +82,15 @@ class NetworkImageService {
           () => ApiService.headUri(
             Uri.parse(imageUrl),
             skipAuth: true,
+            // OLD CODE:
+            // headers: const <String, dynamic>{
+            //   'User-Agent': 'HomeAid-Flutter-App/1.0',
+            //   'Accept': 'image/*',
+            //   'Accept-Encoding': 'gzip, deflate',
+            //   'Connection': 'keep-alive',
+            // },
             headers: const <String, dynamic>{
-              'User-Agent': 'HomeAid-Flutter-App/1.0',
+              'User-Agent': AppConfig.defaultUserAgent,
               'Accept': 'image/*',
               'Accept-Encoding': 'gzip, deflate',
               'Connection': 'keep-alive',
@@ -99,11 +118,15 @@ class NetworkImageService {
           if (contentType.startsWith('image/')) {
             print('   ✅ Image URL is valid and accessible');
             return ImageTestResult.success(
-                imageUrl, response.statusCode ?? 200);
+              imageUrl,
+              response.statusCode ?? 200,
+            );
           } else {
             print('   ❌ URL returns non-image content: $contentType');
             return ImageTestResult.error(
-                imageUrl, 'Non-image content type: $contentType');
+              imageUrl,
+              'Non-image content type: $contentType',
+            );
           }
         } else if (response.statusCode == 404) {
           print('   ❌ Image not found (404)');
@@ -119,7 +142,9 @@ class NetworkImageService {
             continue;
           }
           return ImageTestResult.error(
-              imageUrl, 'HTTP error: ${response.statusCode}');
+            imageUrl,
+            'HTTP error: ${response.statusCode}',
+          );
         }
       } catch (e) {
         print('   ❌ Attempt $attempt failed: $e');
@@ -145,8 +170,11 @@ class NetworkImageService {
   }
 
   /// Get optimized image URL for better loading
-  static String getOptimizedImageUrl(String originalUrl,
-      {int? width, int? height}) {
+  static String getOptimizedImageUrl(
+    String originalUrl, {
+    int? width,
+    int? height,
+  }) {
     if (originalUrl.isEmpty) return originalUrl;
 
     try {
