@@ -36,7 +36,7 @@ import '../product/all_products_page.dart';
 
 class MainPage extends StatefulWidget {
   final int?
-  engagementItemId; // PROFESSIONAL FIX: Support navigation to specific engagement item
+      engagementItemId; // PROFESSIONAL FIX: Support navigation to specific engagement item
 
   const MainPage({super.key, this.engagementItemId});
 
@@ -96,11 +96,10 @@ class _MainPageState extends State<MainPage>
     if (event.type == PointNotificationType.earned) {
       final oid = event.orderId ?? '';
       if (oid.startsWith('engagement:poll:')) return true;
-      final itemType =
-          (event.additionalData?['itemType'] ??
-                  event.additionalData?['item_type'])
-              ?.toString()
-              .toLowerCase();
+      final itemType = (event.additionalData?['itemType'] ??
+              event.additionalData?['item_type'])
+          ?.toString()
+          .toLowerCase();
       if (itemType == 'poll') return true;
     }
     return false;
@@ -149,9 +148,9 @@ class _MainPageState extends State<MainPage>
       final now = DateTime.now();
       final shouldRunEngagementNetworkRefresh =
           _forceNetworkOnResumeForEngagement ||
-          _lastResumeEngagementRefreshAt == null ||
-          now.difference(_lastResumeEngagementRefreshAt!) >=
-              _resumeEngagementRefreshMinInterval;
+              _lastResumeEngagementRefreshAt == null ||
+              now.difference(_lastResumeEngagementRefreshAt!) >=
+                  _resumeEngagementRefreshMinInterval;
 
       if (shouldRunEngagementNetworkRefresh) {
         _lastResumeEngagementRefreshAt = now;
@@ -231,7 +230,8 @@ class _MainPageState extends State<MainPage>
   /// Setup listener for point notification events
   /// PROFESSIONAL FIX: Enhanced listener with better error handling and fallback logic
   void _setupPointNotificationListener() {
-    _pointNotificationSubscription = PointNotificationManager.modalEvents.listen(
+    _pointNotificationSubscription =
+        PointNotificationManager.modalEvents.listen(
       (event) {
         // Only show modal if we're on the home tab and no modal is currently showing
         // Note: PointNotificationManager also handles modal display directly,
@@ -350,8 +350,7 @@ class _MainPageState extends State<MainPage>
           // PROFESSIONAL FIX: If the balance update was applied from an incoming push snapshot,
           // skip the "balance-change-based" modal to avoid duplicate / wrong-type popups.
           final lastPushSnapshotAt = pointProvider.lastPushBalanceSnapshotAt;
-          final isRecentPushSnapshot =
-              lastPushSnapshotAt != null &&
+          final isRecentPushSnapshot = lastPushSnapshotAt != null &&
               DateTime.now().difference(lastPushSnapshotAt).inSeconds < 5;
           if (isRecentPushSnapshot) {
             _lastKnownBalance = currentBalance;
@@ -362,8 +361,7 @@ class _MainPageState extends State<MainPage>
           // Only show modal for significant point gains (avoid noise from small updates)
           // Also check if we've already shown a modal recently (within last 5 seconds) to prevent duplicates
           final now = DateTime.now();
-          final recentlyShownModal =
-              _lastModalShownTime != null &&
+          final recentlyShownModal = _lastModalShownTime != null &&
               now.difference(_lastModalShownTime!).inSeconds < 5;
 
           if (pointsGained > 0 &&
@@ -372,9 +370,8 @@ class _MainPageState extends State<MainPage>
               !recentlyShownModal) {
             // Check if this is an engagement-related transaction
             final transactions = pointProvider.transactions;
-            final latestTransaction = transactions.isNotEmpty
-                ? transactions.first
-                : null;
+            final latestTransaction =
+                transactions.isNotEmpty ? transactions.first : null;
 
             // Skip if we've already shown modal for this transaction
             if (latestTransaction != null &&
@@ -413,10 +410,10 @@ class _MainPageState extends State<MainPage>
               currentBalance: currentBalance,
               additionalData:
                   isEngagementPoints && latestTransaction?.orderId != null
-                  ? _extractEngagementDataFromOrderId(
-                      latestTransaction!.orderId!,
-                    )
-                  : null,
+                      ? _extractEngagementDataFromOrderId(
+                          latestTransaction!.orderId!,
+                        )
+                      : null,
             );
 
             // Track that we've shown modal for this transaction
@@ -568,8 +565,8 @@ class _MainPageState extends State<MainPage>
         final now = DateTime.now();
         final shouldRefreshEngagement =
             _lastHomeTabEngagementRefreshAt == null ||
-            now.difference(_lastHomeTabEngagementRefreshAt!) >=
-                _homeTabEngagementRefreshMinInterval;
+                now.difference(_lastHomeTabEngagementRefreshAt!) >=
+                    _homeTabEngagementRefreshMinInterval;
         if (!shouldRefreshEngagement) {
           Logger.info(
             'MainPage: skipping Home revisit engagement refresh '
@@ -591,19 +588,18 @@ class _MainPageState extends State<MainPage>
           engagementProvider
               .refresh(userId: authProvider.user!.id, token: authProvider.token)
               .then((_) {
-                Logger.info(
-                  'MainPage: Home revisit engagement refresh completed',
-                  tag: 'MainPage',
-                );
-              })
-              .catchError((Object e, StackTrace st) {
-                Logger.warning(
-                  'MainPage: Home revisit engagement refresh failed: $e',
-                  tag: 'MainPage',
-                  error: e,
-                  stackTrace: st,
-                );
-              }),
+            Logger.info(
+              'MainPage: Home revisit engagement refresh completed',
+              tag: 'MainPage',
+            );
+          }).catchError((Object e, StackTrace st) {
+            Logger.warning(
+              'MainPage: Home revisit engagement refresh failed: $e',
+              tag: 'MainPage',
+              error: e,
+              stackTrace: st,
+            );
+          }),
         );
       });
     }
@@ -727,21 +723,20 @@ class _MainPageState extends State<MainPage>
       final stopwatch = Stopwatch()..start();
       final wooProducts =
           await WooCommerceService.getProducts(perPage: 20, page: page).timeout(
-            const Duration(seconds: 10),
-            onTimeout: () {
-              Logger.warning('Product loading timeout', tag: 'MainPage');
-              throw Exception('Request timeout');
-            },
-          );
+        const Duration(seconds: 10),
+        onTimeout: () {
+          Logger.warning('Product loading timeout', tag: 'MainPage');
+          throw Exception('Request timeout');
+        },
+      );
       stopwatch.stop();
 
       Logger.logPerformance('Load Products', stopwatch.elapsed);
 
       if (_isDisposed) return;
 
-      final convertedProducts = wooProducts
-          .map((wooProduct) => wooProduct.toProduct())
-          .toList();
+      final convertedProducts =
+          wooProducts.map((wooProduct) => wooProduct.toProduct()).toList();
 
       // Cache products for offline viewing
       await _saveProductsToCache(convertedProducts);
@@ -1173,9 +1168,8 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         return txn.orderId == 'luckybox' || txn.orderId!.contains('luckybox');
       }
 
-      final luckyBoxTransactions = transactions
-          .where((txn) => isLuckyBoxTransaction(txn))
-          .toList();
+      final luckyBoxTransactions =
+          transactions.where((txn) => isLuckyBoxTransaction(txn)).toList();
 
       if (luckyBoxTransactions.isEmpty) {
         Logger.info(
@@ -1228,9 +1222,8 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         return '🎉 ကံကောင်းပါတယ်!';
       }
 
-      final approvedTransactions = luckyBoxTransactions
-          .where((txn) => txn.isApproved)
-          .toList();
+      final approvedTransactions =
+          luckyBoxTransactions.where((txn) => txn.isApproved).toList();
       if (approvedTransactions.isNotEmpty) {
         approvedTransactions.sort((a, b) => b.createdAt.compareTo(a.createdAt));
         final mostRecentApproved = approvedTransactions.first;
@@ -1291,8 +1284,7 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
         final pulseScale = _pulseAnimation.value;
         final finalScale = bounceScale * pulseScale;
 
-        final glowIntensity =
-            0.6 +
+        final glowIntensity = 0.6 +
             (0.4 *
                 (0.5 + 0.5 * math.sin(_shimmerAnimation.value * 2 * math.pi)));
 
@@ -1549,8 +1541,8 @@ class _LuckyBoxSectionState extends State<_LuckyBoxSection>
             }
 
             return _ModernActionButton(
-              onPressed:
-                  (!spinWheelProvider.isEnabled || spinWheelProvider.isLoading)
+              onPressed: (!spinWheelProvider.isEnabled ||
+                      spinWheelProvider.isLoading)
                   ? () {}
                   : () async {
                       _triggerVibration();
@@ -2207,10 +2199,9 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
               height: 200,
               // Improved image quality with better caching and error handling
               filterQuality: FilterQuality.high, // High quality rendering
-              cacheWidth:
-                  (MediaQuery.of(context).size.width *
-                          MediaQuery.of(context).devicePixelRatio)
-                      .round(), // Optimize for device resolution
+              cacheWidth: (MediaQuery.of(context).size.width *
+                      MediaQuery.of(context).devicePixelRatio)
+                  .round(), // Optimize for device resolution
               errorBuilder: (context, error, stackTrace) {
                 return const SizedBox.shrink();
               },
@@ -2223,7 +2214,7 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
                     child: CircularProgressIndicator(
                       value: loadingProgress.expectedTotalBytes != null
                           ? loadingProgress.cumulativeBytesLoaded /
-                                loadingProgress.expectedTotalBytes!
+                              loadingProgress.expectedTotalBytes!
                           : null,
                     ),
                   ),
@@ -2242,6 +2233,7 @@ class _LuckyBoxBannerWidgetState extends State<_LuckyBoxBannerWidget> {
 class _MyPnpPointVm {
   const _MyPnpPointVm({
     required this.balance,
+    required this.balanceIdentityEpoch,
     required this.pointIsLoading,
     required this.pointErrorMessage,
     required this.pointInitialHydrateDone,
@@ -2253,6 +2245,7 @@ class _MyPnpPointVm {
   });
 
   final int balance;
+  final int balanceIdentityEpoch;
   final bool pointIsLoading;
   final String? pointErrorMessage;
   final bool pointInitialHydrateDone;
@@ -2266,6 +2259,7 @@ class _MyPnpPointVm {
   bool operator ==(Object other) {
     return other is _MyPnpPointVm &&
         other.balance == balance &&
+        other.balanceIdentityEpoch == balanceIdentityEpoch &&
         other.pointIsLoading == pointIsLoading &&
         other.pointErrorMessage == pointErrorMessage &&
         other.pointInitialHydrateDone == pointInitialHydrateDone &&
@@ -2279,16 +2273,17 @@ class _MyPnpPointVm {
 
   @override
   int get hashCode => Object.hash(
-    balance,
-    pointIsLoading,
-    pointErrorMessage,
-    pointInitialHydrateDone,
-    hasPointBalanceObject,
-    isSyncingBalance,
-    balanceSyncLoadingSubtitle,
-    balanceSyncUsesExtendedPollWinUi,
-    syncNoticeMessage,
-  );
+        balance,
+        balanceIdentityEpoch,
+        pointIsLoading,
+        pointErrorMessage,
+        pointInitialHydrateDone,
+        hasPointBalanceObject,
+        isSyncingBalance,
+        balanceSyncLoadingSubtitle,
+        balanceSyncUsesExtendedPollWinUi,
+        syncNoticeMessage,
+      );
 }
 
 /// Creative My Point Widget - Displays user's point balance in a beautiful card
@@ -2548,6 +2543,7 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
         return Selector<PointProvider, _MyPnpPointVm>(
           selector: (_, p) => _MyPnpPointVm(
             balance: p.currentBalance,
+            balanceIdentityEpoch: p.balanceIdentityEpoch,
             pointIsLoading: p.isLoading,
             pointErrorMessage: p.errorMessage,
             pointInitialHydrateDone: p.hasCompletedSessionInitialBalanceLoad,
@@ -2558,6 +2554,7 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                 p.balanceSyncUsesExtendedPollWinUi,
             syncNoticeMessage: p.syncNoticeMessage,
           ),
+          shouldRebuild: (prev, next) => true,
           builder: (context, vm, _) {
             Logger.info(
               'DEBUG_SYNC: My PNP vm balance=${vm.balance} isLoading=${vm.pointIsLoading} '
@@ -2604,18 +2601,15 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
             final bool trustworthyBalanceForUi =
                 vm.pointInitialHydrateDone || vm.hasPointBalanceObject;
             final bool showBalancePlaceholder = !trustworthyBalanceForUi;
-            final int displayBalanceValue = trustworthyBalanceForUi
-                ? vm.balance
-                : 0;
+            final int displayBalanceValue =
+                trustworthyBalanceForUi ? vm.balance : 0;
             final bool showLoadingStrip =
                 _isRefreshing || (vm.pointIsLoading && showBalancePlaceholder);
-            final bool showSyncWarning =
-                !showLoadingStrip &&
+            final bool showSyncWarning = !showLoadingStrip &&
                 vm.pointErrorMessage != null &&
                 vm.pointErrorMessage!.isNotEmpty;
 
-            final bool myPnpPointsReconciling =
-                vm.isSyncingBalance ||
+            final bool myPnpPointsReconciling = vm.isSyncingBalance ||
                 (vm.pointIsLoading && trustworthyBalanceForUi);
 
             return RepaintBoundary(
@@ -2701,13 +2695,13 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                 children: [
                                   Text(
                                     'My PNP',
-                                    style: theme.textTheme.labelMedium
-                                        ?.copyWith(
-                                          color: colorScheme.onSurface
-                                              .withValues(alpha: 0.6),
-                                          fontWeight: FontWeight.w500,
-                                          letterSpacing: 0.5,
-                                        ),
+                                    style:
+                                        theme.textTheme.labelMedium?.copyWith(
+                                      color: colorScheme.onSurface
+                                          .withValues(alpha: 0.6),
+                                      fontWeight: FontWeight.w500,
+                                      letterSpacing: 0.5,
+                                    ),
                                   ),
                                   const SizedBox(height: 4),
                                   if (showLoadingStrip)
@@ -2719,8 +2713,8 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                             colorScheme.surfaceContainerHighest,
                                         valueColor:
                                             AlwaysStoppedAnimation<Color>(
-                                              colorScheme.primary,
-                                            ),
+                                          colorScheme.primary,
+                                        ),
                                         minHeight: 2,
                                       ),
                                     )
@@ -2733,12 +2727,12 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                           '···',
                                           style: theme.textTheme.headlineMedium
                                               ?.copyWith(
-                                                color: colorScheme.primary,
-                                                fontWeight: FontWeight.bold,
-                                                fontSize: 28,
-                                                height: 1.2,
-                                                letterSpacing: 6,
-                                              ),
+                                            color: colorScheme.primary,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 28,
+                                            height: 1.2,
+                                            letterSpacing: 6,
+                                          ),
                                         ),
                                       ),
                                     )
@@ -2754,18 +2748,18 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                           child: Shimmer.fromColors(
                                             baseColor: colorScheme
                                                 .surfaceContainerHighest,
-                                            highlightColor: colorScheme.primary
-                                                .withValues(
-                                                  alpha:
-                                                      vm.balanceSyncUsesExtendedPollWinUi
+                                            highlightColor:
+                                                colorScheme.primary.withValues(
+                                              alpha:
+                                                  vm.balanceSyncUsesExtendedPollWinUi
                                                       ? 0.42
                                                       : 0.25,
-                                                ),
+                                            ),
                                             period: Duration(
                                               milliseconds:
                                                   vm.balanceSyncUsesExtendedPollWinUi
-                                                  ? 700
-                                                  : 1300,
+                                                      ? 700
+                                                      : 1300,
                                             ),
                                             child: Container(
                                               height: 26,
@@ -2782,17 +2776,16 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                           vm.balanceSyncLoadingSubtitle,
                                           style: theme.textTheme.bodySmall
                                               ?.copyWith(
-                                                color: colorScheme.onSurface
-                                                    .withValues(alpha: 0.55),
-                                                fontWeight: FontWeight.w500,
-                                              ),
+                                            color: colorScheme.onSurface
+                                                .withValues(alpha: 0.55),
+                                            fontWeight: FontWeight.w500,
+                                          ),
                                         ),
                                       ],
                                     )
                                   else
                                     Opacity(
-                                      opacity:
-                                          (myPnpPointsReconciling &&
+                                      opacity: (myPnpPointsReconciling &&
                                               !vm.isSyncingBalance)
                                           ? 0.48
                                           : 1.0,
@@ -2805,10 +2798,10 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                             'ⓟ',
                                             style: theme.textTheme.bodyMedium
                                                 ?.copyWith(
-                                                  color: colorScheme.onSurface
-                                                      .withValues(alpha: 0.7),
-                                                  fontWeight: FontWeight.w500,
-                                                ),
+                                              color: colorScheme.onSurface
+                                                  .withValues(alpha: 0.7),
+                                              fontWeight: FontWeight.w500,
+                                            ),
                                           ),
                                           const SizedBox(width: 6),
 
@@ -2836,14 +2829,13 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                               milliseconds: 650,
                                             ),
                                             style: theme
-                                                .textTheme
-                                                .headlineMedium
+                                                .textTheme.headlineMedium
                                                 ?.copyWith(
-                                                  color: colorScheme.primary,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 28,
-                                                  height: 1.2,
-                                                ),
+                                              color: colorScheme.primary,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 28,
+                                              height: 1.2,
+                                            ),
                                           ),
                                           if (showSyncWarning) ...[
                                             const SizedBox(width: 8),
@@ -2855,9 +2847,9 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                                     VisualDensity.compact,
                                                 constraints:
                                                     const BoxConstraints(
-                                                      minWidth: 28,
-                                                      minHeight: 28,
-                                                    ),
+                                                  minWidth: 28,
+                                                  minHeight: 28,
+                                                ),
                                                 padding: EdgeInsets.zero,
                                                 splashRadius: 16,
                                                 icon: Icon(
@@ -2869,13 +2861,13 @@ class _MyPointWidgetState extends State<_MyPointWidget> {
                                                   final user =
                                                       authProvider.user;
                                                   if (user == null) return;
-                                                  final uid = user.id
-                                                      .toString();
+                                                  final uid =
+                                                      user.id.toString();
                                                   await pointProvider
                                                       .loadBalance(
-                                                        uid,
-                                                        forceRefresh: true,
-                                                      );
+                                                    uid,
+                                                    forceRefresh: true,
+                                                  );
                                                   if (!context.mounted) return;
                                                   final msg = pointProvider
                                                       .errorMessage;
@@ -2949,13 +2941,11 @@ class _AnimatedPointCounterState
 
   @override
   void forEachTween(TweenVisitor<dynamic> visitor) {
-    _valueTween =
-        visitor(
-              _valueTween,
-              widget.value,
-              (dynamic value) => IntTween(begin: value as int),
-            )
-            as IntTween?;
+    _valueTween = visitor(
+      _valueTween,
+      widget.value,
+      (dynamic value) => IntTween(begin: value as int),
+    ) as IntTween?;
   }
 
   @override

@@ -11,8 +11,8 @@ Future<void> _reconcileAfterPollResultTail = Future<void>.value();
 
 extension PointProviderPollReconcileExtension on PointProvider {
   /// After poll results settle: shimmer via [beginBalanceSync]/[endBalanceSync], then **backend-only**
-  /// balance sync: first a mandatory [loadBalance](forceRefresh), then up to 15× total attempts with
-  /// incremental backoff + jitter until the balance differs from the pre-sync local value (or attempts exhaust).
+  /// balance sync: first a mandatory [loadBalance](forceRefresh), then up to 5 retries (≥1.2s jitter each)
+  /// until the balance differs from the pre-sync local value (or attempts exhaust).
   /// Does **not** apply client-side authoritative totals.
   ///
   /// [authoritativePollBalance] is retained for API compatibility / logging only (ignored for apply).
@@ -135,7 +135,8 @@ extension PointProviderPollReconcileExtension on PointProvider {
       }
       */
 
-      const int maxSmartPollAttempts = 15;
+      // First fetch is outside this loop; at most 5 follow-up retries (attempts 2…6).
+      const int maxSmartPollAttempts = 6;
       final Random jitterRng = Random();
       var attempt = 1;
       Logger.info(
@@ -341,14 +342,14 @@ bool _guardShouldContinue(bool Function()? fn, String scopeLabel) {
   }
 }
 
-/// Delay before retry attempt [attempt] (2…15): **3–5s** only (server ledger + firewall-safe).
+/// Delay before retry attempt [attempt] (2…6): **1.2–1.8s** jitter (never below 1s; CORS-safe cadence).
 Duration _reconcilePollBackoffDuration(int attempt, Random rng) {
   assert(
-    attempt >= 2 && attempt <= 15,
-    'backoff only used for smart_poll attempts 2–15',
+    attempt >= 2 && attempt <= 6,
+    'backoff only used for smart_poll attempts 2–6',
   );
-  const int minMs = 3000;
-  const int maxMs = 5000;
+  const int minMs = 1200;
+  const int maxMs = 1800;
   final int span = maxMs - minMs + 1;
   return Duration(milliseconds: minMs + rng.nextInt(span));
 }

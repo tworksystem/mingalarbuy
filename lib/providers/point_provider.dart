@@ -110,6 +110,11 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   factory PointProvider() => instance;
 
   PointBalance? _balance;
+
+  /// Bumped on every [_commitBalance] so Home My PNP [Selector] rebuilds even when
+  /// API returns the same headline total as in-memory (optimistic/poll-win race).
+  int _balanceIdentityEpoch = 0;
+
   List<PointTransaction> _transactions = [];
   bool _isLoading = false;
   bool _isLoadingMore = false;
@@ -220,6 +225,37 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   bool get hasMoreTransactions =>
       _currentTransactionsPage < _totalTransactionPages;
   int get currentBalance => _balance?.currentBalance ?? 0;
+
+  /// Identity generation for balance rows — paired with [_commitBalance].
+  int get balanceIdentityEpoch => _balanceIdentityEpoch;
+
+  /// Assigns [_balance] and advances [balanceIdentityEpoch]. When the new snapshot
+  /// matches the previous headline total, briefly assigns an impossible sentinel
+  /// (`currentBalance == -1`) then the real value so equality-based selectors can
+  /// still observe a transition when paired with [notifyListeners].
+  void _commitBalance(PointBalance? next) {
+    if (next != null &&
+        _balance != null &&
+        _balance!.currentBalance == next.currentBalance) {
+      final hold = _balance!;
+      _balance = PointBalance(
+        userId: hold.userId,
+        currentBalance: -1,
+        lifetimeEarned: hold.lifetimeEarned,
+        lifetimeRedeemed: hold.lifetimeRedeemed,
+        lifetimeExpired: hold.lifetimeExpired,
+        lastUpdated: hold.lastUpdated,
+        pointsExpireAt: hold.pointsExpireAt,
+      );
+    }
+    _balance = next;
+    _balanceIdentityEpoch++;
+  }
+
+  /// Allows external modules (e.g. engagement carousel after poll `loadBalance`) to trigger the
+  /// same rebuild signal as internal balance updates — [notifyListeners] is `@protected`.
+  void pingBalanceUiListeners() => notifyListeners();
+
   bool get hasPoints => currentBalance > 0;
   String get formattedBalance => _balance?.formattedBalance ?? '0 points';
   DateTime? get lastPushBalanceSnapshotAt => _lastPushBalanceSnapshotAt;
@@ -391,7 +427,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
           tag: 'PointProvider',
         );
         // Clear old user's data immediately
-        _balance = null;
+        _commitBalance(null);
         _transactions = [];
         _currentTransactionsPage = 1;
         _transactionsPerPage = 20;
@@ -439,7 +475,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
       final previousUserId = _currentUserId;
       _currentUserId = null;
       _hasLoadedForCurrentUser = false;
-      _balance = null;
+      _commitBalance(null);
       _transactions = [];
       _currentTransactionsPage = 1;
       _transactionsPerPage = 20;
@@ -494,8 +530,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         );
       });
       */
-      final int? resolvedBypass =
-          balanceCacheBypassTimestampMs ??
+      final int? resolvedBypass = balanceCacheBypassTimestampMs ??
           (forceRefresh ? DateTime.now().microsecondsSinceEpoch : null);
       await PointBalanceSyncLock.run(() async {
         await _loadBalanceUnlocked(
@@ -505,6 +540,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
           balanceCacheBypassTimestampMs: resolvedBypass,
         );
       });
+      notifyListeners();
     } catch (e, stackTrace) {
       Logger.error(
         'PointProvider.loadBalance failed userId=$userId '
@@ -990,8 +1026,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     int? balanceCacheBypassTimestampMs,
   }) async {
     var appliedServerSnapshot = false;
-    final bool unscopedApiBalanceApply =
-        pollWinStaleFloorExclusive == null &&
+    final bool unscopedApiBalanceApply = pollWinStaleFloorExclusive == null &&
         acceptOnlyBalanceEquals == null &&
         rejectFetchedBalanceIfGreaterThan == null;
     /*
@@ -1055,7 +1090,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
           'User ID mismatch detected: current=$_currentUserId, requested=$userId. Clearing and reloading.',
           tag: 'PointProvider',
         );
-        _balance = null;
+        _commitBalance(null);
         _hasLoadedForCurrentUser = false;
       }
     }
@@ -1066,7 +1101,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         'User changed from $_currentUserId to $userId, clearing old point balance',
         tag: 'PointProvider',
       );
-      _balance = null;
+      _commitBalance(null);
       _hasLoadedForCurrentUser = false;
     }
 
@@ -1098,11 +1133,9 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
       if (_connectivityService.isConnected) {
         final balance = await PointService.getPointBalance(
           userId,
-          cacheBypassTimestampMs:
-              balanceCacheBypassTimestampMs ??
+          cacheBypassTimestampMs: balanceCacheBypassTimestampMs ??
               DateTime.now().millisecondsSinceEpoch,
-          persistToStorage:
-              pollWinStaleFloorExclusive == null &&
+          persistToStorage: pollWinStaleFloorExclusive == null &&
               acceptOnlyBalanceEquals == null &&
               rejectFetchedBalanceIfGreaterThan == null,
         );
@@ -1155,7 +1188,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
               tag: 'PointProvider',
             );
           } else {
-            _balance = balance;
+            _commitBalance(balance);
             appliedServerSnapshot = true;
             AuthProvider().mirrorLedgerBalanceToUserMeta(
               balance.currentBalance,
@@ -1379,9 +1412,8 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     String? userId,
     Future<void> Function()? refreshUserCallback,
   }) async {
-    final effectiveUserId = (userId != null && userId.isNotEmpty)
-        ? userId
-        : _currentUserId;
+    final effectiveUserId =
+        (userId != null && userId.isNotEmpty) ? userId : _currentUserId;
     if (effectiveUserId == null || effectiveUserId.isEmpty) {
       Logger.warning(
         'PointProvider.fetchPoints skipped: no userId available',
@@ -1430,14 +1462,16 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         previousBalance: previous.currentBalance,
         appliedAt: DateTime.now(),
       );
-      _balance = PointBalance(
-        userId: previous.userId,
-        currentBalance: previous.currentBalance + pointsToAdd,
-        lifetimeEarned: previous.lifetimeEarned,
-        lifetimeRedeemed: previous.lifetimeRedeemed,
-        lifetimeExpired: previous.lifetimeExpired,
-        lastUpdated: DateTime.now(),
-        pointsExpireAt: previous.pointsExpireAt,
+      _commitBalance(
+        PointBalance(
+          userId: previous.userId,
+          currentBalance: previous.currentBalance + pointsToAdd,
+          lifetimeEarned: previous.lifetimeEarned,
+          lifetimeRedeemed: previous.lifetimeRedeemed,
+          lifetimeExpired: previous.lifetimeExpired,
+          lastUpdated: DateTime.now(),
+          pointsExpireAt: previous.pointsExpireAt,
+        ),
       );
       notifyListeners();
     }
@@ -1448,9 +1482,10 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     required String reason,
   }) {
     if (_optimisticSnapshots.isEmpty) return;
-    final snapshots =
-        _optimisticSnapshots.values.where((s) => s.userId == userId).toList()
-          ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
+    final snapshots = _optimisticSnapshots.values
+        .where((s) => s.userId == userId)
+        .toList()
+      ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
     if (snapshots.isEmpty) return;
 
     // Only rollback very recent optimistic mutations tied to sync timeout/failure.
@@ -1461,14 +1496,16 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     if (_balance!.currentBalance == latest.previousBalance) return;
 
     final previous = _balance!;
-    _balance = PointBalance(
-      userId: previous.userId,
-      currentBalance: latest.previousBalance,
-      lifetimeEarned: previous.lifetimeEarned,
-      lifetimeRedeemed: previous.lifetimeRedeemed,
-      lifetimeExpired: previous.lifetimeExpired,
-      lastUpdated: DateTime.now(),
-      pointsExpireAt: previous.pointsExpireAt,
+    _commitBalance(
+      PointBalance(
+        userId: previous.userId,
+        currentBalance: latest.previousBalance,
+        lifetimeEarned: previous.lifetimeEarned,
+        lifetimeRedeemed: previous.lifetimeRedeemed,
+        lifetimeExpired: previous.lifetimeExpired,
+        lastUpdated: DateTime.now(),
+        pointsExpireAt: previous.pointsExpireAt,
+      ),
     );
     _optimisticSnapshots.remove(latest.refId);
     _optimisticRefs.remove(latest.refId);
@@ -1490,21 +1527,23 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   }) {
     final int previousBalance = _balance?.currentBalance ?? -1;
     if (_currentUserId != null && _currentUserId != userId) {
-      _balance = null;
+      _commitBalance(null);
       _transactions = [];
       _lastTransactionsHash = null;
       _hasLoadedForCurrentUser = false;
     }
     _currentUserId = userId;
     final previous = _balance;
-    _balance = PointBalance(
-      userId: userId,
-      currentBalance: currentBalance,
-      lifetimeEarned: previous?.lifetimeEarned ?? 0,
-      lifetimeRedeemed: previous?.lifetimeRedeemed ?? 0,
-      lifetimeExpired: previous?.lifetimeExpired ?? 0,
-      lastUpdated: DateTime.now(),
-      pointsExpireAt: previous?.pointsExpireAt,
+    _commitBalance(
+      PointBalance(
+        userId: userId,
+        currentBalance: currentBalance,
+        lifetimeEarned: previous?.lifetimeEarned ?? 0,
+        lifetimeRedeemed: previous?.lifetimeRedeemed ?? 0,
+        lifetimeExpired: previous?.lifetimeExpired ?? 0,
+        lastUpdated: DateTime.now(),
+        pointsExpireAt: previous?.pointsExpireAt,
+      ),
     );
     _hasLoadedForCurrentUser = true;
     final bool balanceChanged =
@@ -1564,7 +1603,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   }) {
     // Defensive: handle user switching.
     if (_currentUserId != null && _currentUserId != userId) {
-      _balance = null;
+      _commitBalance(null);
       _transactions = [];
       _lastTransactionsHash = null;
       _hasLoadedForCurrentUser = false;
@@ -1603,8 +1642,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
 
     // Chaos guard: ledger `sequence_id` is authoritative; replica/wall-clock fields
     // can be misordered. When sequence strictly increases, do not reject on time alone.
-    final bool sequenceStrictlyAheadOfLast =
-        snapshotSequence != null &&
+    final bool sequenceStrictlyAheadOfLast = snapshotSequence != null &&
         seqLast != null &&
         snapshotSequence > seqLast;
 
@@ -1657,14 +1695,16 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     }
 
     final previous = _balance;
-    _balance = PointBalance(
-      userId: userId,
-      currentBalance: currentBalance,
-      lifetimeEarned: previous?.lifetimeEarned ?? 0,
-      lifetimeRedeemed: previous?.lifetimeRedeemed ?? 0,
-      lifetimeExpired: previous?.lifetimeExpired ?? 0,
-      lastUpdated: DateTime.now(),
-      pointsExpireAt: previous?.pointsExpireAt,
+    _commitBalance(
+      PointBalance(
+        userId: userId,
+        currentBalance: currentBalance,
+        lifetimeEarned: previous?.lifetimeEarned ?? 0,
+        lifetimeRedeemed: previous?.lifetimeRedeemed ?? 0,
+        lifetimeExpired: previous?.lifetimeExpired ?? 0,
+        lastUpdated: DateTime.now(),
+        pointsExpireAt: previous?.pointsExpireAt,
+      ),
     );
 
     final DateTime snapshotClock = DateTime.now();
@@ -1723,8 +1763,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   void _notifyListenersDebounced({bool force = false}) {
     if (!force) {
       // Calculate hash of current balance AND transactions to detect changes
-      final currentHash =
-          (_balance?.currentBalance.hashCode ?? 0) ^
+      final currentHash = (_balance?.currentBalance.hashCode ?? 0) ^
           _transactions.length.hashCode ^
           (_transactions.isNotEmpty ? _transactions.first.id.hashCode : 0) ^
           (_transactions.isNotEmpty ? _transactions.first.status.hashCode : 0) ^
@@ -1938,11 +1977,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         final now = DateTime.now();
         final newestDiff = newest.createdAt.difference(now).inDays;
         Logger.info(
-          'PointProvider - Newest transaction is $newestDiff days ${newestDiff > 0
-              ? "in the future"
-              : newestDiff < 0
-              ? "ago"
-              : "today"}',
+          'PointProvider - Newest transaction is $newestDiff days ${newestDiff > 0 ? "in the future" : newestDiff < 0 ? "ago" : "today"}',
           tag: 'PointProvider',
         );
       }
@@ -1954,9 +1989,9 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
       // Preserve already-known poll details if API row is temporarily missing them.
       filteredTransactions =
           PointService.mergeTransactionsPreservingPollDetails(
-            existing: _transactions,
-            incoming: filteredTransactions,
-          );
+        existing: _transactions,
+        incoming: filteredTransactions,
+      );
 
       if (isLoadMoreRequest) {
         // Append additional pages while preserving existing enriched rows.
@@ -1979,8 +2014,8 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
       // Also ensure we update if transactions list is empty (to show empty state)
       final shouldUpdate =
           !_areTransactionsEqual(_transactions, filteredTransactions) ||
-          forceRefresh ||
-          _transactions.isEmpty != filteredTransactions.isEmpty;
+              forceRefresh ||
+              _transactions.isEmpty != filteredTransactions.isEmpty;
 
       if (shouldUpdate) {
         // CRITICAL FIX: Ensure filtered transactions are sorted by date (newest first)
@@ -2310,14 +2345,13 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     bool preferImmediateNotify = false,
   }) async {
     try {
-      final id = (userId != null && userId.isNotEmpty)
-          ? userId
-          : _currentUserId;
+      final id =
+          (userId != null && userId.isNotEmpty) ? userId : _currentUserId;
       if (id == null || id.isEmpty) return;
 
       final cached = await PointService.getCachedBalance(id);
       if (cached != null) {
-        _balance = cached;
+        _commitBalance(cached);
         _hasLoadedForCurrentUser = true;
         // Same as API path — initial session hydrate should paint immediately.
         if (preferImmediateNotify && !_sessionInitialBalanceLoadComplete) {
@@ -2368,8 +2402,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     if (status != null && status >= 500) {
       return 'Server error. Please try again later.';
     }
-    final bool timeoutLike =
-        lowerError.contains('timeout') ||
+    final bool timeoutLike = lowerError.contains('timeout') ||
         lowerError.contains('timed out') ||
         lowerReason.contains('timeout') ||
         lowerReason.contains('timed out');

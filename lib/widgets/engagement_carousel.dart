@@ -19,7 +19,7 @@ import '../utils/poll_display_helpers.dart';
 class EngagementCarousel extends StatefulWidget {
   final VoidCallback? onRefresh;
   final int?
-  initialItemId; // PROFESSIONAL FIX: Support navigation to specific item
+      initialItemId; // PROFESSIONAL FIX: Support navigation to specific item
 
   const EngagementCarousel({
     super.key,
@@ -40,7 +40,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   Timer? _autoScrollTimer;
   int? _lastUserId; // Track last user ID to detect user changes
   int?
-  _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
+      _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
   final Set<String> _forcedOverlaySessionKeys = <String>{};
   final Map<String, DateTime> _handoverTriggeredAt = <String, DateTime>{};
 
@@ -57,8 +57,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         : rawStartedAt.toString();
     final votingStatus =
         (rawVotingStatus == null || rawVotingStatus.toString().isEmpty)
-        ? 'unknown'
-        : rawVotingStatus.toString().toLowerCase();
+            ? 'unknown'
+            : rawVotingStatus.toString().toLowerCase();
     return '${item.id}_${sessionId}_${startedAt}_$votingStatus';
   }
 
@@ -272,8 +272,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     // Get rotation duration from current item (backend-managed)
     // Backend always provides rotation_duration (either from item or global setting)
     final currentItem = engagementProvider.items.isNotEmpty
-        ? engagementProvider.items[_currentPage %
-              engagementProvider.items.length]
+        ? engagementProvider
+            .items[_currentPage % engagementProvider.items.length]
         : null;
 
     // Use rotation_duration from backend (always provided by backend now)
@@ -941,8 +941,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                   const SizedBox(height: 12),
                   // Question or Content - Use Flexible to prevent overflow
                   Flexible(
-                    child:
-                        (item.quizData != null &&
+                    child: (item.quizData != null &&
                             item.quizData!.question.isNotEmpty)
                         ? Text(
                             item.quizData!.question,
@@ -962,24 +961,24 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                             overflow: TextOverflow.ellipsis,
                           )
                         : (item.content.isNotEmpty)
-                        ? Text(
-                            _stripHtmlTags(item.content),
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                              shadows: [
-                                Shadow(
-                                  color: Colors.black54,
-                                  offset: Offset(0, 1),
-                                  blurRadius: 2,
+                            ? Text(
+                                _stripHtmlTags(item.content),
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                  shadows: [
+                                    Shadow(
+                                      color: Colors.black54,
+                                      offset: Offset(0, 1),
+                                      blurRadius: 2,
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          )
-                        : const SizedBox.shrink(),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              )
+                            : const SizedBox.shrink(),
                   ),
                   const SizedBox(height: 12),
                   // Action Button
@@ -1220,19 +1219,16 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       endsAtUtc: serverEndsAtUtc,
     );
     final r = item.pollResult;
-    final hasWinning =
-        r != null &&
+    final hasWinning = r != null &&
         (r['winning_option'] != null ||
             (r['winning_index'] != null && r['winning_index'] >= 0) ||
             ((r['options'] as List?)?.isNotEmpty ?? false));
-    final isResultLikeStatus =
-        votingStatus == 'showing_result' ||
+    final isResultLikeStatus = votingStatus == 'showing_result' ||
         votingStatus == 'showing_results' ||
         votingStatus == 'ended' ||
         votingStatus == 'result' ||
         votingStatus == 'results';
-    final showResult =
-        isResultLikeStatus &&
+    final showResult = isResultLikeStatus &&
         r != null &&
         ((r['total_votes'] ?? 0) > 0 || hasWinning);
 
@@ -1464,9 +1460,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                       ),
                     ] else
                       ElevatedButton(
-                        onPressed: isPollActive
-                            ? () => _showPollDialog(item)
-                            : null,
+                        onPressed:
+                            isPollActive ? () => _showPollDialog(item) : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           foregroundColor: Colors.white,
@@ -1623,9 +1618,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                         item,
                                         engagementProvider:
                                             Provider.of<EngagementProvider>(
-                                              context,
-                                              listen: false,
-                                            ),
+                                          context,
+                                          listen: false,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -1702,9 +1697,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                       item,
                                       engagementProvider:
                                           Provider.of<EngagementProvider>(
-                                            context,
-                                            listen: false,
-                                          ),
+                                        context,
+                                        listen: false,
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1878,7 +1873,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                             },
                           ),
                         ),
-                        */ _PermanentPollTimer(
+                        */
+                    _PermanentPollTimer(
                         key: ValueKey<String>(
                           'timer_${item.id}_${votingStatus}_$sessionKey',
                         ),
@@ -2164,7 +2160,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         final screenHeight = constraints.maxHeight.isFinite
             ? constraints.maxHeight
             : screenWidth *
-                  1.15; // Engagement card has taller aspect ratio (height = width * 1.15)
+                1.15; // Engagement card has taller aspect ratio (height = width * 1.15)
 
         // Account for padding and other elements
         final availableWidth = screenWidth - 32; // 16px padding on each side
@@ -2178,11 +2174,10 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 
         // Use the smaller of the two to ensure it fits perfectly
         // But prioritize making it as large as possible
-        final calculatedSize =
-            (widthBasedSize < heightBasedSize
-                    ? widthBasedSize
-                    : heightBasedSize)
-                .clamp(180.0, 350.0); // Increased range for much larger numbers
+        final calculatedSize = (widthBasedSize < heightBasedSize
+                ? widthBasedSize
+                : heightBasedSize)
+            .clamp(180.0, 350.0); // Increased range for much larger numbers
 
         return Container(
           decoration: BoxDecoration(
@@ -2220,24 +2215,21 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                     final maxHeight = innerConstraints.maxHeight.isFinite
                         ? innerConstraints.maxHeight
                         : maxWidth *
-                              1.15; // Fallback to width * 1.15 (taller aspect ratio)
+                            1.15; // Fallback to width * 1.15 (taller aspect ratio)
 
                     // PROFESSIONAL FIX: Minimize title/badge space to maximize number size
                     // Calculate available height (accounting for title and badge)
-                    final titleHeight = item.title.isNotEmpty
-                        ? 30.0
-                        : 0.0; // Reduced
-                    final badgeHeight = item.rewardPoints > 0
-                        ? 28.0
-                        : 0.0; // Reduced
-                    final spacing =
-                        (item.title.isNotEmpty ? 4.0 : 0.0) +
+                    final titleHeight =
+                        item.title.isNotEmpty ? 30.0 : 0.0; // Reduced
+                    final badgeHeight =
+                        item.rewardPoints > 0 ? 28.0 : 0.0; // Reduced
+                    final spacing = (item.title.isNotEmpty ? 4.0 : 0.0) +
                         (item.rewardPoints > 0 ? 4.0 : 0.0); // Reduced spacing
                     final numberHeight =
                         (maxHeight - titleHeight - badgeHeight - spacing).clamp(
-                          100.0,
-                          maxHeight,
-                        ); // Increased minimum
+                      100.0,
+                      maxHeight,
+                    ); // Increased minimum
 
                     return Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -2458,8 +2450,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     EngagementItem item,
   ) {
     if (item.type != EngagementType.banner &&
-        item.type != EngagementType.announcement)
-      return;
+        item.type != EngagementType.announcement) return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     if (authProvider.user == null) return;
     final engagementProvider = Provider.of<EngagementProvider>(
@@ -2470,23 +2461,22 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final token = authProvider.token;
     engagementProvider
         .submitInteraction(
-          userId: userId,
-          token: token,
-          itemId: item.id,
-          answer: 'viewed',
-        )
+      userId: userId,
+      token: token,
+      itemId: item.id,
+      answer: 'viewed',
+    )
         .then((result) {
-          if (result['success'] == true && mounted) {
-            engagementProvider.refresh(userId: userId, token: token);
-          }
-        })
-        .catchError((_) {});
+      if (result['success'] == true && mounted) {
+        engagementProvider.refresh(userId: userId, token: token);
+      }
+    }).catchError((_) {});
   }
 
   /// After poll countdown reaches zero: brief delay so the server ledger can settle,
   /// then one force refresh of points (firewall-safe cadence vs. immediate burst).
   Future<void> _onPollFinishedDelayedBalanceRefresh() async {
-    await Future<void>.delayed(const Duration(seconds: 2));
+    await Future<void>.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final userId = authProvider.user?.id;
@@ -2497,6 +2487,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         forceRefresh: true,
         notifyLoading: false,
       );
+      PointProvider.instance.pingBalanceUiListeners();
     } catch (e, st) {
       app_logger.Logger.warning(
         'onPollFinished: loadBalance failed: $e',
@@ -2795,11 +2786,10 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
       final quizDataMap = itemMap['quiz_data'];
       final scheduleMap = itemMap['poll_voting_schedule'];
       final pollResultMap = itemMap['poll_result'];
-      final mode =
-          (widget.item.pollVotingSchedule?['poll_mode'] ??
-                  quizDataMap?['poll_mode'])
-              ?.toString()
-              .toLowerCase();
+      final mode = (widget.item.pollVotingSchedule?['poll_mode'] ??
+              quizDataMap?['poll_mode'])
+          ?.toString()
+          .toLowerCase();
       final isAutoRun = mode == 'auto_run';
 
       if (!_didLogUnitValueAudit) {
@@ -3126,9 +3116,8 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
       );
       participation = null;
     }
-    final userCountLabel = participation != null
-        ? _formatCompactNumber(participation)
-        : '--';
+    final userCountLabel =
+        participation != null ? _formatCompactNumber(participation) : '--';
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
@@ -3518,9 +3507,8 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     final mediaTypeStr = m['media_type']?.toString().trim();
     return (
       text: textStr.isNotEmpty ? textStr : 'Option',
-      mediaUrl: (mediaUrlStr != null && mediaUrlStr.isNotEmpty)
-          ? mediaUrlStr
-          : null,
+      mediaUrl:
+          (mediaUrlStr != null && mediaUrlStr.isNotEmpty) ? mediaUrlStr : null,
       mediaType: (mediaTypeStr != null && mediaTypeStr.isNotEmpty)
           ? mediaTypeStr
           : null,
@@ -3565,8 +3553,7 @@ int? _leadingPollOptionIndexFromVoteCounts(
 int _stableFallbackOptionIndex(EngagementItem item, int optionCount) {
   if (optionCount <= 0) return 0;
   final schedule = item.pollVotingSchedule;
-  final endsAt =
-      schedule?['result_display_ends_at']?.toString() ??
+  final endsAt = schedule?['result_display_ends_at']?.toString() ??
       schedule?['end_time']?.toString() ??
       '';
   final seed = '${item.id}_${item.title}_$endsAt';
@@ -3732,7 +3719,7 @@ int _resolvePollOptionUnits({
 /// Builds two-lane poll states (display and calculated use the same resolved units;
 /// no separate normalization—integer passthrough only).
 ({Map<String, int?>? displayBets, Map<String, int?>? calculatedTotals})?
-pollUserSeparatedBetStates(
+    pollUserSeparatedBetStates(
   EngagementItem item, {
   required EngagementProvider engagementProvider,
 }) {
@@ -4023,8 +4010,8 @@ class _PollResultCard extends StatelessWidget {
     final winningIndex = result['winning_index'] is int
         ? result['winning_index'] as int?
         : (result['winning_index'] is num)
-        ? (result['winning_index'] as num).toInt()
-        : null;
+            ? (result['winning_index'] as num).toInt()
+            : null;
 
     // Never use Random() here — results must be stable across rebuilds.
     // Prefer explicit winning_option / winning_index from API; if missing, use vote leader
@@ -4725,9 +4712,9 @@ class _QuizDialogState extends State<_QuizDialog> {
         final responseData = result['data'] as Map<String, dynamic>?;
         final isCorrect =
             responseData?['is_correct'] ?? result['is_correct'] ?? false;
-        final pointsEarned =
-            (responseData?['points_earned'] ?? result['points_earned'] ?? 0)
-                as int;
+        final pointsEarned = (responseData?['points_earned'] ??
+            result['points_earned'] ??
+            0) as int;
         final message = result['message']?.toString() ?? '';
 
         app_logger.Logger.info(
@@ -5173,8 +5160,7 @@ class _PollDialogState extends State<_PollDialog> {
   /// matching the same source My PNP card uses.
   static int _balanceFromCustomFields(Map<String, String>? customFields) {
     if (customFields == null) return 0;
-    final raw =
-        customFields['my_point'] ??
+    final raw = customFields['my_point'] ??
         customFields['my_points'] ??
         customFields['My Point Value'] ??
         customFields['points_balance'];
@@ -5495,12 +5481,12 @@ class _PollDialogState extends State<_PollDialog> {
                                   ),
                                   onPressed: amt > 1
                                       ? () => setDialogState(() {
-                                          final dynamicValue = amt - 1;
-                                          _updateOptionUnitValue(
-                                            idx,
-                                            dynamicValue,
-                                          );
-                                        })
+                                            final dynamicValue = amt - 1;
+                                            _updateOptionUnitValue(
+                                              idx,
+                                              dynamicValue,
+                                            );
+                                          })
                                       : null,
                                   padding: EdgeInsets.zero,
                                   constraints: const BoxConstraints(
@@ -5526,12 +5512,12 @@ class _PollDialogState extends State<_PollDialog> {
                                   ),
                                   onPressed: amt < maxForThis
                                       ? () => setDialogState(() {
-                                          final dynamicValue = amt + 1;
-                                          _updateOptionUnitValue(
-                                            idx,
-                                            dynamicValue,
-                                          );
-                                        })
+                                            final dynamicValue = amt + 1;
+                                            _updateOptionUnitValue(
+                                              idx,
+                                              dynamicValue,
+                                            );
+                                          })
                                       : null,
                                   padding: EdgeInsets.zero,
                                   constraints: const BoxConstraints(
@@ -5750,8 +5736,7 @@ class _PollDialogState extends State<_PollDialog> {
             // Options: Checkbox-style (multiple selection) instead of Radio.
             ...List.generate(pollData.options.length, (index) {
               final isSelected = _selectedIndices.contains(index);
-              final isUserPreviousSelection =
-                  widget.item.hasInteracted &&
+              final isUserPreviousSelection = widget.item.hasInteracted &&
                   userSelectedIndices.contains(index) &&
                   !isSelected;
               final voteCount = _resolveVoteCountForOptionIndex(index);
@@ -5785,8 +5770,8 @@ class _PollDialogState extends State<_PollDialog> {
                         width: isUserPreviousSelection
                             ? 2.5
                             : isSelected
-                            ? 3
-                            : 2,
+                                ? 3
+                                : 2,
                       ),
                       borderRadius: BorderRadius.circular(12),
                     ),
@@ -5801,8 +5786,8 @@ class _PollDialogState extends State<_PollDialog> {
                             value: isSelected,
                             onChanged:
                                 (_isSubmitting || widget.item.hasInteracted)
-                                ? null
-                                : (_) => _toggleOption(index),
+                                    ? null
+                                    : (_) => _toggleOption(index),
                             activeColor: pollColor,
                             checkColor: Colors.white,
                             shape: RoundedRectangleBorder(
@@ -5827,7 +5812,8 @@ class _PollDialogState extends State<_PollDialog> {
                                         : FontWeight.normal,
                                   ),
                                 ),
-                                */ Column(
+                                */
+                                    Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
@@ -5907,8 +5893,7 @@ class _PollDialogState extends State<_PollDialog> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed:
-                    _selectedIndices.isEmpty ||
+                onPressed: _selectedIndices.isEmpty ||
                         _isSubmitting ||
                         widget.item.hasInteracted
                     ? null
@@ -6284,13 +6269,13 @@ class _PollDialogState extends State<_PollDialog> {
               final pollDurationMin = (pollDuration is int)
                   ? pollDuration
                   : (pollDuration is double)
-                  ? pollDuration.toInt()
-                  : 15;
+                      ? pollDuration.toInt()
+                      : 15;
               final resultSeconds = (resultSecondsRaw is int)
                   ? resultSecondsRaw
                   : (resultSecondsRaw is double)
-                  ? resultSecondsRaw.toInt()
-                  : int.tryParse(resultSecondsRaw.toString()) ?? 60;
+                      ? resultSecondsRaw.toInt()
+                      : int.tryParse(resultSecondsRaw.toString()) ?? 60;
 
               if (startedAt != null && pollDurationMin > 0) {
                 // Cycle = voting window (minutes→seconds) + result phase (seconds).
@@ -6332,9 +6317,8 @@ class _PollDialogState extends State<_PollDialog> {
             answer: answerStr,
             sessionId: sessionId,
             selectedOptionIds: answer,
-            betAmount: amountPerOption == null
-                ? (amount <= 0 ? 1 : amount)
-                : null,
+            betAmount:
+                amountPerOption == null ? (amount <= 0 ? 1 : amount) : null,
             betAmountPerOption: amountPerOption,
           );
         } catch (e, st) {
@@ -6466,11 +6450,11 @@ class _PollDialogState extends State<_PollDialog> {
             final ceiling = balanceBefore - totalCost;
             await PointProvider.instance
                 .refreshPointStateUntilDeductionVisibleOnLedger(
-                  userId: uidStr,
-                  maxAcceptableFromApi: ceiling < 0 ? 0 : ceiling,
-                  refreshUserCallback: authProvider.refreshUser,
-                  shouldContinue: () => mounted,
-                );
+              userId: uidStr,
+              maxAcceptableFromApi: ceiling < 0 ? 0 : ceiling,
+              refreshUserCallback: authProvider.refreshUser,
+              shouldContinue: () => mounted,
+            );
           }
 
           // Final coordinated reconcile: transactions + user meta (balance already verified).
@@ -6514,18 +6498,17 @@ class _PollDialogState extends State<_PollDialog> {
           engagementProvider
               .refresh(userId: authProvider.user!.id, token: token)
               .catchError((error) {
-                app_logger.Logger.warning(
-                  'Failed to refresh engagement feed: $error',
-                  tag: 'EngagementCarousel',
-                );
-              });
+            app_logger.Logger.warning(
+              'Failed to refresh engagement feed: $error',
+              tag: 'EngagementCarousel',
+            );
+          });
         } else {
           // PROFESSIONAL FIX: Handle duplicate and insufficient_balance errors
           final message =
               result['message']?.toString() ?? 'ကစားမှု မအောင်မြင်ပါ။';
           final isDuplicate = result['is_duplicate'] == true;
-          final isInsufficient =
-              result['code']?.toString().toLowerCase() ==
+          final isInsufficient = result['code']?.toString().toLowerCase() ==
               'insufficient_balance';
 
           app_logger.Logger.warning(
@@ -6562,9 +6545,8 @@ class _PollDialogState extends State<_PollDialog> {
           final String displayMessage;
           if (isInsufficient) {
             final m = message.trim();
-            displayMessage = m.isNotEmpty
-                ? m
-                : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
+            displayMessage =
+                m.isNotEmpty ? m : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
           } else {
             displayMessage = message;
           }
@@ -6580,15 +6562,15 @@ class _PollDialogState extends State<_PollDialog> {
             if (authProvider.user != null) {
               engagementProvider
                   .refresh(
-                    userId: authProvider.user!.id,
-                    token: authProvider.token,
-                  )
+                userId: authProvider.user!.id,
+                token: authProvider.token,
+              )
                   .catchError((error) {
-                    app_logger.Logger.warning(
-                      'Failed to refresh engagement feed after error: $error',
-                      tag: 'EngagementCarousel',
-                    );
-                  });
+                app_logger.Logger.warning(
+                  'Failed to refresh engagement feed after error: $error',
+                  tag: 'EngagementCarousel',
+                );
+              });
             }
           }
 
@@ -6883,8 +6865,8 @@ class _ContentQuickViewDialog extends StatelessWidget {
                           item.title.isNotEmpty
                               ? item.title
                               : (item.type == EngagementType.banner
-                                    ? 'Banner'
-                                    : 'Announcement'),
+                                  ? 'Banner'
+                                  : 'Announcement'),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -7090,29 +7072,27 @@ class _BlinkingNumberWidgetState extends State<_BlinkingNumberWidget>
 
     // Optimized opacity animation - smooth transition for number text blinking
     // Only the number text opacity changes, no background effects
-    _opacityAnimation =
-        Tween<double>(
-          begin: 0.2, // Lower minimum for more dramatic fade effect
-          end: 1.0,
-        ).animate(
-          CurvedAnimation(
-            parent: _controller,
-            curve: Curves.easeInOut, // Smooth transition prevents flickering
-          ),
-        );
+    _opacityAnimation = Tween<double>(
+      begin: 0.2, // Lower minimum for more dramatic fade effect
+      end: 1.0,
+    ).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeInOut, // Smooth transition prevents flickering
+      ),
+    );
 
     // Subtle scale animation for pulsing effect - applies only to number text
     // Creates smooth pulsing/blinking effect on the number itself
-    _scaleAnimation =
-        Tween<double>(
-          begin: 0.92, // Subtle scale variation
-          end: 1.08, // Smooth pulsing effect
-        ).animate(
-          CurvedAnimation(
-            parent: _controller,
-            curve: Curves.easeInOut, // Smooth curve prevents visual jumps
-          ),
-        );
+    _scaleAnimation = Tween<double>(
+      begin: 0.92, // Subtle scale variation
+      end: 1.08, // Smooth pulsing effect
+    ).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeInOut, // Smooth curve prevents visual jumps
+      ),
+    );
   }
 
   @override
@@ -7146,8 +7126,8 @@ class _BlinkingNumberWidgetState extends State<_BlinkingNumberWidget>
         // Use the smaller of the two to ensure it fits perfectly
         final responsiveSize = maxWidth.isFinite && maxHeight.isFinite
             ? (widthBasedSize < heightBasedSize
-                  ? widthBasedSize
-                  : heightBasedSize)
+                ? widthBasedSize
+                : heightBasedSize)
             : widget.size.clamp(180.0, 450.0);
 
         // PROFESSIONAL FIX: Optimized AnimatedBuilder - only the number text blinks, no background effects
