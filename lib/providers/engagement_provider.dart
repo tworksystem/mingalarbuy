@@ -57,6 +57,56 @@ bool _pollResultEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   return true;
 }
 
+bool _pollOptionTotalsEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
+  if (a == b) return true;
+  if (a == null || b == null) return false;
+
+  final amountsA = a['amount_by_option'];
+  final amountsB = b['amount_by_option'];
+  if (amountsA is Map && amountsB is Map) {
+    final mapA = Map<dynamic, dynamic>.from(amountsA);
+    final mapB = Map<dynamic, dynamic>.from(amountsB);
+    if (mapA.length != mapB.length) {
+      _debugFieldChangeLog(
+        scope: 'poll_option_totals',
+        field: 'amount_by_option.length',
+        oldValue: mapA.length,
+        newValue: mapB.length,
+      );
+      return false;
+    }
+    for (final entry in mapA.entries) {
+      final key = entry.key.toString();
+      final va = _toPollOptionTotalInt(entry.value);
+      final vb = _toPollOptionTotalInt(mapB[key] ?? mapB[entry.key]);
+      if (va != vb) {
+        _debugFieldChangeLog(
+          scope: 'poll_option_totals',
+          field: 'amount_by_option[$key]',
+          oldValue: va,
+          newValue: vb,
+        );
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return jsonEncode(a) == jsonEncode(b);
+}
+
+int _toPollOptionTotalInt(dynamic raw) {
+  if (raw == null) return 0;
+  if (raw is int) return raw >= 0 ? raw : 0;
+  if (raw is num) {
+    final v = raw.toInt();
+    return v >= 0 ? v : 0;
+  }
+  final parsed = int.tryParse(raw.toString().trim().replaceAll(',', ''));
+  if (parsed == null || parsed < 0) return 0;
+  return parsed;
+}
+
 bool _scheduleEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   if (a == b) return true;
   if (a == null || b == null) return false;
@@ -340,6 +390,7 @@ class EngagementProvider with ChangeNotifier {
       interactionCount: item.interactionCount,
       pollVotingSchedule: item.pollVotingSchedule,
       pollResult: item.pollResult,
+      pollOptionTotals: item.pollOptionTotals,
     );
   }
 
@@ -1168,6 +1219,7 @@ class EngagementProvider with ChangeNotifier {
         pollVotingSchedule:
             fresh.pollVotingSchedule ?? source.pollVotingSchedule,
         pollResult: fresh.pollResult ?? source.pollResult,
+        pollOptionTotals: fresh.pollOptionTotals ?? source.pollOptionTotals,
       );
     }).toList();
 
@@ -1361,6 +1413,7 @@ class EngagementProvider with ChangeNotifier {
       interactionCount: existing.interactionCount + 1,
       pollVotingSchedule: existing.pollVotingSchedule,
       pollResult: existing.pollResult,
+      pollOptionTotals: existing.pollOptionTotals,
     );
     _items[index] = updatedItem;
     notifyListeners();
@@ -1511,6 +1564,7 @@ class EngagementProvider with ChangeNotifier {
             interactionCount: _items[index].interactionCount,
             pollVotingSchedule: _items[index].pollVotingSchedule,
             pollResult: _items[index].pollResult,
+            pollOptionTotals: _items[index].pollOptionTotals,
           );
           _items[index] = updatedItem;
           notifyListeners();
@@ -1716,6 +1770,8 @@ class EngagementProvider with ChangeNotifier {
         ),
       if (item.pollResult != null)
         'poll_result': Map<String, dynamic>.from(item.pollResult!),
+      if (item.pollOptionTotals != null)
+        'poll_option_totals': Map<String, dynamic>.from(item.pollOptionTotals!),
     };
   }
 
@@ -1863,6 +1919,10 @@ class EngagementProvider with ChangeNotifier {
             if (b == null) continue;
             if (a.interactionCount != b.interactionCount ||
                 !_pollResultEquals(a.pollResult, b.pollResult) ||
+                !_pollOptionTotalsEquals(
+                  a.pollOptionTotals,
+                  b.pollOptionTotals,
+                ) ||
                 !_scheduleEquals(a.pollVotingSchedule, b.pollVotingSchedule) ||
                 a.hasInteracted != b.hasInteracted ||
                 a.rotationDurationSeconds != b.rotationDurationSeconds) {

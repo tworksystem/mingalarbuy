@@ -210,6 +210,8 @@ class EngagementItem {
   pollVotingSchedule; // seconds_until_close, voting_status, result_display_ends_at, etc.
   final Map<String, dynamic>?
   pollResult; // vote_counts, vote_percentages, winning_index (when showing result)
+  /// Global all-users per-option PNP totals during open voting (timer strip only).
+  final Map<String, dynamic>? pollOptionTotals;
   /// Raw backend payload for deep audit/debug (kept for diagnostics only).
   final Map<String, dynamic>? rawData;
 
@@ -229,6 +231,7 @@ class EngagementItem {
     this.interactionCount = 0,
     this.pollVotingSchedule,
     this.pollResult,
+    this.pollOptionTotals,
     this.rawData,
   });
 
@@ -237,11 +240,13 @@ class EngagementItem {
   EngagementItem copyWith({
     int? interactionCount,
     Map<String, dynamic>? pollResult,
+    Map<String, dynamic>? pollOptionTotals,
     Map<String, dynamic>? pollVotingSchedule,
     bool? hasInteracted,
     int? userBetAmount,
     Map<int, int>? userBetUnitsPerOption,
     bool clearPollResult = false,
+    bool clearPollOptionTotals = false,
   }) => EngagementItem(
     id: id,
     type: type,
@@ -258,6 +263,9 @@ class EngagementItem {
     interactionCount: interactionCount ?? this.interactionCount,
     pollVotingSchedule: pollVotingSchedule ?? this.pollVotingSchedule,
     pollResult: clearPollResult ? null : (pollResult ?? this.pollResult),
+    pollOptionTotals: clearPollOptionTotals
+        ? null
+        : (pollOptionTotals ?? this.pollOptionTotals),
     rawData: rawData,
   );
 
@@ -282,6 +290,7 @@ class EngagementItem {
       if (pollVotingSchedule != null)
         'poll_voting_schedule': pollVotingSchedule,
       if (pollResult != null) 'poll_result': pollResult,
+      if (pollOptionTotals != null) 'poll_option_totals': pollOptionTotals,
     };
   }
 
@@ -431,6 +440,20 @@ class EngagementItem {
       );
     }
 
+    Map<String, dynamic>? pollOptionTotals;
+    final rawPollOptionTotals = json['poll_option_totals'];
+    if (rawPollOptionTotals is Map) {
+      pollOptionTotals = Map<String, dynamic>.from(rawPollOptionTotals);
+    } else if (rawPollOptionTotals is String &&
+        rawPollOptionTotals.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawPollOptionTotals);
+        if (decoded is Map) {
+          pollOptionTotals = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+    }
+
     Map<int, int>? _parseUserBetUnitsPerOption(dynamic raw) {
       if (raw == null) return null;
       Map<String, dynamic>? m;
@@ -477,6 +500,7 @@ class EngagementItem {
       interactionCount: interactionCount,
       pollVotingSchedule: pollVotingSchedule,
       pollResult: pollResult,
+      pollOptionTotals: pollOptionTotals,
       rawData: Map<String, dynamic>.from(json),
     );
   }
@@ -674,6 +698,7 @@ class EngagementService {
               'id': e['id'],
               'interaction_count': e['interaction_count'],
               'poll_result': e['poll_result'],
+              'poll_option_totals': e['poll_option_totals'],
               'poll_voting_schedule': e['poll_voting_schedule'],
               'has_interacted': e['has_interacted'],
             },
