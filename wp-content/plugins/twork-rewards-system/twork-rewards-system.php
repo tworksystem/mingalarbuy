@@ -6382,6 +6382,73 @@ class TWork_Rewards_System
     }
 
     /**
+     * Live global per-option PNP totals for client timer strip (no winner fields).
+     *
+     * @param array|null $stats Output from get_engagement_item_statistics().
+     * @return array|null
+     */
+    private function build_poll_option_totals_payload_from_statistics($stats)
+    {
+        if (!is_array($stats)) {
+            return null;
+        }
+
+        $amount_counts = (isset($stats['amount_counts']) && is_array($stats['amount_counts']))
+            ? $stats['amount_counts']
+            : array();
+        $vote_counts = (isset($stats['vote_counts']) && is_array($stats['vote_counts']))
+            ? $stats['vote_counts']
+            : array();
+        $total_votes = isset($stats['total_votes']) ? max(0, (int) $stats['total_votes']) : 0;
+
+        $amount_by_option = array();
+        $total_amount = 0;
+        foreach ($amount_counts as $idx => $amt) {
+            $normalized = max(0, (int) $amt);
+            $amount_by_option[(string) $idx] = $normalized;
+            $total_amount += $normalized;
+        }
+
+        $vote_counts_out = array();
+        foreach ($vote_counts as $idx => $cnt) {
+            $vote_counts_out[(string) $idx] = max(0, (int) $cnt);
+        }
+
+        return array(
+            'amount_by_option' => $amount_by_option,
+            'vote_counts' => $vote_counts_out,
+            'total_votes' => $total_votes,
+            'total_amount' => $total_amount,
+            'updated_at' => gmdate('c'),
+        );
+    }
+
+    /**
+     * Attach poll_option_totals to a feed/updates item during open voting (no winner leak).
+     *
+     * @param array  $feed_item      Feed item array (by reference).
+     * @param int    $item_id        Poll item ID.
+     * @param string $voting_status  poll_voting_schedule.voting_status
+     */
+    private function attach_poll_option_totals_for_open_voting(array &$feed_item, $item_id, $voting_status)
+    {
+        $status = is_string($voting_status) ? strtolower(trim($voting_status)) : '';
+        if (!in_array($status, array('open', 'countdown'), true)) {
+            return;
+        }
+
+        $stats = $this->get_engagement_item_statistics((int) $item_id);
+        if (!$stats) {
+            return;
+        }
+
+        $payload = $this->build_poll_option_totals_payload_from_statistics($stats);
+        if ($payload !== null) {
+            $feed_item['poll_option_totals'] = $payload;
+        }
+    }
+
+    /**
      * Build a single engagement feed item for auto-update (same structure as feed array items).
      * Used in interact response so the app can merge without calling feed again.
      *
@@ -6547,6 +6614,9 @@ class TWork_Rewards_System
                     );
                 }
 
+                // Global option PNP totals for client strip during open voting (no winner fields).
+                $this->attach_poll_option_totals_for_open_voting($feed_item, $item_id, $voting_status);
+
                 if ($voting_status === 'showing_result' || $voting_status === 'ended') {
                     $stats = $this->get_engagement_item_statistics($item_id);
                     if ($stats) {
@@ -6588,6 +6658,10 @@ class TWork_Rewards_System
                             'user_won' => (bool) $user_outcome['user_won'],
                             'points_earned' => (int) $user_outcome['points_earned'],
                         );
+                        $totals_payload = $this->build_poll_option_totals_payload_from_statistics($stats);
+                        if ($totals_payload !== null) {
+                            $feed_item['poll_option_totals'] = $totals_payload;
+                        }
                     }
                 }
             }
@@ -6757,6 +6831,7 @@ class TWork_Rewards_System
                         'result_display_seconds' => $result_display_sec,
                         'result_display_duration_seconds' => $result_display_sec,
                     );
+                    $this->attach_poll_option_totals_for_open_voting($entry, $id, $voting_status);
                     if ($voting_status === 'showing_result' || $voting_status === 'ended') {
                         $stats = $this->get_engagement_item_statistics($id);
                         if ($stats) {
@@ -6784,6 +6859,10 @@ class TWork_Rewards_System
                                 'user_won' => (bool) $user_outcome_upd['user_won'],
                                 'points_earned' => (int) $user_outcome_upd['points_earned'],
                             );
+                            $totals_payload = $this->build_poll_option_totals_payload_from_statistics($stats);
+                            if ($totals_payload !== null) {
+                                $entry['poll_option_totals'] = $totals_payload;
+                            }
                         }
                     }
                 }
@@ -7059,6 +7138,13 @@ class TWork_Rewards_System
                                     strtotime($quiz_data['poll_voting_end_time'])
                                 );
                             }
+
+                            $this->attach_poll_option_totals_for_open_voting(
+                                $feed_item,
+                                $item_id,
+                                $voting_status
+                            );
+
                             if ($voting_status === 'showing_result' || $voting_status === 'ended') {
                                 $stats = $this->get_engagement_item_statistics($item_id);
                                 if ($stats) {
@@ -7101,6 +7187,10 @@ class TWork_Rewards_System
                                         'user_won' => (bool) $user_outcome_feed['user_won'],
                                         'points_earned' => (int) $user_outcome_feed['points_earned'],
                                     );
+                                    $totals_payload = $this->build_poll_option_totals_payload_from_statistics($stats);
+                                    if ($totals_payload !== null) {
+                                        $feed_item['poll_option_totals'] = $totals_payload;
+                                    }
                                 }
                             }
                         }
