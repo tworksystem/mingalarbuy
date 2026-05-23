@@ -74,6 +74,7 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 🛍️ **Full-Featured E-Commerce** - Complete shopping experience with WooCommerce integration
 - 🎁 **Advanced Loyalty System** - Points earning, redemption, and transaction management
 - 🎯 **Interactive Engagement Hub** - Banners, quizzes, polls, and announcements
+- 📊 **Live Poll Totals** - Real-time global per-option PNP totals in the poll timer strip
 - 💰 **Digital Wallet** - P2P money transfers, payment processing, and transaction history
 - 📱 **Offline-First** - Full functionality without internet connection
 - 🔔 **Real-Time Notifications** - Firebase Cloud Messaging with in-app notifications
@@ -150,9 +151,12 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - **Auto-Run Lifecycle** - Time-based poll cycles: voting → result display → 5-second countdown → next poll
 - **Poll State API** - Lazy-evaluated state via `GET /wp-json/twork/v1/poll/state/{poll_id}`
 - **Session-Scoped Votes** - Votes scoped per cycle; results by session via `GET /wp-json/twork/v1/poll/results/{poll_id}/{session_id}`
+- **Live Option Totals** - Server-driven `poll_option_totals` payload with global per-option PNP stakes during open voting (no winner leak)
+- **Timer Strip UX** - Horizontally scrollable, centered one-line summary (`Option 1: 120, Option 2: 85, …`) with graceful `Option totals: pending` fallback
 - **Point Validation** - Pre-submit validation: selection check, total cost (base cost × selected options), balance check
 - **Confirmation Flow** - Insufficient-balance dialog and spend-confirmation dialog before API submit
 - **Engagement Pause** - Provider auto-poll pauses during result/countdown so the 5-second “Next poll” countdown is not interrupted
+- **Cache-Aware Refresh** - Provider diff detection for `poll_option_totals` avoids unnecessary carousel rebuilds while keeping totals fresh
 - **Random Winner** - Client-side random winner fallback when backend does not specify winning option
 
 See [docs/POLL_AUTO_RUN_INTEGRATION.md](docs/POLL_AUTO_RUN_INTEGRATION.md) for integration details.
@@ -653,6 +657,7 @@ mingalarbuy/
 │   │
 │   ├── utils/                        # Utilities and helpers
 │   │   ├── app_config.dart           # App configuration
+│   │   ├── poll_display_helpers.dart # Poll totals, labels, and timer strip formatters
 │   │   ├── logger.dart               # Logging utilities
 │   │   └── monitoring.dart           # Performance monitoring
 │   │
@@ -727,7 +732,7 @@ The application uses WooCommerce REST API v3 for e-commerce operations.
 
 #### Rewards System Endpoints
 
-- `GET /wp-json/twork/v1/engagement/items` - Get engagement items
+- `GET /wp-json/twork/v1/engagement/items` - Get engagement items (poll items may include `poll_option_totals` while voting is open)
 - `GET /wp-json/twork/v1/rewards/exchange-requests` - Get exchange requests
 - `GET /wp-json/twork/v1/rewards/exchange-settings` - Get exchange settings
 - `POST /wp-json/twork/v1/rewards/exchange-request` - Create exchange request
@@ -736,6 +741,32 @@ The application uses WooCommerce REST API v3 for e-commerce operations.
 #### FCM Notification Endpoints
 
 - `POST /wp-json/twork/v1/register-token` - Register FCM token
+
+#### Engagement Poll Payload (`poll_option_totals`)
+
+When a poll is in `open` or `countdown` voting status, engagement feed and update responses may include:
+
+```json
+{
+  "poll_option_totals": {
+    "amount_by_option": { "0": 120, "1": 85 },
+    "vote_counts": { "0": 4, "1": 3 },
+    "total_votes": 7,
+    "total_amount": 205,
+    "updated_at": "2026-05-24T10:30:00+00:00"
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `amount_by_option` | Global PNP staked per option index (all users) |
+| `vote_counts` | Raw vote count per option index |
+| `total_votes` | Sum of votes across options |
+| `total_amount` | Sum of PNP across options |
+| `updated_at` | ISO-8601 UTC timestamp of the snapshot |
+
+> **Security:** Winner fields are intentionally omitted during open voting. Full `poll_result` data is returned only when `voting_status` is `showing_result` or `ended`.
 
 For detailed API documentation, see:
 - [README_POINTS_SYSTEM.md](README_POINTS_SYSTEM.md)
@@ -835,13 +866,15 @@ flutter pub outdated
 
 #### 5. Commit Your Changes
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/) format:
+Follow [Conventional Commits](https://www.conventionalcommits.org/) with a dated prefix (`DDMMYYYY`):
 
 ```bash
 git add .
-git commit -m "feat: add your feature description"
+git commit -m "feat: 24052026 - add your feature description"
 # or
-git commit -m "fix: resolve bug description"
+git commit -m "fix: 24052026 - resolve bug description"
+# or
+git commit -m "docs: 24052026 - update README for new API field"
 ```
 
 #### 6. Push and Create Pull Request
@@ -865,17 +898,23 @@ git push origin feature/your-feature-name
 
 ### Commit Message Convention
 
-We follow [Conventional Commits](https://www.conventionalcommits.org/):
+We follow [Conventional Commits](https://www.conventionalcommits.org/) with a **date prefix** for traceability:
 
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation changes
-- `style:` Code style changes (formatting, etc.)
-- `refactor:` Code refactoring
-- `test:` Adding or updating tests
-- `chore:` Maintenance tasks
-- `perf:` Performance improvements
-- `ci:` CI/CD changes
+```
+<type>: DDMMYYYY - <imperative summary in sentence case>
+```
+
+| Type | When to use | Example |
+| --- | --- | --- |
+| `feat:` | New capability or user-facing enhancement | `feat: 24052026 - expose poll_option_totals in engagement feed` |
+| `fix:` | Bug fix or regression | `fix: 24052026 - pad sparse vote-count arrays in poll helpers` |
+| `docs:` | README, comments, or API docs only | `docs: 24052026 - document live poll option totals payload` |
+| `refactor:` | Internal restructure, no behavior change | `refactor: 24052026 - extract poll totals builder in rewards plugin` |
+| `perf:` | Measurable performance improvement | `perf: 24052026 - skip carousel rebuild when poll totals unchanged` |
+| `test:` | Tests added or updated | `test: 24052026 - cover formatPollGlobalOptionTotalsLine edge cases` |
+| `chore:` | Tooling, deps, or maintenance | `chore: 24052026 - bump flutter_lints to latest minor` |
+| `ci:` | CI/CD pipeline changes | `ci: 24052026 - add analyze step to GitHub Actions` |
+| `style:` | Formatting only (no logic change) | `style: 24052026 - run dart format on engagement widgets` |
 
 ### Hot Reload & Hot Restart
 
@@ -1273,13 +1312,28 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Status**: ✅ Production Ready
 
-**Last Updated**: January 2026
+**Last Updated**: May 2026
 
 **Author**: Maw Kunn Myat
 
 **Maintained by**: T-Work System
 
-### Recent Updates (January 2026)
+### Recent Updates (May 2026)
+
+#### Live Poll Option Totals
+- ✅ **`poll_option_totals` API** - WordPress rewards plugin attaches global per-option PNP snapshots during open/countdown voting without leaking winner data
+- ✅ **Engagement model** - `EngagementItem.pollOptionTotals` parsed from feed, interact, and delta-update payloads
+- ✅ **Provider cache sync** - `_pollOptionTotalsEquals` diff guard prevents redundant carousel rebuilds while totals stay fresh
+- ✅ **Timer strip formatter** - `formatPollGlobalOptionTotalsLine()` renders `Option N: amount` with pending fallback
+- ✅ **Scrollable timer UI** - Centered horizontal scroll replaces scaled/ellipsis layouts for long multi-option polls
+- ✅ **Vote-count resilience** - Sparse or short vote-count arrays pad to option length instead of failing resolution
+
+#### Poll & Balance Polish (May 2026)
+- ✅ **Session-scoped auth sync** - Poll-win point reconciliation after countdown (see prior May commits)
+- ✅ **Deferred balance refresh** - Balance headline refresh deferred until poll cadence settles
+- ✅ **My PNP balance UI** - Restored when server returns an unchanged headline total
+
+### Previous Updates (January 2026)
 
 #### Authentication & Security Enhancements
 - ✅ **Token Caching System** - Implemented synchronous token caching for immediate access and improved authentication flow
