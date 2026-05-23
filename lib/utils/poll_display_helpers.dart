@@ -134,16 +134,18 @@ List<PollOptionAmount>? _rowsFromVoteCountsMap(
   return out;
 }
 
-List<PollOptionAmount>? _rowsFromVoteCountsList(
+List<PollOptionAmount> _rowsFromVoteCountsList(
   List<dynamic> options,
   List<dynamic> countsList,
   int unit,
 ) {
-  if (countsList.length < options.length) return null;
+  final n = options.length;
   final out = <PollOptionAmount>[];
-  for (var i = 0; i < options.length; i++) {
+  for (var i = 0; i < n; i++) {
     final label = pollOptionDisplayLabel(options[i]);
-    final raw = countsList[i];
+    // Old Code: required countsList.length >= options.length, else returned null.
+    // if (countsList.length < options.length) return null;
+    final raw = i < countsList.length ? countsList[i] : null;
     final count = _toNonNegativeInt(_unwrapAmountish(raw) ?? raw);
     out.add(PollOptionAmount(label: label, amount: count * unit));
   }
@@ -267,12 +269,88 @@ List<PollOptionAmount>? _optionAmountsFromDynamicPollKeys(
   return null;
 }
 
+/// Same key order as vote-count consumers: first match wins after JSON decode.
+dynamic _decodePollResultVoteTallyRaw(Map<String, dynamic>? pr) {
+  if (pr == null) return null;
+  return _decodeMaybeJson(pr['vote_counts']) ??
+      _decodeMaybeJson(pr['votes']) ??
+      _decodeMaybeJson(pr['vote_tally']) ??
+      _decodeMaybeJson(pr['counts']) ??
+      _decodeMaybeJson(pr['tally']) ??
+      _decodeMaybeJson(pr['voteCountByOption']);
+}
+
+/// Per-option **vote counts** (not × unit), length always [options.length], missing indices → 0.
+List<PollOptionAmount>? _voteOnlyRowsFromTallyDecoded(
+  List<dynamic> options,
+  dynamic decoded,
+) {
+  final n = options.length;
+  if (n == 0) return const [];
+  if (decoded is Map) {
+    final m = Map<dynamic, dynamic>.from(decoded);
+    final out = <PollOptionAmount>[];
+    for (var i = 0; i < n; i++) {
+      final label = pollOptionDisplayLabel(options[i]);
+      dynamic raw = m[i] ?? m[i.toString()];
+      if (raw == null) {
+        for (final prefix in ['opt_', 'option_', 'o']) {
+          raw = m['$prefix$i'] ?? m['$prefix${i.toString()}'];
+          if (raw != null) break;
+        }
+      }
+      final votes = _toNonNegativeInt(_unwrapAmountish(raw) ?? raw);
+      out.add(PollOptionAmount(label: label, amount: votes));
+    }
+    return out;
+  }
+  if (decoded is List) {
+    final out = <PollOptionAmount>[];
+    for (var i = 0; i < n; i++) {
+      final label = pollOptionDisplayLabel(options[i]);
+      final raw = i < decoded.length ? decoded[i] : null;
+      final votes = _toNonNegativeInt(_unwrapAmountish(raw) ?? raw);
+      out.add(PollOptionAmount(label: label, amount: votes));
+    }
+    return out;
+  }
+  return null;
+}
+
+/// Raw vote tally fields present and decode to a Map/List → padded per-option vote rows.
+List<PollOptionAmount>? _tryVoteOnlyRowsFromPollResult(
+  List<dynamic> options,
+  Map<String, dynamic> pr,
+) {
+  const tallyKeys = [
+    'vote_counts',
+    'votes',
+    'vote_tally',
+    'counts',
+    'tally',
+    'voteCountByOption',
+  ];
+  var anyKeyPresent = false;
+  for (final k in tallyKeys) {
+    if (pr.containsKey(k)) {
+      anyKeyPresent = true;
+      break;
+    }
+  }
+  if (!anyKeyPresent) return null;
+
+  final decoded = _decodePollResultVoteTallyRaw(pr);
+  if (decoded == null) return null;
+  return _voteOnlyRowsFromTallyDecoded(options, decoded);
+}
+
 /// Resolves per-option monetary / PNP totals for display.
 ///
 /// Priority:
 /// 1) `poll_result.option_totals` / `option_total_pnp` / `totals_by_option` (index → amount)
 /// 2) `poll_result.option_amounts` as a [List] parallel to options
 /// 3) `vote_counts` × [unitValue] when [unitValue] is positive
+/// 4) `vote_counts` (and aliases) as **raw vote counts** per option, padded to [options.length]
 List<PollOptionAmount> resolveOptionAmounts(
   EngagementItem item, {
   int? unitValue,
@@ -371,33 +449,31 @@ List<PollOptionAmount> resolveOptionAmounts(
   }
 
   if (effectiveUnit != null && effectiveUnit > 0 && pr != null) {
-    final voteCountsRaw =
-        _decodeMaybeJson(pr['vote_counts']) ??
-        _decodeMaybeJson(pr['votes']) ??
-        _decodeMaybeJson(pr['vote_tally']) ??
-        _decodeMaybeJson(pr['counts']) ??
-        _decodeMaybeJson(pr['tally']) ??
-        _decodeMaybeJson(pr['voteCountByOption']);
+    final voteCountsRaw = _decodePollResultVoteTallyRaw(pr);
     if (voteCountsRaw is Map) {
       final countsMap = Map<dynamic, dynamic>.from(voteCountsRaw);
       final rows = _rowsFromVoteCountsMap(options, countsMap, effectiveUnit);
       if (rows != null) return rows;
     }
     if (voteCountsRaw is List) {
-      final rows = _rowsFromVoteCountsList(
+      return _rowsFromVoteCountsList(
         options,
         voteCountsRaw,
         effectiveUnit,
       );
-      if (rows != null) return rows;
     }
+  }
+
+  if (pr != null) {
+    final voteOnly = _tryVoteOnlyRowsFromPollResult(options, pr);
+    if (voteOnly != null) return voteOnly;
   }
 
   return const [];
 }
 
-/// Single-line compact summary: `"Option A : 50000, Option B : 12000"`.
-/// When every resolved amount is `0`, joins zero rows (avoids hiding labels).
+/// Single-line compact summary: each [PollOptionAmount.label] with amount, e.g.
+/// `"Yes : 12, No : 0, Maybe : 4"`. All rows from [resolveOptionAmounts] are included (zeros kept).
 /// When [resolveOptionAmounts] is empty, uses participation or `'Option totals: pending'`.
 String formatPollOptionAmountsSummaryLine(
   EngagementItem item, {
@@ -416,12 +492,76 @@ String formatPollOptionAmountsSummaryLine(
     return 'Option totals: pending';
   }
 
+  /*
+  Old Code: dropped zero-amount options from the summary line.
   final nonZero = rows.where((r) => r.amount > 0).toList();
   if (nonZero.isNotEmpty) {
     return nonZero.map((r) => '${r.label} : ${r.amount}').join(', ');
   }
+  return rows.map((r) => '${r.label} : ${r.amount}').join(', ');
+
+  Ordinal labels ("Option 1 : …") via loop + _formatPollSummaryAmount was also retired:
+  final parts = <String>[];
+  for (var i = 0; i < rows.length; i++) {
+    parts.add('Option ${i + 1} : ${_formatPollSummaryAmount(rows[i].amount)}');
+  }
+  return parts.join(', ');
+  */
 
   return rows.map((r) => '${r.label} : ${r.amount}').join(', ');
+}
+
+/// Global all-users per-option PNP totals for timer strip (not "Your choice").
+/// Uses [EngagementItem.pollOptionTotals.amount_by_option] only.
+/// Returns `'Option totals: pending'` when server tally is absent.
+String formatPollGlobalOptionTotalsLine(EngagementItem item) {
+  final options = item.quizData?.options;
+  final optionCount = options?.length ?? 0;
+  if (optionCount <= 0) {
+    return 'Option totals: pending';
+  }
+
+  final totalsRoot = item.pollOptionTotals;
+  if (totalsRoot == null) {
+    return 'Option totals: pending';
+  }
+
+  final rawAmounts = totalsRoot['amount_by_option'];
+  if (rawAmounts == null) {
+    return 'Option totals: pending';
+  }
+
+  Map<dynamic, dynamic> amountsMap;
+  if (rawAmounts is Map) {
+    amountsMap = Map<dynamic, dynamic>.from(rawAmounts);
+  } else if (rawAmounts is String && rawAmounts.trim().isNotEmpty) {
+    try {
+      final decoded = jsonDecode(rawAmounts);
+      if (decoded is! Map) {
+        return 'Option totals: pending';
+      }
+      amountsMap = Map<dynamic, dynamic>.from(decoded);
+    } catch (_) {
+      return 'Option totals: pending';
+    }
+  } else {
+    return 'Option totals: pending';
+  }
+
+  final parts = <String>[];
+  for (var i = 0; i < optionCount; i++) {
+    dynamic raw = amountsMap[i] ?? amountsMap[i.toString()];
+    if (raw == null) {
+      for (final prefix in ['opt_', 'option_', 'o']) {
+        raw = amountsMap['$prefix$i'] ?? amountsMap['$prefix${i.toString()}'];
+        if (raw != null) break;
+      }
+    }
+    final amount = _toNonNegativeInt(_unwrapAmountish(raw) ?? raw);
+    parts.add('Option ${i + 1}: $amount');
+  }
+
+  return parts.isEmpty ? 'Option totals: pending' : parts.join(', ');
 }
 
 DateTime? resolvePollEndsAtUtc(Map<String, dynamic>? schedule) {
@@ -485,7 +625,7 @@ int? resolvePollParticipationCount(EngagementItem item) {
   final parsedTv = _toNonNegativeInt(tv);
   if (parsedTv > 0) return parsedTv;
 
-  final vcDecoded = _decodeMaybeJson(pr['vote_counts']);
+  final vcDecoded = _decodePollResultVoteTallyRaw(pr);
   if (vcDecoded is Map) {
     var sum = 0;
     vcDecoded.forEach((_, value) {

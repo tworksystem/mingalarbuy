@@ -3103,7 +3103,11 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
             ? _formatCompactNumber(totalValue)
             : '--';
     */
+    /*
+    Old Code:
     final optionTotalsLine = _optionWisePnpSummaryLine();
+    */
+    final optionTotalsLine = formatPollGlobalOptionTotalsLine(widget.item);
     int? participation;
     try {
       participation = resolvePollParticipationCount(widget.item);
@@ -3241,6 +3245,9 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
                     ),
                   ),
                   */
+                  /*
+                  Old Code: FittedBox in Expanded (illegible scale-down / overflow); multiline
+                  Text + ellipsis (row height grew). Replaced by horizontal SingleChildScrollView.
                   Expanded(
                     child: FittedBox(
                       fit: BoxFit.scaleDown,
@@ -3258,6 +3265,56 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
                         ),
                         semanticsLabel: 'Per-option poll vote totals',
                       ),
+                    ),
+                  ),
+                  // Expanded(
+                  //   child: Align(
+                  //     alignment: Alignment.center,
+                  //     child: Text(
+                  //       optionTotalsLine,
+                  //       maxLines: isVeryNarrow ? 2 : 3,
+                  //       softWrap: true,
+                  //       overflow: TextOverflow.ellipsis,
+                  //       ...
+                  //     ),
+                  //   ),
+                  // ),
+                  */
+                  // Poll option totals: one line; long lines scroll horizontally (scrollbar hidden).
+                  // Short lines centered via ConstrainedBox(minWidth: viewport) + Center.
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, viewportConstraints) {
+                        return ScrollConfiguration(
+                          behavior: ScrollConfiguration.of(context).copyWith(
+                            scrollbars: false,
+                          ),
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            physics: const BouncingScrollPhysics(),
+                            clipBehavior: Clip.hardEdge,
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                minWidth: viewportConstraints.maxWidth,
+                              ),
+                              child: Center(
+                                child: Text(
+                                  optionTotalsLine,
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.2,
+                                  ),
+                                  semanticsLabel: 'Per-option poll vote totals',
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                   SizedBox(width: spacing),
