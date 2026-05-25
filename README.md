@@ -8,14 +8,14 @@
 [![Dart](https://img.shields.io/badge/Dart-3.0+-0175C2?logo=dart)](https://dart.dev)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Desktop-blue)](https://flutter.dev)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](https://github.com/mawkunnmyat/mingalarbuy)
-[![GitHub](https://img.shields.io/badge/GitHub-mingalarbuy-181717?logo=github)](https://github.com/mawkunnmyat/mingalarbuy)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](https://github.com/tworksystem/mingalarbuy)
+[![GitHub](https://img.shields.io/badge/GitHub-mingalarbuy-181717?logo=github)](https://github.com/tworksystem/mingalarbuy)
 
 A production-ready, enterprise-grade e-commerce application built with Flutter, seamlessly integrated with WooCommerce and WordPress. Features comprehensive loyalty rewards system, engagement hub, offline-first architecture, real-time notifications, and advanced payment solutions.
 
 **Live Demo**: [mingalarbuy.com](https://mingalarbuy.com)
 
-**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repository**: [@mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repository**: [@tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 **Poll System (Auto-Run Poll, Engagement Hub)**  
 Auto-run poll lifecycle and engagement components are maintained within this repository and documented under `docs/`.
@@ -67,8 +67,8 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - **Backend**: WordPress + WooCommerce
 - **Author**: Maw Kunn Myat
 - **Maintained by**: T-Work System
-- **Primary Repository**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
-- **Organization Mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+- **Primary Repository**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+- **Author Mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
 - **License**: MIT License
 - **Status**: Production Ready ✅
 
@@ -78,6 +78,8 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 🎁 **Advanced Loyalty System** - Points earning, redemption, and transaction management
 - 🎯 **Interactive Engagement Hub** - Banners, quizzes, polls, and announcements
 - 📊 **Live Poll Totals** - Real-time global per-option PNP totals in the poll timer strip
+- 💰 **My PNP Balance Sync** - Canonical balance reconciliation after poll win/loss with feed-aware result detection
+- 🔄 **Auto-Run Poll Cadence** - Engagement provider pauses polling during result/countdown phases
 - 💰 **Digital Wallet** - P2P money transfers, payment processing, and transaction history
 - 📱 **Offline-First** - Full functionality without internet connection
 - 🔔 **Real-Time Notifications** - Firebase Cloud Messaging with in-app notifications
@@ -417,7 +419,7 @@ Ensure all checks pass before proceeding.
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/mawkunnmyat/mingalarbuy.git
+git clone https://github.com/tworksystem/mingalarbuy.git
 cd mingalarbuy
 ```
 
@@ -752,8 +754,8 @@ When a poll is in `open` or `countdown` voting status, engagement feed and updat
 ```json
 {
   "poll_option_totals": {
-    "amount_by_option": { "0": 120, "1": 85 },
-    "vote_counts": { "0": 4, "1": 3 },
+    "amount_by_option": { "opt_0": 120, "opt_1": 85 },
+    "vote_counts": { "opt_0": 4, "opt_1": 3 },
     "total_votes": 7,
     "total_amount": 205,
     "updated_at": "2026-05-24T10:30:00+00:00"
@@ -763,8 +765,8 @@ When a poll is in `open` or `countdown` voting status, engagement feed and updat
 
 | Field | Description |
 | --- | --- |
-| `amount_by_option` | Global PNP staked per option index (all users) |
-| `vote_counts` | Raw vote count per option index |
+| `amount_by_option` | Global PNP staked per option (`opt_0`, `opt_1`, … or legacy `"0"` keys) |
+| `vote_counts` | Raw vote count per option (`opt_*` or legacy index keys) |
 | `total_votes` | Sum of votes across options |
 | `total_amount` | Sum of PNP across options |
 | `updated_at` | ISO-8601 UTC timestamp of the snapshot |
@@ -821,7 +823,7 @@ flutter doctor       # Verify development environment
 
 ```bash
 # Clone the repository
-git clone https://github.com/mawkunnmyat/mingalarbuy.git
+git clone https://github.com/tworksystem/mingalarbuy.git
 cd mingalarbuy
 
 # Install dependencies
@@ -873,11 +875,11 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) with a dated
 
 ```bash
 git add .
-git commit -m "feat: 24052026 - add your feature description"
+git commit -m "feat: 25052026 - add your feature description"
 # or
-git commit -m "fix: 24052026 - resolve bug description"
+git commit -m "fix: 25052026 - resolve bug description"
 # or
-git commit -m "docs: 24052026 - update README for new API field"
+git commit -m "docs: 25052026 - update README for new API field"
 ```
 
 #### 6. Push and Create Pull Request
@@ -909,15 +911,15 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/) with a **
 
 | Type | When to use | Example |
 | --- | --- | --- |
-| `feat:` | New capability or user-facing enhancement | `feat: 24052026 - expose poll_option_totals in engagement feed` |
-| `fix:` | Bug fix or regression | `fix: 24052026 - pad sparse vote-count arrays in poll helpers` |
-| `docs:` | README, comments, or API docs only | `docs: 24052026 - document live poll option totals payload` |
-| `refactor:` | Internal restructure, no behavior change | `refactor: 24052026 - extract poll totals builder in rewards plugin` |
-| `perf:` | Measurable performance improvement | `perf: 24052026 - skip carousel rebuild when poll totals unchanged` |
-| `test:` | Tests added or updated | `test: 24052026 - cover formatPollGlobalOptionTotalsLine edge cases` |
-| `chore:` | Tooling, deps, or maintenance | `chore: 24052026 - bump flutter_lints to latest minor` |
-| `ci:` | CI/CD pipeline changes | `ci: 24052026 - add analyze step to GitHub Actions` |
-| `style:` | Formatting only (no logic change) | `style: 24052026 - run dart format on engagement widgets` |
+| `feat:` | New capability or user-facing enhancement | `feat: 25052026 - expose poll_option_totals in engagement feed` |
+| `fix:` | Bug fix or regression | `fix: 25052026 - pad sparse vote-count arrays in poll helpers` |
+| `docs:` | README, comments, or API docs only | `docs: 25052026 - document live poll option totals payload` |
+| `refactor:` | Internal restructure, no behavior change | `refactor: 25052026 - extract poll totals builder in rewards plugin` |
+| `perf:` | Measurable performance improvement | `perf: 25052026 - skip carousel rebuild when poll totals unchanged` |
+| `test:` | Tests added or updated | `test: 25052026 - cover formatPollGlobalOptionTotalsLine edge cases` |
+| `chore:` | Tooling, deps, or maintenance | `chore: 25052026 - bump flutter_lints to latest minor` |
+| `ci:` | CI/CD pipeline changes | `ci: 25052026 - add analyze step to GitHub Actions` |
+| `style:` | Formatting only (no logic change) | `style: 25052026 - run dart format on engagement widgets` |
 
 ### Hot Reload & Hot Restart
 
@@ -1133,7 +1135,7 @@ cd ..
 
 ### Getting Help
 
-1. Check existing [Issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
+1. Check existing [Issues](https://github.com/tworksystem/mingalarbuy/issues)
 2. Review documentation in `docs/` folder
 3. Check [Flutter documentation](https://flutter.dev/docs)
 4. Contact support: support@tworksystem.com
@@ -1151,7 +1153,7 @@ We welcome contributions from the community! This project is maintained by T-Wor
 1. **Fork the repository**
    ```bash
    # Click the "Fork" button on GitHub, or use:
-   gh repo fork mawkunnmyat/mingalarbuy
+   gh repo fork tworksystem/mingalarbuy
    ```
 
 2. **Create a feature branch**
@@ -1218,7 +1220,7 @@ All pull requests require review before merging. Our maintainers will review:
 ### Getting Help
 
 If you need help with contributing:
-- Check existing [Issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
+- Check existing [Issues](https://github.com/tworksystem/mingalarbuy/issues)
 - Review the [Documentation](#-documentation) section
 - Contact: support@tworksystem.com
 
@@ -1275,8 +1277,8 @@ We're here to help! Here are the best ways to get support:
   - [WooCommerce Integration](README_WOOCOMMERCE.md)
 
 #### Community Support
-- **GitHub Issues**: [Report bugs or request features](https://github.com/mawkunnmyat/mingalarbuy/issues)
-- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/mawkunnmyat/mingalarbuy/discussions)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/tworksystem/mingalarbuy/issues)
+- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/tworksystem/mingalarbuy/discussions)
 
 #### Direct Contact
 - **Email**: support@tworksystem.com
@@ -1286,7 +1288,7 @@ We're here to help! Here are the best ways to get support:
 #### Project Information
 - **Author**: Maw Kunn Myat
 - **Maintained by**: T-Work System
-- **Repository**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Repository**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 ---
 
@@ -1315,11 +1317,29 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Status**: ✅ Production Ready
 
-**Last Updated**: May 2026
+**Last Updated**: 25 May 2026
 
 **Author**: Maw Kunn Myat
 
 **Maintained by**: T-Work System
+
+**Contributors**: Mapoee Phyu (mapoeeiphyu2017.miitinternship@gmail.com)
+
+### Recent Updates (25 May 2026)
+
+#### Poll Balance & My PNP Reconciliation
+- ✅ **Feed-aware result phase** - `PollWinnerPopupService` reconciles balance when the engagement feed already shows `showing_result` / winner data, even if `/poll/state` still reports ACTIVE (auto-run polls)
+- ✅ **Queued PNP sync** - Bounded reconcile-key cache with coalesced pending sync to prevent duplicate balance pulls per poll round
+- ✅ **Win + loss reconcile** - Session-scoped balance sync for both winning and losing outcomes after countdown
+- ✅ **My PNP debug tracing** - Structured `MyPnpBalanceDebug` console helpers for balance apply/skip/blocked paths (debug builds)
+- ✅ **Canonical balance apply** - `refreshPointStateAfterPollWin` applies authoritative server balance when local headline diverges
+
+#### Engagement Hub & Carousel (25 May 2026)
+- ✅ **Smarter feed polling** - Engagement provider defers refresh while auto-run poll is in result or countdown
+- ✅ **Carousel stability** - Diff guards and layout polish for long multi-option poll timer strips
+- ✅ **`opt_*` JSON keys** - Backend emits `opt_0`, `opt_1` keys so PHP does not collapse numeric maps into arrays
+- ✅ **Client `opt_*` parsing** - `poll_display_helpers` normalizes `opt_N` and legacy index keys interchangeably
+- ✅ **Plugin README refresh** - Professional docs for `twork-rewards-system` and `twork-fcm-notify`
 
 ### Recent Updates (May 2026)
 
@@ -1394,12 +1414,12 @@ We would like to express our gratitude to the following technologies, platforms,
 - **Email**: support@tworksystem.com
 - **Website**: [www.tworksystem.com](https://www.tworksystem.com)
 - **Store**: [mingalarbuy.com](https://mingalarbuy.com)
-- **GitHub**: [@mawkunnmyat](https://github.com/mawkunnmyat)
+- **GitHub**: [@tworksystem](https://github.com/tworksystem)
 
 ### Project Repository
-- **Primary (Author)**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
-- **Organization Mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Issues**: [GitHub Issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
+- **Primary**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+- **Author Mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Issues**: [GitHub Issues](https://github.com/tworksystem/mingalarbuy/issues)
 - **Documentation**: See `docs/` folder for detailed guides
 
 ---
@@ -1408,7 +1428,7 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Made with ❤️ by the T-Work Team**
 
-**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repo**: [mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repo**: [tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 [⬆ Back to Top](#mingalarbuy---planetmm-e-commerce-platform)
 
