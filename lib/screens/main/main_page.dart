@@ -288,17 +288,17 @@ class _MainPageState extends State<MainPage>
     _pointChangeCheckTimer = Timer.periodic(const Duration(seconds: 2), (
       timer,
     ) {
-      if (!mounted || _isDisposed) {
+      if (!mounted || _isDisposed || !context.mounted) {
         timer.cancel();
+        _pointChangeCheckTimer = null;
         return;
       }
 
       try {
-        final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        final pointProvider = Provider.of<PointProvider>(
-          context,
-          listen: false,
-        );
+        // Do not use Provider.of(context) here — timer can fire while this route
+        // is deactivated (mounted may still be true). Use app singletons instead.
+        final authProvider = AuthProvider();
+        final pointProvider = PointProvider.instance;
 
         // Only check if user is authenticated
         if (!authProvider.isAuthenticated || authProvider.user == null) {
@@ -419,6 +419,12 @@ class _MainPageState extends State<MainPage>
             // Track that we've shown modal for this transaction
             _lastShownTransactionId = latestTransaction?.id;
             _lastModalShownTime = now;
+
+            if (!mounted || _isDisposed || !context.mounted) {
+              _lastKnownBalance = currentBalance;
+              _lastKnownUserId = currentUserId;
+              return;
+            }
 
             if (!_shouldSilencePollRelatedPointModal(event)) {
               _showPointNotificationModal(event);
@@ -604,6 +610,13 @@ class _MainPageState extends State<MainPage>
       });
     }
     _lastMainTabIndexForPnp = current;
+  }
+
+  @override
+  void deactivate() {
+    _pointChangeCheckTimer?.cancel();
+    _pointChangeCheckTimer = null;
+    super.deactivate();
   }
 
   @override
