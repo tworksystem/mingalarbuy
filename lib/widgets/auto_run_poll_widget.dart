@@ -798,6 +798,7 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
         balanceSyncDebugTag: 'auto_run_loss_${widget.pollId}_$sessionId',
         canonicalSource: 'poll_result_reconcile_auto_run_loss',
         shouldContinue: () => mounted,
+        balancePollMaxAttempts: 1,
       );
       Logger.info(
         'AutoRunPoll reconcile:afterPollComplete (loss path)',

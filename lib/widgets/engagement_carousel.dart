@@ -11,9 +11,12 @@ import '../providers/auth_provider.dart';
 import '../providers/point_provider.dart';
 import '../services/engagement_service.dart';
 import '../services/canonical_point_balance_sync.dart';
+import '../services/poll_winner_popup_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/poll_display_helpers.dart';
+import '../utils/poll_option_totals_debug.dart';
+import '../utils/poll_result_card_debug.dart';
 
 /// Interactive Engagement Carousel Widget
 class EngagementCarousel extends StatefulWidget {
@@ -43,6 +46,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       _lastRotationSeconds; // Track last applied rotation to restart auto-scroll when it changes
   final Set<String> _forcedOverlaySessionKeys = <String>{};
   final Map<String, DateTime> _handoverTriggeredAt = <String, DateTime>{};
+  final Set<String> _pollResultBurstKickedKeys = <String>{};
+  final Set<String> _pollNextRoundFeedRefreshKeys = <String>{};
+  String? _lastPollResultGateLogKey;
 
   String _pollSessionKey(EngagementItem item) {
     final schedule = item.pollVotingSchedule;
@@ -67,6 +73,73 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     if (triggeredAt == null) return false;
     const buffer = Duration(seconds: 2);
     return DateTime.now().difference(triggeredAt) <= buffer;
+  }
+
+  /// One burst per poll session when local timer hits zero (feeds result card faster).
+  void _kickPollResultTransitionBurst(EngagementItem item) {
+    if (!mounted) return;
+    final sessionKey = _pollSessionKey(item);
+    if (_pollResultBurstKickedKeys.contains(sessionKey)) return;
+    _pollResultBurstKickedKeys.add(sessionKey);
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.id;
+    if (userId == null || userId <= 0) return;
+
+    Provider.of<EngagementProvider>(context, listen: false)
+        .beginPollResultTransitionBurst(
+      userId: userId,
+      pollId: item.id,
+      token: authProvider.token,
+    );
+  }
+
+  void _prunePollResultBurstKickedKeys(List<EngagementItem> items) {
+    final valid = <String>{};
+    for (final item in items) {
+      if (item.type == EngagementType.poll) {
+        valid.add(_pollSessionKey(item));
+      }
+    }
+    _pollResultBurstKickedKeys.removeWhere((k) => !valid.contains(k));
+    _pollNextRoundFeedRefreshKeys.removeWhere((k) => !valid.contains(k));
+  }
+
+  /// After result display ends, force feed refresh so AUTO_RUN cycle reset reaches the UI.
+  void _kickPollNextRoundFeedRefresh(EngagementItem item) {
+    if (!mounted) return;
+    final sessionKey = _pollSessionKey(item);
+    if (_pollNextRoundFeedRefreshKeys.contains(sessionKey)) return;
+    _pollNextRoundFeedRefreshKeys.add(sessionKey);
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.id;
+    if (userId == null || userId <= 0) return;
+
+    final engagementProvider = Provider.of<EngagementProvider>(
+      context,
+      listen: false,
+    );
+    app_logger.Logger.info(
+      'Poll result window ended — force feed refresh pollId=${item.id}',
+      tag: 'EngagementCarousel',
+    );
+    unawaited(
+      engagementProvider
+          .loadFeed(
+            userId: userId,
+            token: authProvider.token,
+            forceRefresh: true,
+          )
+          .catchError((Object e, StackTrace st) {
+        app_logger.Logger.warning(
+          'Poll next-round feed refresh failed pollId=${item.id}: $e',
+          tag: 'EngagementCarousel',
+          error: e,
+          stackTrace: st,
+        );
+      }),
+    );
   }
 
   void _pruneForcedOverlaySessionKeys(List<EngagementItem> items) {
@@ -167,6 +240,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 
       if (engagementProvider.hasItems) {
         _pruneForcedOverlaySessionKeys(engagementProvider.items);
+        _prunePollResultBurstKickedKeys(engagementProvider.items);
         app_logger.Logger.info(
           'Engagement feed loaded: ${engagementProvider.items.length} items',
           tag: 'EngagementCarousel',
@@ -361,8 +435,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     });
   }
 
-  // Formerly: feed-visible poll cards called [PollWinnerPopupService.checkAndShowPollWinnerPopup]
-  // here. Point reconcile runs from [AutoRunPollWidget]._fetchResultsWithRetry only (not timer end).
+  // Feed poll results: [_PollResultWinnerPopupHost] triggers silent My PNP sync via
+  // [PollWinnerPopupService.syncBalanceWhenShowingResult] (no popup).
 
   @override
   Widget build(BuildContext context) {
@@ -1202,6 +1276,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   /// Distinct from Quiz: Uses orange/amber color scheme, voting terminology, and poll-specific UI
   /// All poll modes (AUTO_RUN, Manual, Scheduled): use feed-based design
   Widget _buildPollCard(EngagementItem item) {
+    final sessionKey = _pollSessionKey(item);
     final schedule = item.pollVotingSchedule;
     final votingStatusRaw = schedule?['voting_status']?.toString() ?? 'open';
     final votingStatus = votingStatusRaw.toLowerCase();
@@ -1219,20 +1294,48 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       endsAtUtc: serverEndsAtUtc,
     );
     final r = item.pollResult;
-    final hasWinning = r != null &&
-        (r['winning_option'] != null ||
-            (r['winning_index'] != null && r['winning_index'] >= 0) ||
-            ((r['options'] as List?)?.isNotEmpty ?? false));
-    final isResultLikeStatus = votingStatus == 'showing_result' ||
-        votingStatus == 'showing_results' ||
-        votingStatus == 'ended' ||
-        votingStatus == 'result' ||
-        votingStatus == 'results';
-    final showResult = isResultLikeStatus &&
-        r != null &&
-        ((r['total_votes'] ?? 0) > 0 || hasWinning);
+    final isResultLikeStatus = isPollResultLikeVotingStatus(votingStatus);
+    final resultPayloadReady =
+        r != null && pollResultMapReadyForFeedCard(r);
+    final showResult = engagementItemShowsPollResultCard(item);
+    final forceVotingUi = engagementItemShouldShowPollVotingUi(item);
 
-    if (showResult) {
+    final gateLogKey =
+        '${item.id}|$votingStatus|${item.hasInteracted}|$secondsUntilClose|'
+        '${r?['winning_index']}|$showResult|$forceVotingUi';
+    if (_lastPollResultGateLogKey != gateLogKey) {
+      _lastPollResultGateLogKey = gateLogKey;
+      PollResultCardDebug.gate(
+        pollId: item.id,
+        hasInteracted: item.hasInteracted,
+        votingStatus: votingStatus,
+        isResultLikeStatus: isResultLikeStatus,
+        hasPollResult: r != null,
+        resultPayloadReady: resultPayloadReady,
+        showResultCard: showResult && !forceVotingUi,
+        forceVotingUi: forceVotingUi,
+        secondsUntilClose: secondsUntilClose,
+      );
+    }
+
+    if (showResult && !forceVotingUi) {
+      if (pollResultDisplayWindowEnded(schedule)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _kickPollNextRoundFeedRefresh(item);
+        });
+        return AnimatedSwitcher(
+          duration: const Duration(milliseconds: 180),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          child: KeyedSubtree(
+            key: ValueKey<String>('poll_next_round_${item.id}_$sessionKey'),
+            child: _PollResultTransitionShell(
+              item: item,
+              message: 'Next round starting…',
+            ),
+          ),
+        );
+      }
       /*
       Old Code:
       return _PollResultWinnerPopupHost(item: item);
@@ -1240,14 +1343,35 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       // New Code:
       // Smooth/stable transition between voting and result states.
       return AnimatedSwitcher(
-        duration: const Duration(milliseconds: 250),
+        duration: const Duration(milliseconds: 180),
         switchInCurve: Curves.easeOut,
         switchOutCurve: Curves.easeIn,
         child: KeyedSubtree(
           key: ValueKey<String>(
-            'poll_result_${item.id}_${schedule == null ? '' : schedule['current_session_id'] ?? ''}_${r['winning_index'] ?? ''}',
+            'poll_result_${item.id}_${schedule?['current_session_id'] ?? ''}_${r?['winning_index'] ?? ''}',
           ),
           child: _PollResultWinnerPopupHost(item: item),
+        ),
+      );
+    }
+
+    if (engagementItemAwaitingPollResultPayload(item)) {
+      PollResultCardDebug.pending(
+        'pollId=${item.id} result phase but poll_result not on feed yet '
+        '(interacted=${item.hasInteracted})',
+      );
+      return AnimatedSwitcher(
+        duration: const Duration(milliseconds: 180),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        child: KeyedSubtree(
+          key: ValueKey<String>(
+            'poll_awaiting_${item.id}_${schedule?['result_display_ends_at'] ?? ''}',
+          ),
+          child: _PollResultTransitionShell(
+            item: item,
+            message: 'Calculating result…',
+          ),
         ),
       );
     }
@@ -1255,7 +1379,6 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final hasInteracted = item.hasInteracted;
     final hasImage = item.mediaUrl != null && item.mediaUrl!.isNotEmpty;
     final bool isPollActive = item.quizData?.isActive ?? true;
-    final sessionKey = _pollSessionKey(item);
     if (secondsUntilClose > 11 && !_isInHandoverBuffer(sessionKey)) {
       _forcedOverlaySessionKeys.remove(sessionKey);
       _handoverTriggeredAt.remove(sessionKey);
@@ -1264,6 +1387,25 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final showOverlay =
         isForcedOverlay || (secondsUntilClose >= 1 && secondsUntilClose <= 10);
     final showPermanentTimer = !showOverlay && secondsUntilClose > 10;
+
+    // Timer hit zero before feed flips to showing_result — burst + shell (voters + spectators).
+    if (secondsUntilClose <= 0 && !isResultLikeStatus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _kickPollResultTransitionBurst(item);
+      });
+      return AnimatedSwitcher(
+        duration: const Duration(milliseconds: 180),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        child: KeyedSubtree(
+          key: ValueKey<String>('poll_fetching_${item.id}_$sessionKey'),
+          child: _PollResultTransitionShell(
+            item: item,
+            message: 'Loading result…',
+          ),
+        ),
+      );
+    }
 
     Widget cardContent;
 
@@ -1901,10 +2043,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
             if (showOverlay)
               _PollCountdownOverlay(
                 key: ValueKey<String>('overlay_$sessionKey'),
+                pollId: item.id,
                 initialSeconds: secondsUntilClose,
                 serverEndsAtUtc: serverEndsAtUtc,
                 debugLabel: 'poll_${item.id}_$sessionKey',
-                onPollFinished: _onPollFinishedDelayedBalanceRefresh,
+                onPollFinished: () => _onPollCountdownZero(item),
               ),
           ],
         ),
@@ -2473,10 +2616,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     }).catchError((_) {});
   }
 
-  /// After poll countdown reaches zero: brief delay so the server ledger can settle,
-  /// then one force refresh of points (firewall-safe cadence vs. immediate burst).
-  Future<void> _onPollFinishedDelayedBalanceRefresh() async {
-    await Future<void>.delayed(const Duration(milliseconds: 800));
+  /// Overlay hit zero: burst feed for result card, then light balance ping (PNP sync on result).
+  Future<void> _onPollCountdownZero(EngagementItem item) async {
+    if (!mounted) return;
+    _kickPollResultTransitionBurst(item);
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     if (!mounted) return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final userId = authProvider.user?.id;
@@ -2490,7 +2634,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
       PointProvider.instance.pingBalanceUiListeners();
     } catch (e, st) {
       app_logger.Logger.warning(
-        'onPollFinished: loadBalance failed: $e',
+        'onPollCountdownZero: loadBalance failed: $e',
         tag: 'EngagementCarousel',
         error: e,
         stackTrace: st,
@@ -2568,18 +2712,70 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   Timer? _timer;
   bool _didNotifyHandover = false;
   bool _didLogUnitValueAudit = false;
-  /* Old Code:
-  final ScrollController _optionTotalsScrollController = ScrollController();
+  bool _didLogPendingStrip = false;
+  bool _didLogReadyStrip = false;
 
-  void _scrollOptionTotalsByDragDelta(double deltaDx) {
-    final c = _optionTotalsScrollController;
-    if (!c.hasClients) return;
-    final lower = c.position.minScrollExtent;
-    final upper = c.position.maxScrollExtent;
-    final next = math.min(upper, math.max(lower, c.offset - deltaDx));
-    c.jumpTo(next);
+  static const TextStyle _optionTotalsTextStyle = TextStyle(
+    color: Colors.white,
+    fontSize: 10.5,
+    fontWeight: FontWeight.w700,
+    letterSpacing: 0.2,
+    height: 1.25,
+  );
+
+  /// Per-option totals between timer and user count — full visibility via [Wrap], no scroll.
+  Widget _buildTimerStripOptionTotals({
+    required String optionTotalsLine,
+    required bool isPendingLine,
+  }) {
+    if (isPendingLine) {
+      return Text(
+        optionTotalsLine,
+        textAlign: TextAlign.center,
+        maxLines: 2,
+        softWrap: true,
+        style: _optionTotalsTextStyle,
+        semanticsLabel: 'Per-option poll vote totals',
+      );
+    }
+
+    final parts = pollGlobalOptionTotalsParts(widget.item);
+    if (parts == null || parts.isEmpty) {
+      return Text(
+        optionTotalsLine,
+        textAlign: TextAlign.center,
+        maxLines: 2,
+        softWrap: true,
+        style: _optionTotalsTextStyle,
+        semanticsLabel: 'Per-option poll vote totals',
+      );
+    }
+
+    return Semantics(
+      label: optionTotalsLine,
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 2,
+        runSpacing: 2,
+        children: [
+          for (var i = 0; i < parts.length; i++) ...[
+            Text(
+              parts[i],
+              style: _optionTotalsTextStyle,
+            ),
+            if (i < parts.length - 1)
+              Text(
+                ',',
+                style: _optionTotalsTextStyle.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
   }
-  */
 
   int _clampSeconds(int value) => value < 0 ? 0 : value;
 
@@ -3016,6 +3212,10 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   @override
   void didUpdateWidget(covariant _PermanentPollTimer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.item.pollOptionTotals != widget.item.pollOptionTotals) {
+      _didLogPendingStrip = false;
+      _didLogReadyStrip = false;
+    }
     final next = _clampSeconds(widget.initialSeconds);
     final prev = _clampSeconds(oldWidget.initialSeconds);
     if (next <= 10) {
@@ -3044,7 +3244,6 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   @override
   void dispose() {
     _timer?.cancel();
-    /* Old Code: _optionTotalsScrollController.dispose(); */
     super.dispose();
   }
 
@@ -3108,6 +3307,21 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
     final optionTotalsLine = _optionWisePnpSummaryLine();
     */
     final optionTotalsLine = formatPollGlobalOptionTotalsLine(widget.item);
+    final isPendingLine = optionTotalsLine == 'Option totals: pending';
+    if (isPendingLine && !_didLogPendingStrip) {
+      _didLogPendingStrip = true;
+      _didLogReadyStrip = false;
+      PollOptionTotalsDebug.pending(
+        'timer strip UI poll=${widget.item.id} — showing pending '
+        '(pollOptionTotals=${widget.item.pollOptionTotals})',
+      );
+    } else if (!isPendingLine && !_didLogReadyStrip) {
+      _didLogReadyStrip = true;
+      _didLogPendingStrip = false;
+      PollOptionTotalsDebug.ok(
+        'timer strip UI poll=${widget.item.id} — $optionTotalsLine',
+      );
+    }
     int? participation;
     try {
       participation = resolvePollParticipationCount(widget.item);
@@ -3160,161 +3374,13 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
                     ),
                   ),
                   SizedBox(width: spacing),
-                  /*
-                  Old Code:
-                  Expanded(
-                    child: _buildCompactBadge(
-                      icon: Icons.payments_outlined,
-                      value: totalValueLabel,
-                      semanticLabel: 'Total Value',
-                      allowEllipsis: true,
-                    ),
-                  ),
-                  */
-                  /* Old Code:
                   Expanded(
                     child: Align(
                       alignment: Alignment.center,
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        physics: const BouncingScrollPhysics(),
-                        child: Text(
-                          optionTotalsLine,
-                          maxLines: 1,
-                          softWrap: false,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.2,
-                          ),
-                          semanticsLabel:
-                              'Per-option poll vote totals in PNP',
-                        ),
+                      child: _buildTimerStripOptionTotals(
+                        optionTotalsLine: optionTotalsLine,
+                        isPendingLine: isPendingLine,
                       ),
-                    ),
-                  ),
-                  */
-                  /* Old Code:
-                  Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      physics: const BouncingScrollPhysics(),
-                      child: Text(
-                        optionTotalsLine,
-                        maxLines: 1,
-                        softWrap: false,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.2,
-                        ),
-                        semanticsLabel: 'Per-option poll vote totals',
-                      ),
-                    ),
-                  ),
-                  */
-                  /*
-                  Old Code:
-                  Expanded(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onHorizontalDragUpdate: (d) =>
-                          _scrollOptionTotalsByDragDelta(d.delta.dx),
-                      child: SingleChildScrollView(
-                        controller: _optionTotalsScrollController,
-                        scrollDirection: Axis.horizontal,
-                        physics: const NeverScrollableScrollPhysics(),
-                        clipBehavior: Clip.hardEdge,
-                        child: Text(
-                          optionTotalsLine,
-                          maxLines: 1,
-                          softWrap: false,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.2,
-                          ),
-                          semanticsLabel: 'Per-option poll vote totals',
-                        ),
-                      ),
-                    ),
-                  ),
-                  */
-                  /*
-                  Old Code: FittedBox in Expanded (illegible scale-down / overflow); multiline
-                  Text + ellipsis (row height grew). Replaced by horizontal SingleChildScrollView.
-                  Expanded(
-                    child: FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.center,
-                      child: Text(
-                        optionTotalsLine,
-                        maxLines: 1,
-                        softWrap: false,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.2,
-                        ),
-                        semanticsLabel: 'Per-option poll vote totals',
-                      ),
-                    ),
-                  ),
-                  // Expanded(
-                  //   child: Align(
-                  //     alignment: Alignment.center,
-                  //     child: Text(
-                  //       optionTotalsLine,
-                  //       maxLines: isVeryNarrow ? 2 : 3,
-                  //       softWrap: true,
-                  //       overflow: TextOverflow.ellipsis,
-                  //       ...
-                  //     ),
-                  //   ),
-                  // ),
-                  */
-                  // Poll option totals: one line; long lines scroll horizontally (scrollbar hidden).
-                  // Short lines centered via ConstrainedBox(minWidth: viewport) + Center.
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, viewportConstraints) {
-                        return ScrollConfiguration(
-                          behavior: ScrollConfiguration.of(context).copyWith(
-                            scrollbars: false,
-                          ),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            physics: const BouncingScrollPhysics(),
-                            clipBehavior: Clip.hardEdge,
-                            child: ConstrainedBox(
-                              constraints: BoxConstraints(
-                                minWidth: viewportConstraints.maxWidth,
-                              ),
-                              child: Center(
-                                child: Text(
-                                  optionTotalsLine,
-                                  maxLines: 1,
-                                  softWrap: false,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: 0.2,
-                                  ),
-                                  semanticsLabel: 'Per-option poll vote totals',
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
                     ),
                   ),
                   SizedBox(width: spacing),
@@ -3337,17 +3403,86 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
   }
 }
 
+/// Lightweight shell while waiting for server result payload after close.
+class _PollResultTransitionShell extends StatelessWidget {
+  const _PollResultTransitionShell({
+    required this.item,
+    required this.message,
+  });
+
+  final EngagementItem item;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasImage = item.mediaUrl != null && item.mediaUrl!.isNotEmpty;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (hasImage)
+            _EngagementMediaWidget(
+              mediaUrl: item.mediaUrl!,
+              fit: BoxFit.cover,
+              autoplay: false,
+              showControls: false,
+            )
+          else
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Colors.orange[400]!, Colors.deepOrange[600]!],
+                ),
+              ),
+            ),
+          Container(color: Colors.black54),
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 3,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  message,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Countdown overlay for Auto Run poll (last 10 seconds before close)
 class _PollCountdownOverlay extends StatefulWidget {
+  final int pollId;
   final int initialSeconds;
   final DateTime? serverEndsAtUtc;
   final String? debugLabel;
 
-  /// Invoked once when countdown hits zero (e.g. delayed balance refresh).
+  /// Invoked once when countdown hits zero (burst feed + optional balance ping).
   final Future<void> Function()? onPollFinished;
 
   const _PollCountdownOverlay({
     super.key,
+    required this.pollId,
     required this.initialSeconds,
     this.serverEndsAtUtc,
     this.debugLabel,
@@ -3362,6 +3497,7 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
   late int _secondsLeft;
   Timer? _timer;
   bool _hasTriggeredForceRefreshBurst = false;
+  bool _didPrefetchResultTransition = false;
 
   static const int _overlayDisplayCap = 10;
 
@@ -3391,6 +3527,9 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     _cancelOverlayTimer();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
+      if (_secondsLeft == 2) {
+        _prefetchPollResultTransition();
+      }
       setState(() {
         if (_secondsLeft > 0) {
           _secondsLeft--;
@@ -3403,50 +3542,25 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     });
   }
 
+  void _prefetchPollResultTransition() {
+    if (_didPrefetchResultTransition || !mounted) return;
+    _didPrefetchResultTransition = true;
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.id;
+    if (userId == null || userId <= 0) return;
+    unawaited(
+      Provider.of<EngagementProvider>(context, listen: false)
+          .refreshPollResultTransition(
+        userId: userId,
+        pollId: widget.pollId,
+        token: authProvider.token,
+      ),
+    );
+  }
+
   void _triggerForceRefreshBurstOnTimerEnd() {
     if (_hasTriggeredForceRefreshBurst || !mounted) return;
     _hasTriggeredForceRefreshBurst = true;
-
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final userId = authProvider.user?.id;
-    if (userId == null) return;
-    final userIdStr = userId.toString();
-
-    // After countdown hits zero: refresh user meta only. Point sync + shimmer run from
-    // [auto_run_poll_widget.dart] after poll result is confirmed — not here (avoids timer-end shimmer).
-    Future<void> runTimerEndMetaSync(String label) async {
-      try {
-        await authProvider.refreshUser();
-        if (!mounted) return;
-        app_logger.Logger.info(
-          'Poll timer-end user meta sync success ($label) for user=$userIdStr',
-          tag: 'EngagementCarousel',
-        );
-        /*
-        await PointProvider.instance.reconcileAfterPollResult(
-          userId: userIdStr,
-          authoritativePollBalance: null,
-          balanceSyncDebugTag: 'poll_timer_end_overlay_$label',
-          canonicalSource: 'poll_timer_end_reconcile',
-          shouldContinue: () => mounted,
-        );
-        */
-      } catch (e, st) {
-        app_logger.Logger.warning(
-          'Poll timer-end user meta sync failed ($label): $e',
-          tag: 'EngagementCarousel',
-          error: e,
-          stackTrace: st,
-        );
-      }
-    }
-
-    /*
-    Old Code: triple [refreshPointState] (+1s/+3s retries) queued many
-    [PointBalanceSyncLock] operations and congested My PNP [loadBalance].
-    Later: single [refreshPointState] on timer end still duplicated interaction-time sync.
-    */
-    unawaited(runTimerEndMetaSync('single'));
 
     final Future<void> Function()? onPollFinished = widget.onPollFinished;
     if (onPollFinished != null) {
@@ -3526,7 +3640,7 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    '${_overlayDisplaySeconds}',
+                    _secondsLeft <= 0 ? '…' : '${_overlayDisplaySeconds}',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 72,
@@ -4035,17 +4149,84 @@ Widget _pollDetailedReceiptSection(
 }
 
 /// In-place poll result in the carousel (chart/percentages live in [_PollResultCard]).
-/// **Not** a dialog — winner celebration popups are suppressed elsewhere ([PointNotificationModal]).
-/// Poll result UI only; balance sync runs after auto-run result fetch ([reconcileAfterPollResult]),
-/// not on overlay timer end.
-class _PollResultWinnerPopupHost extends StatelessWidget {
+/// On mount / result transition: silent server-only My PNP sync when the user voted
+/// ([PollWinnerPopupService.syncBalanceWhenShowingResult] — no modal).
+class _PollResultWinnerPopupHost extends StatefulWidget {
   final EngagementItem item;
 
   const _PollResultWinnerPopupHost({required this.item});
 
   @override
+  State<_PollResultWinnerPopupHost> createState() =>
+      _PollResultWinnerPopupHostState();
+}
+
+class _PollResultWinnerPopupHostState extends State<_PollResultWinnerPopupHost> {
+  String? _lastSyncKey;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleSilentPnpSync());
+  }
+
+  @override
+  void didUpdateWidget(covariant _PollResultWinnerPopupHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_pollResultSyncKey(oldWidget.item) != _pollResultSyncKey(widget.item)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleSilentPnpSync());
+    }
+  }
+
+  String _pollResultSyncKey(EngagementItem item) {
+    final schedule = item.pollVotingSchedule;
+    final session = (schedule?['current_session_id'] ?? '').toString();
+    final status = (schedule?['voting_status'] ?? '').toString();
+    final winIdx = item.pollResult?['winning_index']?.toString() ?? '';
+    final resultEnds =
+        (schedule?['result_display_ends_at'] ?? schedule?['ends_at'] ?? '')
+            .toString();
+    final pointsEarned = item.pollResult?['points_earned']?.toString() ?? '';
+    return '${item.id}|$session|$status|$winIdx|$resultEnds|$pointsEarned|'
+        '${item.hasInteracted}';
+  }
+
+  void _scheduleSilentPnpSync() {
+    if (!mounted) return;
+    final item = widget.item;
+    if (!item.hasInteracted) return;
+
+    final syncKey = _pollResultSyncKey(item);
+    if (_lastSyncKey == syncKey) return;
+    _lastSyncKey = syncKey;
+
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final userId = auth.user?.id;
+    if (userId == null || userId <= 0) return;
+
+    final schedule = item.pollVotingSchedule;
+    final sessionRaw = (schedule?['current_session_id'] ?? '').toString().trim();
+    final feedSessionId = sessionRaw.isEmpty ? null : sessionRaw;
+    final votingStatus = schedule?['voting_status']?.toString();
+
+    unawaited(
+      PollWinnerPopupService.syncBalanceWhenShowingResult(
+        pollId: item.id,
+        userId: userId,
+        feedSessionId: feedSessionId,
+        feedPollResult: item.pollResult,
+        feedVotingStatus: votingStatus,
+        feedPollVotingSchedule: schedule != null
+            ? Map<String, dynamic>.from(schedule)
+            : null,
+        shouldContinue: () => mounted,
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return _PollResultCard(item: item);
+    return _PollResultCard(item: widget.item);
   }
 }
 
@@ -4059,7 +4240,19 @@ class _PollResultCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final result = item.pollResult;
-    if (result == null) return const SizedBox.shrink();
+    if (result == null) {
+      PollResultCardDebug.fail(
+        'pollId=${item.id} _PollResultCard mounted without poll_result '
+        '(interacted=${item.hasInteracted})',
+      );
+      return const SizedBox.shrink();
+    }
+    if (!pollResultMapReadyForFeedCard(result)) {
+      PollResultCardDebug.warn(
+        'pollId=${item.id} poll_result not ready for card UI keys='
+        '${result.keys.join(',')}',
+      );
+    }
 
     // Prefer winning_option (new API) or derive from options[winning_index]
     final winningOptionRaw = result['winning_option'];
@@ -5147,38 +5340,6 @@ class _PollDialogState extends State<_PollDialog> {
     );
   }
 
-  int _resolvePollUnitValueForOptionTotal() {
-    final q = widget.item.quizData;
-    if (q == null) return 1000;
-    final step = q.betAmountStep;
-    if (step != null && step > 0) return step;
-    if (q.pollBaseCost > 0 && q.pollBaseCost < 1000) {
-      return q.pollBaseCost * 1000;
-    }
-    if (q.pollBaseCost > 0) return q.pollBaseCost;
-    return 1000;
-  }
-
-  int _toNonNegativeInt(dynamic raw) {
-    if (raw == null) return 0;
-    if (raw is int) return raw >= 0 ? raw : 0;
-    if (raw is num) {
-      final v = raw.toInt();
-      return v >= 0 ? v : 0;
-    }
-    final parsed = int.tryParse(raw.toString().trim().replaceAll(',', ''));
-    if (parsed == null || parsed < 0) return 0;
-    return parsed;
-  }
-
-  int _resolveVoteCountForOptionIndex(int index) {
-    final voteCountsRaw = widget.item.pollResult?['vote_counts'];
-    if (voteCountsRaw is! Map) return 0;
-    dynamic raw = voteCountsRaw[index];
-    raw ??= voteCountsRaw[index.toString()];
-    return _toNonNegativeInt(raw);
-  }
-
   String _formatCompactNumber(num value) {
     final absValue = value.abs();
     if (absValue >= 1000000000) {
@@ -5796,13 +5957,6 @@ class _PollDialogState extends State<_PollDialog> {
               final isUserPreviousSelection = widget.item.hasInteracted &&
                   userSelectedIndices.contains(index) &&
                   !isSelected;
-              final voteCount = _resolveVoteCountForOptionIndex(index);
-              final unitValue = _resolvePollUnitValueForOptionTotal();
-              final optionTotalAmount = voteCount * unitValue;
-              final formattedOptionTotal = _formatCompactNumber(
-                optionTotalAmount.toDouble(),
-              );
-
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: InkWell(
@@ -5859,8 +6013,7 @@ class _PollDialogState extends State<_PollDialog> {
                           child: Row(
                             children: [
                               Expanded(
-                                child: /* Old Code:
-                                Text(
+                                child: Text(
                                   pollData.options[index],
                                   style: TextStyle(
                                     fontSize: 15,
@@ -5868,32 +6021,6 @@ class _PollDialogState extends State<_PollDialog> {
                                         ? FontWeight.w600
                                         : FontWeight.normal,
                                   ),
-                                ),
-                                */
-                                    Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      pollData.options[index],
-                                      style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: isSelected
-                                            ? FontWeight.w600
-                                            : FontWeight.normal,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'Total: $formattedOptionTotal PNP',
-                                      style: TextStyle(
-                                        fontSize: 11.0,
-                                        fontWeight: FontWeight.w500,
-                                        color: isSelected
-                                            ? Theme.of(context).primaryColor
-                                            : Colors.grey[500],
-                                      ),
-                                    ),
-                                  ],
                                 ),
                               ),
                               if (isUserPreviousSelection)
