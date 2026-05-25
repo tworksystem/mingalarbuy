@@ -6403,15 +6403,26 @@ class TWork_Rewards_System
 
         $amount_by_option = array();
         $total_amount = 0;
-        foreach ($amount_counts as $idx => $amt) {
-            $normalized = max(0, (int) $amt);
-            $amount_by_option[(string) $idx] = $normalized;
+        $option_keys = array();
+        if (isset($stats['options']) && is_array($stats['options'])) {
+            $option_keys = array_keys($stats['options']);
+        }
+        if (empty($option_keys)) {
+            $option_keys = array_keys($amount_counts);
+        }
+        if (empty($option_keys)) {
+            $option_keys = array_keys($vote_counts);
+        }
+        foreach ($option_keys as $idx) {
+            $normalized = isset($amount_counts[$idx]) ? max(0, (int) $amount_counts[$idx]) : 0;
+            // Use opt_N keys so json_encode emits a JSON object, not [6000,7000,...] (PHP turns "0" keys into arrays).
+            $amount_by_option['opt_' . (string) $idx] = $normalized;
             $total_amount += $normalized;
         }
 
         $vote_counts_out = array();
-        foreach ($vote_counts as $idx => $cnt) {
-            $vote_counts_out[(string) $idx] = max(0, (int) $cnt);
+        foreach ($option_keys as $idx) {
+            $vote_counts_out['opt_' . (string) $idx] = isset($vote_counts[$idx]) ? max(0, (int) $vote_counts[$idx]) : 0;
         }
 
         return array(

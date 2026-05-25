@@ -6,7 +6,7 @@
  * Version: 1.0.0
  * Author: T-Work System
  * Author URI: https://github.com/tworksystem
- * License: Proprietary
+ * License: MIT
  * Text Domain: twork-fcm-notify
  * Domain Path: /languages
  * Requires at least: 5.0
