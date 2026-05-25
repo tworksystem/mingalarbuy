@@ -511,42 +511,86 @@ String formatPollOptionAmountsSummaryLine(
   return rows.map((r) => '${r.label} : ${r.amount}').join(', ');
 }
 
-/// Global all-users per-option PNP totals for timer strip (not "Your choice").
-/// Uses [EngagementItem.pollOptionTotals.amount_by_option] only.
-/// Returns `'Option totals: pending'` when server tally is absent.
-String formatPollGlobalOptionTotalsLine(EngagementItem item) {
-  final options = item.quizData?.options;
-  final optionCount = options?.length ?? 0;
-  if (optionCount <= 0) {
-    return 'Option totals: pending';
+/// PHP/json_encode often turns numeric keys into a JSON **array** `[6000,7000,...]`.
+/// Flutter must accept both List and Map for [amount_by_option].
+Map<String, dynamic>? normalizePollAmountByOption(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is Map) {
+    return Map<String, dynamic>.from(raw);
   }
+  if (raw is List) {
+    final out = <String, dynamic>{};
+    for (var i = 0; i < raw.length; i++) {
+      out[i.toString()] = raw[i];
+    }
+    // ignore: avoid_print
+    print(
+      '⚠️ 📊 poll_option_totals normalized amount_by_option from JSON List '
+      '→ Map (server sent array form)',
+    );
+    return out.isEmpty ? null : out;
+  }
+  if (raw is String && raw.trim().isNotEmpty) {
+    try {
+      final decoded = jsonDecode(raw);
+      return normalizePollAmountByOption(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/// Ensures [poll_option_totals] is safe for timer strip + provider merge.
+Map<String, dynamic>? normalizePollOptionTotalsPayload(
+  Map<String, dynamic>? totals,
+) {
+  if (totals == null) return null;
+  final copy = Map<String, dynamic>.from(totals);
+  final amounts = normalizePollAmountByOption(copy['amount_by_option']);
+  if (amounts == null) return null;
+  copy['amount_by_option'] = amounts;
+  final voteCounts = copy['vote_counts'];
+  if (voteCounts is List) {
+    final vc = <String, dynamic>{};
+    for (var i = 0; i < voteCounts.length; i++) {
+      vc[i.toString()] = voteCounts[i];
+    }
+    copy['vote_counts'] = vc;
+  }
+  return copy;
+}
+
+/// Resolves PNP per betting unit (matches WordPress `bet_step` / [QuizData.effectiveAmountStepPnp]).
+int resolvePollBetStepPnp(EngagementItem item) {
+  final q = item.quizData;
+  if (q != null) return q.effectiveAmountStepPnp;
+  final fromResult = _resolveEffectivePollUnit(item, item.pollResult, null);
+  return fromResult ?? 1000;
+}
+
+/// PNP total → user-facing unit count (Your choice lane): 6000 PNP @ step 1000 → `6`.
+int pollPnpAmountToDisplayUnits(int pnpAmount, EngagementItem item) {
+  if (pnpAmount <= 0) return 0;
+  final step = resolvePollBetStepPnp(item);
+  if (step <= 0) return pnpAmount;
+  return pnpAmount ~/ step;
+}
+
+/// Per-option `"label : amount"` segments for timer strip (Wrap layout).
+/// Returns `null` when server tally is pending/unavailable.
+List<String>? pollGlobalOptionTotalsParts(EngagementItem item) {
+  final options = item.quizData?.options;
+  if (options == null || options.isEmpty) return null;
+  final optionCount = options.length;
 
   final totalsRoot = item.pollOptionTotals;
-  if (totalsRoot == null) {
-    return 'Option totals: pending';
-  }
+  if (totalsRoot == null) return null;
 
-  final rawAmounts = totalsRoot['amount_by_option'];
-  if (rawAmounts == null) {
-    return 'Option totals: pending';
-  }
-
-  Map<dynamic, dynamic> amountsMap;
-  if (rawAmounts is Map) {
-    amountsMap = Map<dynamic, dynamic>.from(rawAmounts);
-  } else if (rawAmounts is String && rawAmounts.trim().isNotEmpty) {
-    try {
-      final decoded = jsonDecode(rawAmounts);
-      if (decoded is! Map) {
-        return 'Option totals: pending';
-      }
-      amountsMap = Map<dynamic, dynamic>.from(decoded);
-    } catch (_) {
-      return 'Option totals: pending';
-    }
-  } else {
-    return 'Option totals: pending';
-  }
+  final amountsMap = normalizePollAmountByOption(
+    totalsRoot['amount_by_option'],
+  );
+  if (amountsMap == null) return null;
 
   final parts = <String>[];
   for (var i = 0; i < optionCount; i++) {
@@ -557,11 +601,22 @@ String formatPollGlobalOptionTotalsLine(EngagementItem item) {
         if (raw != null) break;
       }
     }
-    final amount = _toNonNegativeInt(_unwrapAmountish(raw) ?? raw);
-    parts.add('Option ${i + 1}: $amount');
+    final pnpAmount = _toNonNegativeInt(_unwrapAmountish(raw) ?? raw);
+    final label = pollOptionDisplayLabel(options[i]);
+    final displayUnits = pollPnpAmountToDisplayUnits(pnpAmount, item);
+    parts.add('$label : $displayUnits');
   }
 
-  return parts.isEmpty ? 'Option totals: pending' : parts.join(', ');
+  return parts.isEmpty ? null : parts;
+}
+
+/// Global all-users per-option totals for timer strip (not "Your choice").
+/// Converts server PNP [amount_by_option] to unit counts (6000 PNP → `6` when step is 1000).
+/// (never cached locally — provider strips disk cache for this field).
+/// Returns `'Option totals: pending'` when server tally is absent.
+String formatPollGlobalOptionTotalsLine(EngagementItem item) {
+  final parts = pollGlobalOptionTotalsParts(item);
+  return parts == null ? 'Option totals: pending' : parts.join(', ');
 }
 
 DateTime? resolvePollEndsAtUtc(Map<String, dynamic>? schedule) {
@@ -642,4 +697,174 @@ int? resolvePollParticipationCount(EngagementItem item) {
   }
 
   return null;
+}
+
+const Set<String> kPollResultLikeVotingStatuses = <String>{
+  'showing_result',
+  'showing_results',
+  'ended',
+  'result',
+  'results',
+};
+
+bool isPollResultLikeVotingStatus(String? status) {
+  if (status == null || status.isEmpty) return false;
+  return kPollResultLikeVotingStatuses.contains(status.toLowerCase());
+}
+
+/// Voting window open (AUTO_RUN next round) — not result/ended.
+bool isPollVotingOpenLikeStatus(String? status) {
+  if (status == null || status.isEmpty) return false;
+  switch (status.toLowerCase()) {
+    case 'open':
+    case 'countdown':
+    case 'active':
+    case 'voting':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// True after [result_display_ends_at] (or legacy end + display duration) has passed.
+bool pollResultDisplayWindowEnded(Map<String, dynamic>? schedule) {
+  if (schedule == null) return false;
+  final raw =
+      schedule['result_display_ends_at'] ??
+      schedule['result_display_end_at'] ??
+      schedule['results_end_at'];
+  final text = raw?.toString().trim();
+  if (text != null && text.isNotEmpty) {
+    final parsed = DateTime.tryParse(text);
+    if (parsed != null) {
+      return DateTime.now().toUtc().isAfter(parsed.toUtc());
+    }
+  }
+  final endsAt = resolvePollEndsAtUtc(schedule);
+  if (endsAt == null) return false;
+  final displaySec =
+      (schedule['result_display_duration_seconds'] as num?)?.toInt() ??
+      (schedule['result_display_seconds'] as num?)?.toInt() ??
+      15;
+  final resultEnds = endsAt.add(Duration(seconds: displaySec.clamp(0, 3600)));
+  return DateTime.now().toUtc().isAfter(resultEnds);
+}
+
+/// Server started a new voting window — do not keep stale [poll_result] / result UI.
+bool pollFeedIndicatesNewVotingRound({
+  required EngagementItem previous,
+  required EngagementItem fresh,
+}) {
+  if (fresh.type != EngagementType.poll) return false;
+  final freshSched = fresh.pollVotingSchedule;
+  if (freshSched == null) return false;
+
+  if (previous.hasInteracted && !fresh.hasInteracted) return true;
+
+  final freshStatus = (freshSched['voting_status'] ?? '').toString();
+  if (isPollVotingOpenLikeStatus(freshStatus)) {
+    final seconds = resolvePollSecondsRemaining(
+      schedule: freshSched,
+      endsAtUtc: resolvePollEndsAtUtc(freshSched),
+    );
+    if (seconds > 15) return true;
+  }
+
+  final prevSched = previous.pollVotingSchedule;
+  if (prevSched != null) {
+    for (final key in const [
+      'end_time',
+      'ends_at',
+      'poll_actual_start_at',
+      'started_at',
+      'poll_voting_end_time',
+    ]) {
+      final a = prevSched[key]?.toString().trim() ?? '';
+      final b = freshSched[key]?.toString().trim() ?? '';
+      if (a.isNotEmpty && b.isNotEmpty && a != b) return true;
+    }
+    final prevSec = resolvePollSecondsRemaining(
+      schedule: prevSched,
+      endsAtUtc: resolvePollEndsAtUtc(prevSched),
+    );
+    final freshSec = resolvePollSecondsRemaining(
+      schedule: freshSched,
+      endsAtUtc: resolvePollEndsAtUtc(freshSched),
+    );
+    if (freshSec > prevSec + 30) return true;
+  }
+
+  if (isPollResultLikeVotingStatus(
+        previous.pollVotingSchedule?['voting_status']?.toString(),
+      ) &&
+      isPollVotingOpenLikeStatus(freshStatus)) {
+    return pollResultDisplayWindowEnded(previous.pollVotingSchedule);
+  }
+
+  return false;
+}
+
+/// Carousel should show vote UI (not result card) when schedule says voting is open.
+/// Spectators ([hasInteracted] false) still see the result card during `showing_result`.
+bool engagementItemShouldShowPollVotingUi(EngagementItem item) {
+  if (item.type != EngagementType.poll) return false;
+  final schedule = item.pollVotingSchedule;
+  final status = schedule?['voting_status']?.toString();
+
+  if (!isPollResultLikeVotingStatus(status)) {
+    return true;
+  }
+
+  if (isPollVotingOpenLikeStatus(status)) {
+    final seconds = resolvePollSecondsRemaining(
+      schedule: schedule,
+      endsAtUtc: resolvePollEndsAtUtc(schedule),
+    );
+    if (seconds > 15) return true;
+  }
+
+  final seconds = resolvePollSecondsRemaining(
+    schedule: schedule,
+    endsAtUtc: resolvePollEndsAtUtc(schedule),
+  );
+  if (seconds > 0) return true;
+
+  final mode = (schedule?['poll_mode'] ?? '').toString().toLowerCase();
+  if (mode == 'auto_run' && pollResultDisplayWindowEnded(schedule)) {
+    return true;
+  }
+
+  return false;
+}
+
+/// True when [poll_result] has enough data to render the in-feed winner card.
+bool pollResultMapReadyForFeedCard(Map<String, dynamic> r) {
+  if (_toNonNegativeInt(r['total_votes']) > 0) return true;
+  if (r['winning_option'] != null) return true;
+  final wi = r['winning_index'];
+  if (wi is num && wi >= 0) return true;
+  final options = r['options'];
+  if (options is List && options.isNotEmpty) return true;
+  final voteCounts = r['vote_counts'];
+  if (voteCounts is Map && voteCounts.isNotEmpty) return true;
+  if (voteCounts is List && voteCounts.isNotEmpty) return true;
+  return false;
+}
+
+/// In-feed poll result card (spectators + voters) once server sends result phase + payload.
+bool engagementItemShowsPollResultCard(EngagementItem item) {
+  if (item.type != EngagementType.poll) return false;
+  final status = item.pollVotingSchedule?['voting_status']?.toString();
+  if (!isPollResultLikeVotingStatus(status)) return false;
+  final r = item.pollResult;
+  if (r == null) return false;
+  return pollResultMapReadyForFeedCard(r);
+}
+
+/// Result phase declared but [poll_result] not on the feed yet — show calculating shell.
+bool engagementItemAwaitingPollResultPayload(EngagementItem item) {
+  if (item.type != EngagementType.poll) return false;
+  final status = item.pollVotingSchedule?['voting_status']?.toString();
+  if (!isPollResultLikeVotingStatus(status)) return false;
+  return item.pollResult == null;
 }
