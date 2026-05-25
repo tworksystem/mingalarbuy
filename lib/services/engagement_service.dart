@@ -7,6 +7,8 @@ import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/network_utils.dart';
+import '../utils/poll_display_helpers.dart';
+import '../utils/poll_option_totals_debug.dart';
 
 Map<String, String> _getWooCommerceAuthQueryParams() {
   return <String, String>{
@@ -443,15 +445,37 @@ class EngagementItem {
     Map<String, dynamic>? pollOptionTotals;
     final rawPollOptionTotals = json['poll_option_totals'];
     if (rawPollOptionTotals is Map) {
-      pollOptionTotals = Map<String, dynamic>.from(rawPollOptionTotals);
+      pollOptionTotals = normalizePollOptionTotalsPayload(
+        Map<String, dynamic>.from(rawPollOptionTotals),
+      );
     } else if (rawPollOptionTotals is String &&
         rawPollOptionTotals.trim().isNotEmpty) {
       try {
         final decoded = jsonDecode(rawPollOptionTotals);
         if (decoded is Map) {
-          pollOptionTotals = Map<String, dynamic>.from(decoded);
+          pollOptionTotals = normalizePollOptionTotalsPayload(
+            Map<String, dynamic>.from(decoded),
+          );
         }
       } catch (_) {}
+    }
+    final itemIdForLog = json['id'];
+    final itemType = json['type']?.toString();
+    if (itemType == 'poll') {
+      if (pollOptionTotals != null &&
+          pollOptionTotals['amount_by_option'] is Map) {
+        PollOptionTotalsDebug.ok(
+          'feed parse item=$itemIdForLog amount_by_option=${pollOptionTotals['amount_by_option']}',
+        );
+      } else {
+        final status = (json['poll_voting_schedule'] is Map)
+            ? (json['poll_voting_schedule'] as Map)['voting_status']
+            : null;
+        PollOptionTotalsDebug.pending(
+          'feed parse item=$itemIdForLog — no poll_option_totals.amount_by_option '
+          '(voting_status=$status). Timer strip stays pending until server sends totals.',
+        );
+      }
     }
 
     Map<int, int>? _parseUserBetUnitsPerOption(dynamic raw) {
@@ -682,29 +706,82 @@ class EngagementService {
         context: 'getEngagementUpdates',
       );
       if (response == null || !NetworkUtils.isValidDioResponse(response)) {
+        PollOptionTotalsDebug.fail(
+          'GET /engagement/updates — invalid HTTP response '
+          '(status=${response?.statusCode})',
+        );
         return [];
       }
       final Map<String, dynamic>? data = ApiService.responseAsJsonMap(response);
       if (data == null) {
+        PollOptionTotalsDebug.fail(
+          'GET /engagement/updates — response body is not JSON',
+        );
         return [];
       }
-      if (data['success'] != true) return [];
+      if (data['success'] != true) {
+        PollOptionTotalsDebug.fail(
+          'GET /engagement/updates — success=false message=${data['message']}',
+        );
+        return [];
+      }
       final raw = data['updates'];
-      if (raw is! List) return [];
-      return raw
-          .whereType<Map<String, dynamic>>()
-          .map(
-            (e) => {
-              'id': e['id'],
-              'interaction_count': e['interaction_count'],
-              'poll_result': e['poll_result'],
-              'poll_option_totals': e['poll_option_totals'],
-              'poll_voting_schedule': e['poll_voting_schedule'],
-              'has_interacted': e['has_interacted'],
-            },
-          )
-          .toList();
-    } catch (e) {
+      if (raw is! List) {
+        PollOptionTotalsDebug.fail(
+          'GET /engagement/updates — "updates" is not a list (${raw.runtimeType})',
+        );
+        return [];
+      }
+      final updates = <Map<String, dynamic>>[];
+      for (var i = 0; i < raw.length; i++) {
+        final entry = raw[i];
+        if (entry is! Map) {
+          PollOptionTotalsDebug.warn(
+            'updates[$i] skipped — not a Map (${entry.runtimeType})',
+          );
+          continue;
+        }
+        final m = Map<String, dynamic>.from(entry);
+        final id = m['id'];
+        final rawTotals = m['poll_option_totals'];
+        final normalizedTotals = rawTotals is Map
+            ? normalizePollOptionTotalsPayload(
+                Map<String, dynamic>.from(rawTotals),
+              )
+            : null;
+        updates.add({
+          'id': id,
+          'interaction_count': m['interaction_count'],
+          'poll_result': m['poll_result'],
+          'poll_option_totals': normalizedTotals ?? rawTotals,
+          'poll_voting_schedule': m['poll_voting_schedule'],
+          'has_interacted': m['has_interacted'],
+        });
+        if (normalizedTotals != null) {
+          PollOptionTotalsDebug.ok(
+            'updates row id=$id amount_by_option=${normalizedTotals['amount_by_option']}',
+          );
+        } else {
+          final sched = m['poll_voting_schedule'];
+          final status = sched is Map ? sched['voting_status'] : null;
+          PollOptionTotalsDebug.pending(
+            'updates row id=$id — no amount_by_option (voting_status=$status). '
+            'WP only attaches totals when status is open|countdown.',
+          );
+        }
+      }
+      if (updates.isEmpty) {
+        PollOptionTotalsDebug.warn(
+          'GET /engagement/updates — parsed 0 rows (raw length=${raw.length})',
+        );
+      }
+      return updates;
+    } catch (e, st) {
+      PollOptionTotalsDebug.fail(
+        'GET /engagement/updates — exception',
+        error: e,
+        stackTrace: st,
+      );
       return [];
     }
   }
@@ -999,6 +1076,32 @@ class EngagementService {
             'Interaction submitted successfully - Correct: $isCorrect, Points: $pointsEarnedRaw',
             tag: 'EngagementService',
           );
+          final updated = responseData?['updated_item'];
+          if (updated is Map) {
+            final um = Map<String, dynamic>.from(updated);
+            final totals = um['poll_option_totals'];
+            final normalizedInteract = totals is Map
+                ? normalizePollOptionTotalsPayload(
+                    Map<String, dynamic>.from(totals),
+                  )
+                : null;
+            if (normalizedInteract != null) {
+              PollOptionTotalsDebug.ok(
+                'interact response item=$itemId updated_item has amount_by_option=${normalizedInteract['amount_by_option']}',
+              );
+            } else {
+              final sched = um['poll_voting_schedule'];
+              final status = sched is Map ? sched['voting_status'] : null;
+              PollOptionTotalsDebug.warn(
+                'interact response item=$itemId updated_item has NO poll_option_totals.amount_by_option '
+                '(voting_status=$status) — client will call /engagement/updates next',
+              );
+            }
+          } else {
+            PollOptionTotalsDebug.warn(
+              'interact response item=$itemId has no updated_item — client will call /engagement/updates',
+            );
+          }
           return {
             'success': true,
             'is_correct': isCorrect,

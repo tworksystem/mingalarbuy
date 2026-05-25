@@ -3,7 +3,150 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/engagement_service.dart';
+import '../services/poll_winner_popup_service.dart';
 import '../utils/logger.dart' as app_logger;
+import '../utils/poll_display_helpers.dart';
+import '../utils/poll_option_totals_debug.dart';
+
+bool _isPollResultLikeVotingStatus(String? status) {
+  if (status == null || status.isEmpty) return false;
+  switch (status.toLowerCase()) {
+    case 'showing_result':
+    case 'showing_results':
+    case 'ended':
+    case 'result':
+    case 'results':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// Keeps result-phase fields only during brief API flicker in the **same** result window.
+/// When AUTO_RUN starts the next round (`open` + new end time), always accept fresh feed.
+EngagementItem preservePollResultPhaseOnMerge({
+  required EngagementItem previous,
+  required EngagementItem fresh,
+}) {
+  if (fresh.type != EngagementType.poll) return fresh;
+
+  final prevSched = previous.pollVotingSchedule;
+  final freshSched = fresh.pollVotingSchedule;
+  if (prevSched == null) return fresh;
+
+  final prevSession = (prevSched['current_session_id'] ?? '').toString().trim();
+  final freshSession = (freshSched?['current_session_id'] ?? '').toString().trim();
+  if (prevSession.isNotEmpty &&
+      freshSession.isNotEmpty &&
+      prevSession != freshSession) {
+    return fresh.copyWith(clearPollResult: previous.pollResult != null);
+  }
+
+  if (pollFeedIndicatesNewVotingRound(previous: previous, fresh: fresh)) {
+    app_logger.Logger.info(
+      'poll merge: new voting round pollId=${fresh.id} — clear stale result UI',
+      tag: 'EngagementProvider',
+    );
+    return fresh.copyWith(clearPollResult: previous.pollResult != null);
+  }
+
+  final prevStatus = (prevSched['voting_status'] ?? '').toString().toLowerCase();
+  final freshStatus =
+      (freshSched?['voting_status'] ?? '').toString().toLowerCase();
+
+  // Next AUTO_RUN round: server says open/countdown — never pin old showing_result.
+  if (_isPollResultLikeVotingStatus(prevStatus) &&
+      isPollVotingOpenLikeStatus(freshStatus)) {
+    return fresh.copyWith(clearPollResult: true);
+  }
+
+  Map<String, dynamic>? outSched = freshSched != null
+      ? Map<String, dynamic>.from(freshSched)
+      : null;
+  Map<String, dynamic>? outResult = fresh.pollResult ?? previous.pollResult;
+
+  // Same result window: feed may omit poll_result for one tick — keep it.
+  if (previous.pollResult != null &&
+      fresh.pollResult == null &&
+      _isPollResultLikeVotingStatus(prevStatus) &&
+      _isPollResultLikeVotingStatus(freshStatus)) {
+    outResult = previous.pollResult;
+  }
+
+  // Same result window: status flickered to open for one response — restore result status.
+  if (_isPollResultLikeVotingStatus(prevStatus) &&
+      !_isPollResultLikeVotingStatus(freshStatus) &&
+      outSched != null &&
+      !pollResultDisplayWindowEnded(prevSched)) {
+    outSched['voting_status'] = prevSched['voting_status'];
+  }
+
+  final schedUnchanged = identical(outSched, freshSched) ||
+      (outSched != null &&
+          freshSched != null &&
+          jsonEncode(outSched) == jsonEncode(freshSched));
+  if (schedUnchanged && outResult == fresh.pollResult) {
+    return fresh;
+  }
+
+  return fresh.copyWith(
+    pollVotingSchedule: outSched,
+    pollResult: outResult,
+  );
+}
+
+List<EngagementItem> _mergeFeedItemsPreservingPollResultPhase({
+  required List<EngagementItem> previousItems,
+  required List<EngagementItem> fetchedItems,
+}) {
+  final previousById = {for (final i in previousItems) i.id: i};
+  return fetchedItems.map((fresh) {
+    final prev = previousById[fresh.id];
+    if (prev == null) return fresh;
+    return preservePollResultPhaseOnMerge(previous: prev, fresh: fresh);
+  }).toList();
+}
+
+/// When feed enters result phase after a vote, sync My PNP from server (no popup).
+void _maybeTriggerPollResultPnpSync({
+  required int userId,
+  required List<EngagementItem> before,
+  required List<EngagementItem> after,
+}) {
+  if (userId <= 0 || after.isEmpty) return;
+  final beforeById = {for (final i in before) i.id: i};
+  for (final item in after) {
+    if (item.type != EngagementType.poll) continue;
+    if (!item.hasInteracted) continue;
+
+    final prev = beforeById[item.id];
+    final status = item.pollVotingSchedule?['voting_status']?.toString();
+    final prevStatus = prev?.pollVotingSchedule?['voting_status']?.toString();
+    final inResultStatus = _isPollResultLikeVotingStatus(status);
+    final enteredResult =
+        prev == null || !_isPollResultLikeVotingStatus(prevStatus);
+    final resultArrived =
+        item.pollResult != null && (prev?.pollResult == null);
+    if (!inResultStatus && !resultArrived) continue;
+    if (!enteredResult && !resultArrived) continue;
+
+    final sessionRaw =
+        (item.pollVotingSchedule?['current_session_id'] ?? '').toString().trim();
+    final schedule = item.pollVotingSchedule;
+    unawaited(
+      PollWinnerPopupService.syncBalanceWhenShowingResult(
+        pollId: item.id,
+        userId: userId,
+        feedSessionId: sessionRaw.isEmpty ? null : sessionRaw,
+        feedPollResult: item.pollResult,
+        feedVotingStatus: status,
+        feedPollVotingSchedule: schedule != null
+            ? Map<String, dynamic>.from(schedule)
+            : null,
+      ),
+    );
+  }
+}
 
 bool _pollResultEquals(Map<String, dynamic>? a, Map<String, dynamic>? b) {
   if (a == b) return true;
@@ -258,6 +401,13 @@ class EngagementProvider with ChangeNotifier {
   /// Minimum wall-clock spacing between full-feed network polls (timer + restarts).
   static const Duration _minFullFeedPollSpacing = Duration(seconds: 8);
   DateTime? _lastEngagementFullFeedPollAt;
+
+  /// Burst refresh when local countdown hits zero (bypasses [_minFullFeedPollSpacing]).
+  static const Duration _pollResultBurstInterval = Duration(milliseconds: 900);
+  static const int _pollResultBurstMaxAttempts = 10;
+  Timer? _pollResultBurstTimer;
+  int? _pollResultBurstPollId;
+  int _pollResultBurstAttempts = 0;
   final Map<String, int> _pollUserLocalUnitOverlay = <String, int>{};
   final Map<String, Map<String, int?>> _pollSessionReceiptCache =
       <String, Map<String, int?>>{};
@@ -287,6 +437,9 @@ class EngagementProvider with ChangeNotifier {
   static const int _fastPollingCloseThresholdSeconds = 20;
 
   List<EngagementItem> get items => _items;
+
+  /// Poll id currently in post-close result burst refresh (carousel pending UI).
+  int? get pollResultBurstPollId => _pollResultBurstPollId;
   bool get isLoading => _isLoading;
   String? get error => _error;
   bool get hasItems => _items.isNotEmpty;
@@ -390,7 +543,407 @@ class EngagementProvider with ChangeNotifier {
       interactionCount: item.interactionCount,
       pollVotingSchedule: item.pollVotingSchedule,
       pollResult: item.pollResult,
-      pollOptionTotals: item.pollOptionTotals,
+      pollOptionTotals: null,
+    );
+  }
+
+  /// Strip [EngagementItem.pollOptionTotals] — never hydrate timer-strip totals from disk cache.
+  EngagementItem _withoutCachedPollOptionTotals(EngagementItem item) {
+    if (item.type != EngagementType.poll || item.pollOptionTotals == null) {
+      return item;
+    }
+    return item.copyWith(clearPollOptionTotals: true);
+  }
+
+  List<EngagementItem> _withoutCachedPollOptionTotalsList(
+    List<EngagementItem> items,
+  ) {
+    return items.map(_withoutCachedPollOptionTotals).toList();
+  }
+
+  Map<String, dynamic>? _parsePollOptionTotalsField(dynamic raw) {
+    Map<String, dynamic>? base;
+    if (raw is Map) {
+      base = Map<String, dynamic>.from(raw);
+    } else if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          base = Map<String, dynamic>.from(decoded);
+        }
+      } catch (e) {
+        PollOptionTotalsDebug.fail(
+          'JSON decode poll_option_totals failed',
+          error: e,
+        );
+      }
+    }
+    return normalizePollOptionTotalsPayload(base);
+  }
+
+  bool _pollOptionTotalsHasAmountMap(Map<String, dynamic> totals) {
+    return normalizePollAmountByOption(totals['amount_by_option']) != null;
+  }
+
+  /// Merge live poll fields from server row (feed / updates / interact).
+  EngagementItem _applyEngagementUpdateRow(
+    EngagementItem item,
+    Map<String, dynamic> row,
+  ) {
+    var next = item;
+    final totals = _parsePollOptionTotalsField(row['poll_option_totals']);
+    if (totals != null && _pollOptionTotalsHasAmountMap(totals)) {
+      next = next.copyWith(pollOptionTotals: totals);
+    }
+    final ic = row['interaction_count'];
+    if (ic is int) {
+      next = next.copyWith(interactionCount: ic);
+    } else if (ic is num) {
+      next = next.copyWith(interactionCount: ic.toInt());
+    }
+    final sched = row['poll_voting_schedule'];
+    if (sched is Map) {
+      next = next.copyWith(
+        pollVotingSchedule: Map<String, dynamic>.from(sched),
+      );
+    }
+    final pr = row['poll_result'];
+    if (pr is Map) {
+      next = next.copyWith(pollResult: Map<String, dynamic>.from(pr));
+    }
+    final hi = row['has_interacted'];
+    if (hi is bool) {
+      next = next.copyWith(hasInteracted: hi);
+    } else if (hi == 1 || hi == '1') {
+      next = next.copyWith(hasInteracted: true);
+    }
+    return next;
+  }
+
+  bool _engagementItemShowsPollResult(EngagementItem item) =>
+      engagementItemShowsPollResultCard(item);
+
+  EngagementItem? _findEngagementItemById(int itemId) {
+    for (final item in _items) {
+      if (item.id == itemId) return item;
+    }
+    return null;
+  }
+
+  void _bypassNextFullFeedPollThrottle() {
+    _lastEngagementFullFeedPollAt =
+        DateTime.now().subtract(_minFullFeedPollSpacing);
+  }
+
+  /// Lightweight then full feed — used when the 10s overlay hits zero.
+  Future<void> refreshPollResultTransition({
+    required int userId,
+    required int pollId,
+    String? token,
+  }) async {
+    if (userId <= 0 || pollId <= 0) return;
+    if (_currentUserId != null && _currentUserId != userId) return;
+
+    final previousItems = List<EngagementItem>.from(_items);
+    var changed = false;
+
+    try {
+      final updates = await EngagementService.getUpdates(
+        userId: userId,
+        itemIds: [pollId],
+      );
+      for (final row in updates) {
+        final id = row['id'];
+        final parsedId = id is int ? id : int.tryParse(id?.toString() ?? '');
+        if (parsedId != pollId) continue;
+        final index = _items.indexWhere((i) => i.id == pollId);
+        if (index == -1) continue;
+        final previous = _items[index];
+        final merged = preservePollResultPhaseOnMerge(
+          previous: previous,
+          fresh: _applyEngagementUpdateRow(previous, row),
+        );
+        if (merged != _items[index]) {
+          _items[index] = merged;
+          changed = true;
+        }
+      }
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'refreshPollResultTransition updates failed pollId=$pollId: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+
+    final afterUpdates = _findEngagementItemById(pollId);
+    if (afterUpdates != null && _engagementItemShowsPollResult(afterUpdates)) {
+      if (changed) {
+        _maybeTriggerPollResultPnpSync(
+          userId: userId,
+          before: previousItems,
+          after: _items,
+        );
+        notifyListeners();
+      }
+      _stopPollResultBurst();
+      return;
+    }
+
+    // Result phase on schedule but poll_result not on feed yet — refresh UI shell.
+    if (afterUpdates != null &&
+        engagementItemAwaitingPollResultPayload(afterUpdates)) {
+      if (changed) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    _bypassNextFullFeedPollThrottle();
+    await loadFeed(userId: userId, token: token, forceRefresh: true);
+    final afterFeed = _findEngagementItemById(pollId);
+    if (afterFeed != null && _engagementItemShowsPollResult(afterFeed)) {
+      _stopPollResultBurst();
+    }
+  }
+
+  /// Polls feed until [pollId] enters a result-like state or attempts exhaust.
+  void beginPollResultTransitionBurst({
+    required int userId,
+    required int pollId,
+    String? token,
+  }) {
+    if (userId <= 0 || pollId <= 0) return;
+    _pollResultBurstTimer?.cancel();
+    _pollResultBurstPollId = pollId;
+    _pollResultBurstAttempts = 0;
+
+    Future<void> tick() async {
+      if (_currentUserId != null && _currentUserId != userId) {
+        _pollResultBurstTimer?.cancel();
+        _pollResultBurstTimer = null;
+        return;
+      }
+      _pollResultBurstAttempts++;
+      await refreshPollResultTransition(
+        userId: userId,
+        pollId: pollId,
+        token: token,
+      );
+      final item = _findEngagementItemById(pollId);
+      if (item != null && _engagementItemShowsPollResult(item)) {
+        app_logger.Logger.info(
+          'Poll result burst done pollId=$pollId attempts=$_pollResultBurstAttempts',
+          tag: 'EngagementProvider',
+        );
+        _pollResultBurstTimer?.cancel();
+        _pollResultBurstTimer = null;
+        return;
+      }
+      if (_pollResultBurstAttempts >= _pollResultBurstMaxAttempts) {
+        app_logger.Logger.info(
+          'Poll result burst exhausted pollId=$pollId '
+          'attempts=$_pollResultBurstAttempts',
+          tag: 'EngagementProvider',
+        );
+        _pollResultBurstTimer?.cancel();
+        _pollResultBurstTimer = null;
+      }
+    }
+
+    app_logger.Logger.info(
+      'Poll result burst start pollId=$pollId (overlay/timer zero)',
+      tag: 'EngagementProvider',
+    );
+    unawaited(tick());
+    _pollResultBurstTimer = Timer.periodic(_pollResultBurstInterval, (_) {
+      unawaited(tick());
+    });
+  }
+
+  void _stopPollResultBurst() {
+    _pollResultBurstTimer?.cancel();
+    _pollResultBurstTimer = null;
+    _pollResultBurstPollId = null;
+    _pollResultBurstAttempts = 0;
+  }
+
+  void _logPollTotalsOnItem(String source, EngagementItem item) {
+    if (item.type != EngagementType.poll) return;
+    final totals = item.pollOptionTotals;
+    final status = item.pollVotingSchedule?['voting_status'];
+    if (totals != null && _pollOptionTotalsHasAmountMap(totals)) {
+      PollOptionTotalsDebug.ok(
+        '$source item=${item.id} timer strip ready — '
+        'amount_by_option=${totals['amount_by_option']}',
+      );
+    } else {
+      PollOptionTotalsDebug.pending(
+        '$source item=${item.id} — still pending (voting_status=$status)',
+      );
+    }
+  }
+
+  void _logPollTotalsForAllItems(String source) {
+    for (final item in _items) {
+      if (item.type == EngagementType.poll) {
+        _logPollTotalsOnItem(source, item);
+      }
+    }
+  }
+
+  bool _applyPollTotalsToItemAtIndex(
+    int index,
+    Map<String, dynamic> totals,
+    String source,
+  ) {
+    if (!_pollOptionTotalsHasAmountMap(totals)) {
+      PollOptionTotalsDebug.fail(
+        '$source item=${_items[index].id} — poll_option_totals missing amount_by_option '
+        '(got ${totals['amount_by_option']?.runtimeType}; server may send JSON array — expected map or list)',
+      );
+      return false;
+    }
+    final normalized =
+        normalizePollOptionTotalsPayload(totals) ?? totals;
+    _items[index] = _items[index].copyWith(pollOptionTotals: normalized);
+    _logPollTotalsOnItem(source, _items[index]);
+    return true;
+  }
+
+  Future<bool> _fetchPollTotalsViaUpdates({
+    required int userId,
+    required int itemId,
+    required String source,
+  }) async {
+    PollOptionTotalsDebug.info(
+      '$source — calling GET /engagement/updates?item_ids=$itemId',
+    );
+    final updates = await EngagementService.getUpdates(
+      userId: userId,
+      itemIds: [itemId],
+    );
+    if (updates.isEmpty) {
+      PollOptionTotalsDebug.fail(
+        '$source item=$itemId — updates list empty (network error, auth, or parse failure — see logs above)',
+      );
+      return false;
+    }
+    Map<String, dynamic>? row;
+    for (final u in updates) {
+      final id = u['id'];
+      final parsedId = id is int ? id : int.tryParse(id?.toString() ?? '');
+      if (parsedId == itemId) {
+        row = u;
+        break;
+      }
+    }
+    if (row == null) {
+      PollOptionTotalsDebug.fail(
+        '$source item=$itemId — updates response had no row for this id',
+      );
+      return false;
+    }
+    final index = _items.indexWhere((i) => i.id == itemId);
+    if (index == -1) {
+      PollOptionTotalsDebug.fail(
+        '$source item=$itemId — not in provider _items list',
+      );
+      return false;
+    }
+    final totals = _parsePollOptionTotalsField(row['poll_option_totals']);
+    if (totals == null) {
+      final sched = row['poll_voting_schedule'];
+      final status = sched is Map ? sched['voting_status'] : null;
+      PollOptionTotalsDebug.fail(
+        '$source item=$itemId — server updates row has no poll_option_totals '
+        '(voting_status=$status). Deploy twork-rewards-system plugin or open voting window.',
+      );
+      return false;
+    }
+    _items[index] = _applyEngagementUpdateRow(_items[index], row);
+    return _pollOptionTotalsHasAmountMap(
+      _items[index].pollOptionTotals ?? const {},
+    );
+  }
+
+  /// After vote: pull global totals from server immediately (like Your Choice, but server-only).
+  Future<void> _syncPollOptionTotalsAfterVote({
+    required int userId,
+    required int itemId,
+    Map<String, dynamic>? updatedItemMap,
+  }) async {
+    if (itemId <= 0) return;
+    PollOptionTotalsDebug.info(
+      'post-vote sync START item=$itemId (Your Choice already local; totals = server only)',
+    );
+
+    final index = _items.indexWhere((i) => i.id == itemId);
+    if (index == -1) {
+      PollOptionTotalsDebug.fail('post-vote sync — item $itemId not in feed');
+      return;
+    }
+
+    if (updatedItemMap != null) {
+      final totals = _parsePollOptionTotalsField(
+        updatedItemMap['poll_option_totals'],
+      );
+      if (totals != null &&
+          _applyPollTotalsToItemAtIndex(index, totals, 'interact updated_item')) {
+        notifyListeners();
+        unawaited(_saveFeedToCache(userId, _items));
+        return;
+      }
+      final status = (updatedItemMap['poll_voting_schedule'] is Map)
+          ? (updatedItemMap['poll_voting_schedule'] as Map)['voting_status']
+          : null;
+      PollOptionTotalsDebug.warn(
+        'interact updated_item item=$itemId has no usable poll_option_totals '
+        '(voting_status=$status) → fallback /engagement/updates',
+      );
+    }
+
+    Future<bool> tryUpdates(String pass) async {
+      return _fetchPollTotalsViaUpdates(
+        userId: userId,
+        itemId: itemId,
+        source: pass,
+      );
+    }
+
+    var ok = await tryUpdates('post-vote updates (1st)');
+    if (!ok) {
+      PollOptionTotalsDebug.warn(
+        'post-vote item=$itemId — retrying updates in 450ms (DB may lag after vote insert)',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+      ok = await tryUpdates('post-vote updates (2nd)');
+    }
+
+    if (ok) {
+      notifyListeners();
+      unawaited(_saveFeedToCache(userId, _items));
+      PollOptionTotalsDebug.ok(
+        'post-vote sync DONE item=$itemId — timer strip should show Option 1: … totals',
+      );
+    } else {
+      PollOptionTotalsDebug.fail(
+        'post-vote sync FAILED item=$itemId — strip stays "Option totals: pending". '
+        'Check: (1) WP plugin deployed with poll_option_totals, '
+        '(2) voting_status is open|countdown, (3) engagement/updates returns amount_by_option.',
+      );
+    }
+  }
+
+  Future<void> _refreshPollLiveFieldsFromServer({
+    required int userId,
+    required int itemId,
+  }) async {
+    await _syncPollOptionTotalsAfterVote(
+      userId: userId,
+      itemId: itemId,
+      updatedItemMap: null,
     );
   }
 
@@ -701,6 +1254,18 @@ class EngagementProvider with ChangeNotifier {
         items: _items,
         hasServiceError: hasErrorFromService,
       );
+
+      if (!hasErrorFromService && _items.isNotEmpty) {
+        _logPollTotalsForAllItems('after loadFeed (server)');
+      }
+
+      if (!hasErrorFromService && _items.isNotEmpty) {
+        _maybeTriggerPollResultPnpSync(
+          userId: userId,
+          before: previousItems,
+          after: _items,
+        );
+      }
 
       // Start automatic polling after successful load
       _startPolling(userId: userId, token: token);
@@ -1195,11 +1760,11 @@ class EngagementProvider with ChangeNotifier {
                       fresh.userAnswer!.trim().isEmpty)));
 
       if (!shouldRecoverFromLocal) {
-        return fresh;
+        return preservePollResultPhaseOnMerge(previous: source, fresh: fresh);
       }
 
       mergedCount++;
-      return EngagementItem(
+      final recovered = EngagementItem(
         id: fresh.id,
         type: fresh.type,
         title: fresh.title,
@@ -1219,8 +1784,9 @@ class EngagementProvider with ChangeNotifier {
         pollVotingSchedule:
             fresh.pollVotingSchedule ?? source.pollVotingSchedule,
         pollResult: fresh.pollResult ?? source.pollResult,
-        pollOptionTotals: fresh.pollOptionTotals ?? source.pollOptionTotals,
+        pollOptionTotals: fresh.pollOptionTotals,
       );
+      return preservePollResultPhaseOnMerge(previous: source, fresh: recovered);
     }).toList();
 
     if (mergedCount > 0) {
@@ -1413,7 +1979,7 @@ class EngagementProvider with ChangeNotifier {
       interactionCount: existing.interactionCount + 1,
       pollVotingSchedule: existing.pollVotingSchedule,
       pollResult: existing.pollResult,
-      pollOptionTotals: existing.pollOptionTotals,
+      pollOptionTotals: null,
     );
     _items[index] = updatedItem;
     notifyListeners();
@@ -1476,8 +2042,10 @@ class EngagementProvider with ChangeNotifier {
         // Auto-update: prefer backend's updated_item so UI updates without refresh
         final data = result['data'];
         final rawUpdated = data is Map ? data['updated_item'] : null;
-        final Map<String, dynamic>? updatedItemMap =
-            rawUpdated is Map<String, dynamic> ? rawUpdated : null;
+        Map<String, dynamic>? updatedItemMap;
+        if (rawUpdated is Map) {
+          updatedItemMap = Map<String, dynamic>.from(rawUpdated);
+        }
 
         if (updatedItemMap != null && updatedItemMap['id'] != null) {
           try {
@@ -1501,6 +2069,11 @@ class EngagementProvider with ChangeNotifier {
               );
             }
           } catch (e, st) {
+            PollOptionTotalsDebug.fail(
+              'parse updated_item failed item=$itemId',
+              error: e,
+              stackTrace: st,
+            );
             app_logger.Logger.warning(
               'Failed to parse updated_item, falling back to local update: $e',
               tag: 'EngagementProvider',
@@ -1513,6 +2086,7 @@ class EngagementProvider with ChangeNotifier {
               betAmount: betAmount,
               betAmountPerOption: betAmountPerOption,
             );
+            updatedItemMap = null;
           }
         } else {
           _applyLocalInteractionUpdate(
@@ -1520,6 +2094,15 @@ class EngagementProvider with ChangeNotifier {
             answer,
             betAmount: betAmount,
             betAmountPerOption: betAmountPerOption,
+          );
+        }
+
+        final pollIndex = _items.indexWhere((i) => i.id == itemId);
+        if (pollIndex != -1 && _items[pollIndex].type == EngagementType.poll) {
+          await _syncPollOptionTotalsAfterVote(
+            userId: userId,
+            itemId: itemId,
+            updatedItemMap: updatedItemMap,
           );
         }
       } else {
@@ -1564,7 +2147,7 @@ class EngagementProvider with ChangeNotifier {
             interactionCount: _items[index].interactionCount,
             pollVotingSchedule: _items[index].pollVotingSchedule,
             pollResult: _items[index].pollResult,
-            pollOptionTotals: _items[index].pollOptionTotals,
+            pollOptionTotals: null,
           );
           _items[index] = updatedItem;
           notifyListeners();
@@ -1574,6 +2157,10 @@ class EngagementProvider with ChangeNotifier {
 
       return result;
     } catch (e) {
+      PollOptionTotalsDebug.fail(
+        'submitInteraction exception item=$itemId',
+        error: e,
+      );
       app_logger.Logger.error(
         'Submit interaction exception',
         tag: 'EngagementProvider',
@@ -1624,6 +2211,7 @@ class EngagementProvider with ChangeNotifier {
   void clear() {
     final cacheUserId = _currentUserId;
     _stopPolling();
+    _stopPollResultBurst();
     _lastEngagementFullFeedPollAt = null;
 
     // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန်
@@ -1666,7 +2254,7 @@ class EngagementProvider with ChangeNotifier {
         }
       }
       if (cachedItems.isEmpty) return;
-      _items = cachedItems;
+      _items = _withoutCachedPollOptionTotalsList(cachedItems);
       _hasLoadedForCurrentUser = true;
       if (notify) {
         notifyListeners();
@@ -1770,8 +2358,7 @@ class EngagementProvider with ChangeNotifier {
         ),
       if (item.pollResult != null)
         'poll_result': Map<String, dynamic>.from(item.pollResult!),
-      if (item.pollOptionTotals != null)
-        'poll_option_totals': Map<String, dynamic>.from(item.pollOptionTotals!),
+      // poll_option_totals intentionally omitted — server-only for timer strip.
     };
   }
 
@@ -1896,7 +2483,16 @@ class EngagementProvider with ChangeNotifier {
             EngagementService.lastError!.trim().isNotEmpty;
 
         if (structureChanged) {
-          _items = items;
+          final previousItems = List<EngagementItem>.from(_items);
+          _items = _mergeFeedItemsPreservingPollResultPhase(
+            previousItems: previousItems,
+            fetchedItems: items,
+          );
+          _maybeTriggerPollResultPnpSync(
+            userId: userId,
+            before: previousItems,
+            after: _items,
+          );
           /*
           Old Code:
           notifyListeners();
@@ -1931,7 +2527,16 @@ class EngagementProvider with ChangeNotifier {
             }
           }
           if (contentChanged) {
-            _items = items;
+            final previousItems = List<EngagementItem>.from(_items);
+            _items = _mergeFeedItemsPreservingPollResultPhase(
+              previousItems: previousItems,
+              fetchedItems: items,
+            );
+            _maybeTriggerPollResultPnpSync(
+              userId: userId,
+              before: previousItems,
+              after: _items,
+            );
             /*
             Old Code:
             notifyListeners();
@@ -1987,6 +2592,13 @@ class EngagementProvider with ChangeNotifier {
       final int secondsUntilClose = secondsRaw is int
           ? secondsRaw
           : (secondsRaw is num ? secondsRaw.toInt() : 999999);
+
+      if (mode == 'auto_run' && secondsUntilClose <= 0) {
+        return const _SmartPollingDecision(
+          interval: Duration(seconds: 2),
+          reason: 'auto_run_voting_ended',
+        );
+      }
 
       final bool isAutoRunNearClose =
           mode == 'auto_run' &&
@@ -2126,6 +2738,7 @@ class EngagementProvider with ChangeNotifier {
     _debounceTimer?.cancel();
     _pollingNotifyThrottleTimer?.cancel();
     _stopPolling();
+    _stopPollResultBurst();
     super.dispose();
   }
 }
