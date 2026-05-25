@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
+import 'package:ecommerce_int2/utils/my_pnp_balance_debug.dart';
 
 /// FIFO queue so overlapping [reconcileAfterPollResult] calls do not stack
 /// balance-sync leases, duplicate ledger polls, or redundant refreshes.
@@ -19,6 +20,10 @@ extension PointProviderPollReconcileExtension on PointProvider {
   ///
   /// When [pollWinPriorBalanceExclusive] is set, runs [refreshPointStateAfterPollWin] with
   /// no authoritative injection so the ledger response remains the source of truth.
+  ///
+  /// [balancePollMaxAttempts]: total balance GET passes (1 = single refresh only; 6 = win-credit
+  /// wait with retries). Use **1** for confirmed poll loss so unrelated balance bumps are not
+  /// mistaken for a win credit.
   Future<void> reconcileAfterPollResult({
     required String userId,
 
@@ -33,6 +38,7 @@ extension PointProviderPollReconcileExtension on PointProvider {
     bool Function()? shouldContinue,
     int? pollWinPriorBalanceExclusive,
     bool scheduleDeferredRetryOnPollWin = true,
+    int balancePollMaxAttempts = 6,
   }) async {
     if (userId.isEmpty) {
       return;
@@ -45,10 +51,19 @@ extension PointProviderPollReconcileExtension on PointProvider {
 
     String? balanceSyncLeaseId;
     try {
+      final int maxSmartPollAttempts = balancePollMaxAttempts.clamp(1, 6);
+      final bool waitForWinCredit = pollWinPriorBalanceExclusive != null;
+
+      MyPnpBalanceDebug.info(
+        'reconcileAfterPollResult START userId=$userId tag=$balanceSyncDebugTag '
+        'localNow=${currentBalance} authoritativeHint=${authoritativePollBalance ?? 'null'} '
+        'pollWin=$waitForWinCredit maxAttempts=$maxSmartPollAttempts — '
+        'NOTE: authoritative hint is NOT applied directly; only GET /points/balance counts.',
+      );
       Logger.info(
         'reconcileAfterPollResult:start userId=$userId '
         'authoritativePollBalance=${authoritativePollBalance ?? 'null'} tag=$balanceSyncDebugTag '
-        'pollWinPrior=${pollWinPriorBalanceExclusive != null}',
+        'pollWinPrior=$waitForWinCredit balancePollMaxAttempts=$maxSmartPollAttempts',
         tag: 'PointProviderPollReconcile',
       );
 
@@ -135,8 +150,7 @@ extension PointProviderPollReconcileExtension on PointProvider {
       }
       */
 
-      // First fetch is outside this loop; at most 5 follow-up retries (attempts 2…6).
-      const int maxSmartPollAttempts = 6;
+      // First fetch is outside this loop; at most (maxSmartPollAttempts - 1) follow-up retries.
       final Random jitterRng = Random();
       var attempt = 1;
       Logger.info(
@@ -146,6 +160,10 @@ extension PointProviderPollReconcileExtension on PointProvider {
         tag: 'PointProviderPollReconcile',
       );
       if (currentBalance != priorLocalBalance) {
+        MyPnpBalanceDebug.ok(
+          'reconcileAfterPollResult DONE — My PNP updated '
+          '$priorLocalBalance → $currentBalance after attempt $attempt (ledger caught up).',
+        );
         Logger.info(
           'SUCCESS: Backend balance updated to $currentBalance after $attempt attempts.',
           tag: 'PointProviderPollReconcile',
@@ -153,16 +171,36 @@ extension PointProviderPollReconcileExtension on PointProvider {
       } else {
         for (attempt = 2; attempt <= maxSmartPollAttempts; attempt++) {
           if (priorLocalBalance != currentBalance) {
+            MyPnpBalanceDebug.ok(
+              'reconcileAfterPollResult DONE — My PNP updated '
+              '$priorLocalBalance → $currentBalance after attempt ${attempt - 1}.',
+            );
             Logger.info(
               'SUCCESS: Backend balance updated to $currentBalance after ${attempt - 1} attempts.',
               tag: 'PointProviderPollReconcile',
             );
             break;
           }
-          Logger.info(
-            'RECONCILE: Waiting for backend to credit points (Attempt $attempt)...',
-            tag: 'PointProviderPollReconcile',
-          );
+          if (waitForWinCredit) {
+            MyPnpBalanceDebug.waiting(
+              'reconcileAfterPollResult attempt $attempt/$maxSmartPollAttempts — '
+              'GET /points/balance still $currentBalance (same as before=$priorLocalBalance). '
+              'Poll WIN credit may lag (WP-Cron / ledger write). My PNP waits ~1–3s…',
+            );
+            Logger.info(
+              'RECONCILE: Waiting for backend to credit points (Attempt $attempt)...',
+              tag: 'PointProviderPollReconcile',
+            );
+          } else {
+            MyPnpBalanceDebug.waiting(
+              'reconcileAfterPollResult attempt $attempt/$maxSmartPollAttempts — '
+              'GET /points/balance still $currentBalance.',
+            );
+            Logger.info(
+              'RECONCILE: Balance poll retry $attempt/$maxSmartPollAttempts userId=$userId',
+              tag: 'PointProviderPollReconcile',
+            );
+          }
           await Future<void>.delayed(
             _reconcilePollBackoffDuration(attempt, jitterRng),
           );
@@ -179,6 +217,10 @@ extension PointProviderPollReconcileExtension on PointProvider {
           await loadBalance(userId, forceRefresh: true, notifyLoading: false);
           final int afterFetch = currentBalance;
           if (priorLocalBalance != afterFetch) {
+            MyPnpBalanceDebug.ok(
+              'reconcileAfterPollResult DONE — My PNP updated '
+              '$priorLocalBalance → $afterFetch after attempt $attempt.',
+            );
             Logger.info(
               'SUCCESS: Backend balance updated to $afterFetch after $attempt attempts.',
               tag: 'PointProviderPollReconcile',
@@ -187,9 +229,26 @@ extension PointProviderPollReconcileExtension on PointProvider {
           }
         }
         if (currentBalance == priorLocalBalance) {
+          if (waitForWinCredit) {
+            MyPnpBalanceDebug.fail(
+              'reconcileAfterPollResult EXHAUSTED — My PNP still $currentBalance after '
+              '$maxSmartPollAttempts tries. Backend never showed win credit on /points/balance. '
+              'Check WP poll award cron, points_earned, and transaction ledger.',
+            );
+          } else if (maxSmartPollAttempts <= 1) {
+            MyPnpBalanceDebug.ok(
+              'reconcileAfterPollResult DONE — poll loss path, balance unchanged at '
+              '$currentBalance (single GET refresh, no win-credit wait).',
+            );
+          } else {
+            MyPnpBalanceDebug.fail(
+              'reconcileAfterPollResult EXHAUSTED — My PNP still $currentBalance after '
+              '$maxSmartPollAttempts tries.',
+            );
+          }
           Logger.info(
             'Smart Polling: balance still equals prior local=$priorLocalBalance after '
-            '$maxSmartPollAttempts attempts (currentBalance=$currentBalance)',
+            '$maxSmartPollAttempts attempts (currentBalance=$currentBalance waitForWinCredit=$waitForWinCredit)',
             tag: 'PointProviderPollReconcile',
           );
         }

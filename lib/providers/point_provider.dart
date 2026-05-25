@@ -5,6 +5,7 @@ import '../models/point_transaction.dart';
 import '../services/point_service.dart';
 import '../services/point_notification_manager.dart';
 import '../utils/logger.dart';
+import '../utils/my_pnp_balance_debug.dart';
 import '../services/connectivity_service.dart';
 import '../services/point_balance_sync_lock.dart';
 import '../services/point_sync_telemetry.dart';
@@ -576,6 +577,10 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     bool Function()? shouldContinue,
     bool scheduleDeferredRetryOnFailure = true,
   }) async {
+    MyPnpBalanceDebug.info(
+      'refreshPointStateAfterPollWin START priorExclusive=$priorBalanceExclusive '
+      'authoritative=$authoritativePollBalance localNow=$currentBalance source=$canonicalPollWinSource',
+    );
     Logger.info(
       'PointProvider.refreshPointStateAfterPollWin(trimmed) userId=$userId '
       'priorExclusive=$priorBalanceExclusive authoritativePollBalance=$authoritativePollBalance '
@@ -584,6 +589,9 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     );
 
     if (shouldContinue != null && !shouldContinue()) {
+      MyPnpBalanceDebug.blocked(
+        'refreshPointStateAfterPollWin ABORT — widget unmounted (shouldContinue=false)',
+      );
       Logger.info(
         'refreshPointStateAfterPollWin: aborted (shouldContinue false before apply)',
         tag: 'PointProvider',
@@ -594,6 +602,10 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     if (authoritativePollBalance != null) {
       final int local = currentBalance;
       if (authoritativePollBalance != local) {
+        MyPnpBalanceDebug.info(
+          'refreshPointStateAfterPollWin → CanonicalPointBalanceSync.apply '
+          '$local → $authoritativePollBalance',
+        );
         Logger.info(
           'refreshPointStateAfterPollWin: CanonicalPointBalanceSync.apply '
           'local=$local authoritative=$authoritativePollBalance',
@@ -610,12 +622,19 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
           snapshotObservedAt: snapshotObservedAt,
         );
       } else {
+        MyPnpBalanceDebug.ok(
+          'refreshPointStateAfterPollWin skip apply — already at authoritative $local',
+        );
         Logger.info(
           'refreshPointStateAfterPollWin: skip apply (already local==authoritative $local)',
           tag: 'PointProvider',
         );
       }
     } else {
+      MyPnpBalanceDebug.waiting(
+        'refreshPointStateAfterPollWin — no authoritative balance; '
+        'single loadBalance(forceRefresh) from GET /points/balance',
+      );
       Logger.info(
         'refreshPointStateAfterPollWin: authoritative null → single loadBalance(forceRefresh)',
         tag: 'PointProvider',
@@ -1152,6 +1171,11 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
           */
           if (pollWinStaleFloorExclusive != null &&
               balance.currentBalance <= pollWinStaleFloorExclusive) {
+            MyPnpBalanceDebug.waiting(
+              'loadBalance poll-win verify — API=${balance.currentBalance} still ≤ floor '
+              '$pollWinStaleFloorExclusive. Win credit NOT on ledger yet → My PNP unchanged '
+              '(memory=${_balance?.currentBalance}). Retrying…',
+            );
             Logger.info(
               'PointProvider: poll-win smart poll — API returned ${balance.currentBalance} '
               '(<= floor $pollWinStaleFloorExclusive); not applying stale ledger to memory '
@@ -1632,6 +1656,11 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         snapshotSequence != null &&
         seqLast != null &&
         snapshotSequence < seqLast) {
+      MyPnpBalanceDebug.blocked(
+        'applyRemoteBalanceSnapshot REJECTED — stale sequence '
+        'remote=$currentBalance memory=$memoryBalance seq=$snapshotSequence < lastSeq=$seqLast '
+        '(not a ledger upgrade). My PNP stays at memory until newer snapshot.',
+      );
       Logger.info(
         'PointProvider.applyRemoteBalanceSnapshot: ignore stale sequence '
         'seq=$snapshotSequence < lastSeq=$seqLast (userId=$userId)',
@@ -1662,6 +1691,12 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         snapshotObservedAt != null &&
         tsLast != null) {
       if (snapshotObservedAt.isBefore(tsLast)) {
+        MyPnpBalanceDebug.blocked(
+          'applyRemoteBalanceSnapshot REJECTED — stale observation time '
+          'remote=$currentBalance memory=$memoryBalance '
+          '(${snapshotObservedAt.toIso8601String()} < ${tsLast.toIso8601String()}). '
+          'My PNP not updated (prevents lagging API ghost).',
+        );
         Logger.info(
           'PointProvider.applyRemoteBalanceSnapshot: ignore stale observation '
           'time (${snapshotObservedAt.toIso8601String()} < '
@@ -1679,6 +1714,12 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         seqLast: seqLast,
         tsLast: tsLast,
       )) {
+        MyPnpBalanceDebug.blocked(
+          'applyRemoteBalanceSnapshot REJECTED — balance DOWN '
+          'remote=$currentBalance < memory=$memoryBalance WITHOUT proof snapshot is newer. '
+          'Common after poll VOTE (deduct): optimistic memory still high → My PNP waits for '
+          'ledger GET with matching lower balance OR poll-win path with upgrade metadata.',
+        );
         Logger.info(
           'PointProvider.applyRemoteBalanceSnapshot: ignore downgrade '
           'remote=$currentBalance < memory=$memoryBalance without newer metadata '
@@ -1687,6 +1728,10 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         );
         return false;
       }
+      MyPnpBalanceDebug.warn(
+        'applyRemoteBalanceSnapshot ACCEPT downgrade '
+        '$memoryBalance → $currentBalance (newer seq/time proves spend is real).',
+      );
       Logger.info(
         'PointProvider.applyRemoteBalanceSnapshot: accepting downgrade '
         'remote=$currentBalance < memory=$memoryBalance (newer seq/time, userId=$userId)',
@@ -1695,6 +1740,12 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     }
 
     final previous = _balance;
+    if (isLedgerUpgrade && memoryBalance != null && currentBalance > memoryBalance) {
+      MyPnpBalanceDebug.ok(
+        'applyRemoteBalanceSnapshot ACCEPT upgrade '
+        '$memoryBalance → $currentBalance — My PNP should update now (poll win / earn).',
+      );
+    }
     _commitBalance(
       PointBalance(
         userId: userId,

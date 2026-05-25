@@ -1,6 +1,7 @@
 import '../providers/auth_provider.dart';
 import '../providers/point_provider.dart';
 import '../utils/logger.dart';
+import '../utils/my_pnp_balance_debug.dart';
 import 'point_balance_sync_lock.dart';
 import 'point_service.dart';
 
@@ -63,6 +64,11 @@ class CanonicalPointBalanceSync {
         snapshotObservedAt: snapshotObservedAt,
       );
       if (!ok) {
+        MyPnpBalanceDebug.blocked(
+          'CanonicalPointBalanceSync REJECTED balance=$currentBalance source=$source — '
+          'PointProvider refused snapshot (stale seq/time or downgrade guard). '
+          'My PNP keeps memory balance; see 🛑 applyRemoteBalanceSnapshot logs above.',
+        );
         Logger.info(
           'CanonicalPointBalanceSync.apply: snapshot rejected (stale); '
           'skipping disk cache + broadcast (userId=$userId)',
@@ -70,6 +76,10 @@ class CanonicalPointBalanceSync {
         );
         return;
       }
+      MyPnpBalanceDebug.ok(
+        'CanonicalPointBalanceSync applied balance=$currentBalance source=$source — '
+        'My PNP + user meta should match.',
+      );
       await PointService.saveCanonicalBalance(
         userId: userId,
         currentBalance: currentBalance,
