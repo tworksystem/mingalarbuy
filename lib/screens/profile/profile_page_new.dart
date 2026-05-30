@@ -393,14 +393,7 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
                       Padding(
                         padding: const EdgeInsets.all(8.0),
                         child: Text(
-                          // Use live user name if available, else fallback
-                          (user.displayName.isNotEmpty
-                                  ? user.displayName
-                                  : (user.firstName.isNotEmpty
-                                      ? '${user.firstName} ${user.lastName}'
-                                          .trim()
-                                      : user.email))
-                              .trim(),
+                          user.profileDisplayLabel,
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),

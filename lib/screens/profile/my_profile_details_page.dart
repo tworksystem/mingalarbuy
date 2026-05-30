@@ -107,9 +107,7 @@ class _MyProfileDetailsPageState extends State<MyProfileDetailsPage> {
                                               user.lastName.isNotEmpty)
                                           ? '${user.firstName} ${user.lastName}'
                                               .trim()
-                                          : (user.displayName.isNotEmpty
-                                              ? user.displayName
-                                              : 'Not set'),
+                                          : user.profileDisplayLabel,
                                     ),
                                     leading: Image.asset(
                                         'assets/icons/profile_icon.png',

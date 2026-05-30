@@ -1,7 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
 import '../api_service.dart';
 import '../models/auth_response.dart';
 import '../models/auth_user.dart';
@@ -10,6 +8,7 @@ import '../models/register_request.dart';
 import '../utils/app_config.dart';
 import '../utils/network_utils.dart';
 import 'auth_header_provider.dart';
+import 'secure_storage_config.dart';
 
 class AuthService {
   static const String baseUrl = AppConfig.baseUrl;
@@ -17,7 +16,7 @@ class AuthService {
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
 
-  static final FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+  static final _secureStorage = SecureStorageConfig.instance;
 
   /// Busts reverse proxies / HTTP caches for `GET /users/me` (custom_fields / points).
   static Uri _usersMeUriNoCache() {
@@ -28,82 +27,383 @@ class AuthService {
     );
   }
 
+  /// WordPress `/users/me` returns HTTP 200 with only `message`/`code` when WAF or auth fails.
+  static AuthResponse? _usersMeValidationError(Map<String, dynamic> data) {
+    final int? id = _parsePositiveUserId(data['id']);
+    if (id != null) {
+      return null;
+    }
+
+    final String message = (data['message'] as String?)?.trim() ?? '';
+    final String code = (data['code'] as String?)?.trim() ?? '';
+
+    if (code == 'rest_not_logged_in' ||
+        message.toLowerCase().contains('not logged in')) {
+      return AuthResponse.error(message: 'Invalid email or password');
+    }
+
+    if (message.isNotEmpty) {
+      final lower = message.toLowerCase();
+      if (_looksLikeWafBlockMessage(lower)) {
+        return AuthResponse.error(
+          message:
+              'Server blocked sign-in. Please try again later or contact support.',
+          errors: <String, dynamic>{'waf_blocked': true, 'server_message': message},
+        );
+      }
+      return AuthResponse.error(
+        message: 'Sign-in failed. Please try again.',
+      );
+    }
+
+    if (code.isNotEmpty) {
+      return AuthResponse.error(message: 'Sign-in failed. Please try again.');
+    }
+
+    return AuthResponse.error(
+      message: 'Sign-in failed. Invalid account response from server.',
+    );
+  }
+
+  static bool _looksLikeWafBlockMessage(String lowerMessage) {
+    return lowerMessage.contains('imunify') ||
+        lowerMessage.contains('bot-protection') ||
+        lowerMessage.contains('bot protection') ||
+        lowerMessage.contains('access denied');
+  }
+
+  static bool _responseLooksLikeWafBlock(Map<String, dynamic>? body) {
+    if (body == null) return false;
+    final message = (body['message'] as String?)?.trim().toLowerCase() ?? '';
+    return message.isNotEmpty && _looksLikeWafBlockMessage(message);
+  }
+
+  static Map<String, dynamic> _loginRequestHeaders(LoginRequest request) {
+    return <String, dynamic>{
+      'Content-Type': 'application/json',
+      'Authorization':
+          'Basic ${base64Encode(utf8.encode('${request.email}:${request.password}'))}',
+      ...AppConfig.clientIdentificationHeaders,
+    };
+  }
+
+  static int? _parsePositiveUserId(dynamic idRaw) {
+    if (idRaw is int) {
+      return idRaw > 0 ? idRaw : null;
+    }
+    if (idRaw is num) {
+      final int id = idRaw.toInt();
+      return id > 0 ? id : null;
+    }
+    final int? parsed = int.tryParse(idRaw?.toString() ?? '');
+    if (parsed != null && parsed > 0) {
+      return parsed;
+    }
+    return null;
+  }
+
+  static String? _trimmedNonEmpty(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
+  static Map<String, String> _mergeCustomFieldsMaps(
+    Map<String, String> primary,
+    Map<String, String> fallback,
+  ) {
+    final merged = Map<String, String>.from(fallback);
+    for (final entry in primary.entries) {
+      if (entry.value.trim().isNotEmpty) {
+        merged[entry.key] = entry.value;
+      }
+    }
+    return merged;
+  }
+
+  /// Fills empty identity fields from a previously stored user (same account).
+  static AuthUser _mergeIdentityFromStored(AuthUser user, AuthUser stored) {
+    return user.copyWith(
+      email: user.email.isNotEmpty ? user.email : stored.email,
+      firstName:
+          user.firstName.isNotEmpty ? user.firstName : stored.firstName,
+      lastName: user.lastName.isNotEmpty ? user.lastName : stored.lastName,
+      username: user.username.isNotEmpty ? user.username : stored.username,
+      customFields: _mergeCustomFieldsMaps(user.customFields, stored.customFields),
+    );
+  }
+
+  static AuthUser _mergeWooCustomerIntoUser(
+    AuthUser user,
+    Map<String, dynamic> woo,
+  ) {
+    final billing = (woo['billing'] as Map<String, dynamic>?) ?? {};
+    final wooFirst = _trimmedNonEmpty(woo['first_name']) ??
+        _trimmedNonEmpty(billing['first_name']);
+    final wooLast = _trimmedNonEmpty(woo['last_name']) ??
+        _trimmedNonEmpty(billing['last_name']);
+    final wooEmail =
+        _trimmedNonEmpty(woo['email']) ?? _trimmedNonEmpty(billing['email']);
+    final wooUsername = _trimmedNonEmpty(woo['username']);
+    final wooPhone = _trimmedNonEmpty(billing['phone']);
+    final billingAddress = _formatAddressFromWoo(billing);
+    final billingCity = _trimmedNonEmpty(billing['city']);
+    final billingCountry = _trimmedNonEmpty(billing['country']);
+
+    return user.copyWith(
+      firstName: user.firstName.isNotEmpty ? user.firstName : (wooFirst ?? ''),
+      lastName: user.lastName.isNotEmpty ? user.lastName : (wooLast ?? ''),
+      email: user.email.isNotEmpty ? user.email : (wooEmail ?? ''),
+      username:
+          user.username.isNotEmpty ? user.username : (wooUsername ?? ''),
+      phone: (user.phone ?? '').isNotEmpty ? user.phone : wooPhone,
+      billingAddress: (user.billingAddress ?? '').isNotEmpty
+          ? user.billingAddress
+          : billingAddress,
+      billingCity: (user.billingCity ?? '').isNotEmpty
+          ? user.billingCity
+          : billingCity,
+      billingCountry: (user.billingCountry ?? '').isNotEmpty
+          ? user.billingCountry
+          : billingCountry,
+    );
+  }
+
+  static bool _profileIdentityDiffers(AuthUser before, AuthUser after) {
+    return before.firstName != after.firstName ||
+        before.lastName != after.lastName ||
+        before.email != after.email ||
+        before.username != after.username ||
+        before.phone != after.phone ||
+        before.billingAddress != after.billingAddress ||
+        before.billingCity != after.billingCity ||
+        before.billingCountry != after.billingCountry ||
+        before.customFields.toString() != after.customFields.toString();
+  }
+
+  /// WooCommerce + stored fallbacks when `/users/me` is sparse (common on release APK / WAF).
+  static Future<AuthUser> enrichUserProfile(
+    AuthUser user, {
+    AuthUser? storedFallback,
+    bool persistIfChanged = false,
+  }) async {
+    var enriched = user;
+    if (storedFallback != null && storedFallback.id == user.id) {
+      enriched = _mergeIdentityFromStored(enriched, storedFallback);
+    }
+
+    try {
+      Map<String, dynamic>? woo;
+      if (enriched.id != 0) {
+        woo = await _fetchWooCustomer(enriched.id);
+      }
+      if (woo == null && enriched.email.isNotEmpty) {
+        woo = await _findWooCustomerByEmail(enriched.email);
+      }
+      if (woo != null) {
+        enriched = _mergeWooCustomerIntoUser(enriched, woo);
+      }
+    } catch (e) {
+      print('DEBUG: enrichUserProfile - Woo merge failed: $e');
+    }
+
+    final storedPhone = await _secureStorage.read(key: _phoneKey);
+    if ((enriched.phone ?? '').isEmpty && storedPhone != null) {
+      enriched = enriched.copyWith(phone: storedPhone);
+    }
+    if ((enriched.phone ?? '').isNotEmpty) {
+      await _secureStorage.write(key: _phoneKey, value: enriched.phone!);
+    }
+
+    if (persistIfChanged && _profileIdentityDiffers(user, enriched)) {
+      await _storeUserData(enriched);
+    }
+
+    return enriched;
+  }
+
   // Storage keys
   static const String _tokenKey = 'auth_token';
   static const String _userKey = 'user_data';
   static const String _rememberMeKey = 'remember_me';
   static const String _phoneKey = 'user_phone';
 
-  /// Login user with email and password
-  /// Uses ApiService.executeWithRetry for retry logic (3 attempts, 30s timeout)
+  /// Login via `POST /wp/v2/users/me` (WordPress REST). Falls back to
+  /// `POST /twork/v1/auth/sign-in` when WAF returns Imunify/bot-protection.
   static Future<AuthResponse> login(LoginRequest request) async {
     try {
-      final Uri uri = Uri.parse('$wpBaseUrl/users/me');
-      final response = await ApiService.executeWithRetry(
-        () => ApiService.post(
-          uri.path,
-          queryParameters:
-              uri.queryParameters.isEmpty ? null : uri.queryParameters,
-          skipAuth: true,
-          headers: <String, dynamic>{
-            'Content-Type': 'application/json',
-            'Authorization':
-                'Basic ${base64Encode(utf8.encode('${request.email}:${request.password}'))}',
-          },
-        ),
-        timeout: AppConfig.networkTimeout,
-        context: 'login',
+      final usersMeResult = await _loginViaUsersMePost(request);
+      if (usersMeResult.success) {
+        return usersMeResult;
+      }
+      final wafBlocked = usersMeResult.errors?['waf_blocked'] == true;
+      if (!wafBlocked) {
+        return usersMeResult;
+      }
+
+      print(
+        'DEBUG: Login - users/me blocked by WAF, trying twork auth/sign-in fallback',
       );
-
-      if (response == null) {
-        return AuthResponse.error(
-          message: 'Request timeout or server unreachable. Please try again.',
-        );
-      }
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic>? userData = ApiService.responseAsJsonMap(response);
-        if (userData == null) {
-          return AuthResponse.error(message: 'Login failed. Invalid response.');
-        }
-        print(
-            'DEBUG: Login - Raw API response: ${userData['first_name']} ${userData['last_name']}, Meta: ${userData['meta']}');
-        final user = AuthUser.fromJson(userData);
-        print(
-            'DEBUG: Login - Parsed user: ${user.firstName} ${user.lastName}, Phone: ${user.phone}');
-
-        // Create authentication token
-        final token =
-            base64Encode(utf8.encode('${request.email}:${request.password}'));
-        print('DEBUG: Created token for user: ${request.email}');
-
-        // Store authentication data - always store token for persistent login
-        // rememberMe defaults to true if not specified
-        final shouldRemember = request.rememberMe;
-        await _storeAuthData(user, shouldRemember, token: token);
-        print(
-            'DEBUG: Stored authentication data and token (rememberMe: $shouldRemember)');
-
-        return AuthResponse.success(
-          message: 'Login successful',
-          user: user,
-          token: token,
-        );
-      } else if (response.statusCode == 401) {
-        return AuthResponse.error(
-          message: 'Invalid email or password',
-        );
-      } else {
-        return AuthResponse.error(
-          message: 'Login failed. Please try again.',
-        );
-      }
+      return _loginViaTworkSignIn(request);
     } catch (e) {
       print('Login error: $e');
       return AuthResponse.error(
         message: NetworkUtils.getErrorMessage(e),
       );
     }
+  }
+
+  static Future<AuthResponse> _loginViaUsersMePost(LoginRequest request) async {
+    final Uri meUri = _usersMeUriNoCache();
+
+    final response = await ApiService.executeWithRetry(
+      () => ApiService.post(
+        meUri.path,
+        queryParameters: meUri.queryParameters,
+        skipAuth: true,
+        headers: _loginRequestHeaders(request),
+        data: const <String, dynamic>{},
+      ),
+      timeout: AppConfig.networkTimeout,
+      context: 'login',
+    );
+
+    if (response == null) {
+      return AuthResponse.error(
+        message: 'Request timeout or server unreachable. Please try again.',
+      );
+    }
+
+    final Map<String, dynamic>? body = ApiService.responseAsJsonMap(response);
+
+    if (response.statusCode == 200) {
+      return _completeLoginFromUserPayload(
+        request: request,
+        body: body,
+        invalidResponseMessage: 'Login failed. Invalid response.',
+      );
+    }
+    if (response.statusCode == 401) {
+      return AuthResponse.error(message: 'Invalid email or password');
+    }
+    if (body != null) {
+      final AuthResponse? validationError = _usersMeValidationError(body);
+      if (validationError != null) {
+        return validationError;
+      }
+    }
+    return AuthResponse.error(message: 'Login failed. Please try again.');
+  }
+
+  static Future<AuthResponse> _loginViaTworkSignIn(LoginRequest request) async {
+    final response = await ApiService.executeWithRetry(
+      () => ApiService.post(
+        '${AppConfig.tworkApiBasePath}/auth/sign-in',
+        skipAuth: true,
+        headers: const <String, dynamic>{
+          'Content-Type': 'application/json',
+          'X-PlanetMM-Client': '1',
+        },
+        data: <String, dynamic>{
+          'email': request.email.trim(),
+          'password': request.password,
+        },
+      ),
+      timeout: AppConfig.networkTimeout,
+      context: 'login_twork_sign_in',
+    );
+
+    if (response == null) {
+      return AuthResponse.error(
+        message: 'Request timeout or server unreachable. Please try again.',
+      );
+    }
+
+    final Map<String, dynamic>? body = ApiService.responseAsJsonMap(response);
+    if (response.statusCode == 401) {
+      return AuthResponse.error(message: 'Invalid email or password');
+    }
+    if (response.statusCode == 429) {
+      return AuthResponse.error(
+        message: 'Too many sign-in attempts. Please wait a minute and try again.',
+      );
+    }
+    if (response.statusCode != 200 || body == null) {
+      if (_responseLooksLikeWafBlock(body)) {
+        return AuthResponse.error(
+          message:
+              'Server blocked sign-in. Please try again later or contact support.',
+          errors: <String, dynamic>{'waf_blocked': true},
+        );
+      }
+      return AuthResponse.error(message: 'Login failed. Please try again.');
+    }
+
+    final Map<String, dynamic>? userMap = body['user'] is Map
+        ? Map<String, dynamic>.from(body['user'] as Map)
+        : body;
+
+    return _completeLoginFromUserPayload(
+      request: request,
+      body: userMap,
+      invalidResponseMessage: 'Sign-in failed. Invalid account response from server.',
+    );
+  }
+
+  static Future<AuthResponse> _completeLoginFromUserPayload({
+    required LoginRequest request,
+    required Map<String, dynamic>? body,
+    required String invalidResponseMessage,
+  }) async {
+    if (body == null) {
+      return AuthResponse.error(message: invalidResponseMessage);
+    }
+
+    final AuthResponse? validationError = _usersMeValidationError(body);
+    if (validationError != null) {
+      return validationError;
+    }
+
+    print(
+      'DEBUG: Login - Raw API response: ${body['first_name']} ${body['last_name']}, Meta: ${body['meta']}',
+    );
+    var user = AuthUser.fromJson(body);
+    if (user.id <= 0) {
+      return AuthResponse.error(message: invalidResponseMessage);
+    }
+    print(
+      'DEBUG: Login - Parsed user: ${user.firstName} ${user.lastName}, Phone: ${user.phone}',
+    );
+
+    AuthUser? storedFallback;
+    try {
+      final stored = await _readStoredUserFromDisk();
+      if (stored != null && stored.id == user.id) {
+        storedFallback = stored;
+      }
+    } catch (_) {}
+
+    user = await enrichUserProfile(
+      user,
+      storedFallback: storedFallback,
+      persistIfChanged: true,
+    );
+
+    final token =
+        base64Encode(utf8.encode('${request.email}:${request.password}'));
+    print('DEBUG: Created token for user: ${request.email}');
+
+    final shouldRemember = request.rememberMe;
+    await _storeAuthData(user, shouldRemember, token: token);
+    print(
+      'DEBUG: Stored authentication data and token (rememberMe: $shouldRemember)',
+    );
+
+    return AuthResponse.success(
+      message: 'Login successful',
+      user: user,
+      token: token,
+    );
   }
 
   /// Register new user
@@ -272,80 +572,19 @@ class AuthService {
             'DEBUG: getCurrentUser - Raw API response: ${userData['first_name']} ${userData['last_name']}, Phone(meta): $debugMetaPhone');
         var authUser = AuthUser.fromJson(userData);
 
-        // Preserve critical identity fields from stored user if WP response is sparse
+        AuthUser? storedFallback;
         try {
-          final stored = await getStoredUser();
-          if (stored != null) {
-            final mergedEmail =
-                (authUser.email.isNotEmpty) ? authUser.email : stored.email;
-            final mergedFirst = (authUser.firstName.isNotEmpty)
-                ? authUser.firstName
-                : stored.firstName;
-            final mergedLast = (authUser.lastName.isNotEmpty)
-                ? authUser.lastName
-                : stored.lastName;
-            final mergedUsername = (authUser.username.isNotEmpty)
-                ? authUser.username
-                : stored.username;
-            authUser = authUser.copyWith(
-              email: mergedEmail,
-              firstName: mergedFirst,
-              lastName: mergedLast,
-              username: mergedUsername,
-            );
-          }
+          storedFallback = await _readStoredUserFromDisk();
         } catch (e) {
           print(
-              'DEBUG: getCurrentUser - Failed to merge identity from storage: $e');
+              'DEBUG: getCurrentUser - Failed to read stored user: $e');
         }
 
-        // Merge WooCommerce billing info (phone/address)
-        try {
-          Map<String, dynamic>? woo;
-          if ((authUser.id) != 0) {
-            woo = await _fetchWooCustomer(authUser.id);
-          }
-          if (woo == null && (authUser.email).isNotEmpty) {
-            woo = await _findWooCustomerByEmail(authUser.email);
-          }
-          if (woo != null) {
-            final wooBilling = (woo['billing'] as Map<String, dynamic>?) ?? {};
-            final wooPhone = (wooBilling['phone'] as String?)?.trim();
-            final billingAddress = _formatAddressFromWoo(wooBilling);
-            final billingCity = (wooBilling['city'] as String?)?.trim();
-            final billingCountry = (wooBilling['country'] as String?)?.trim();
-
-            if ((wooPhone ?? '').isNotEmpty) {
-              authUser = authUser.copyWith(phone: wooPhone);
-            }
-            if (billingAddress != null && billingAddress.isNotEmpty) {
-              authUser = authUser.copyWith(billingAddress: billingAddress);
-            }
-            if ((billingCity ?? '').isNotEmpty) {
-              authUser = authUser.copyWith(billingCity: billingCity);
-            }
-            if ((billingCountry ?? '').isNotEmpty) {
-              authUser = authUser.copyWith(billingCountry: billingCountry);
-            }
-          }
-        } catch (e) {
-          print('DEBUG: getCurrentUser - Failed to merge Woo billing: $e');
-        }
-
-        // Fallback to locally stored phone if Woo/WordPress didn't provide
-        final storedPhone = await _secureStorage.read(key: _phoneKey);
-        print(
-            'DEBUG: getCurrentUser - Retrieved phone from storage: $storedPhone');
-        if ((authUser.phone ?? '').isEmpty && storedPhone != null) {
-          authUser = authUser.copyWith(phone: storedPhone);
-          print(
-              'DEBUG: getCurrentUser - Applied stored phone: ${authUser.phone}');
-        }
-
-        // Persist merged phone locally so UI can always read it
-        if ((authUser.phone ?? '').isNotEmpty) {
-          await _secureStorage.write(key: _phoneKey, value: authUser.phone!);
-        }
+        authUser = await enrichUserProfile(
+          authUser,
+          storedFallback: storedFallback,
+          persistIfChanged: true,
+        );
 
         print(
             'DEBUG: getCurrentUser - Parsed user: ${authUser.firstName} ${authUser.lastName}, Phone: ${authUser.phone}');
@@ -803,44 +1042,32 @@ class AuthService {
     return AuthHeaderProvider.buildHeaders();
   }
 
-  /// Get stored user data
-  static Future<AuthUser?> getStoredUser() async {
+  /// Reads persisted user JSON only (no network enrichment).
+  static Future<AuthUser?> _readStoredUserFromDisk() async {
     try {
       final userJson = await _secureStorage.read(key: _userKey);
-      if (userJson != null) {
-        final userData = json.decode(userJson);
-        print('DEBUG: getStoredUser - Raw stored user data: $userData');
-        var authUser = AuthUser.fromJson(userData);
-        print(
-            'DEBUG: getStoredUser - Parsed user from JSON: ${authUser.firstName} ${authUser.lastName}, Phone: ${authUser.phone}');
-
-        // Merge Woo billing to ensure phone/city/address appear even offline
-        try {
-          if (authUser.id != 0) {
-            final woo = await _fetchWooCustomer(authUser.id);
-            final billing = (woo?['billing'] as Map<String, dynamic>?) ?? {};
-            final wooPhone = (billing['phone'] as String?)?.trim();
-            final wooCity = (billing['city'] as String?)?.trim();
-            final formatted = _formatAddressFromWoo(billing);
-            if ((wooPhone ?? '').isNotEmpty) {
-              authUser = authUser.copyWith(phone: wooPhone);
-              // Persist merged phone for subsequent reads
-              await _secureStorage.write(key: _phoneKey, value: wooPhone);
-            }
-            if ((wooCity ?? '').isNotEmpty) {
-              authUser = authUser.copyWith(billingCity: wooCity);
-            }
-            if (formatted != null && formatted.isNotEmpty) {
-              authUser = authUser.copyWith(billingAddress: formatted);
-            }
-          }
-        } catch (e) {
-          print('DEBUG: getStoredUser - Woo merge failed: $e');
-        }
-
-        return authUser;
+      if (userJson == null) return null;
+      final userData = json.decode(userJson);
+      if (userData is! Map<String, dynamic>) {
+        return AuthUser.fromJson(Map<String, dynamic>.from(userData as Map));
       }
+      return AuthUser.fromJson(userData);
+    } catch (e) {
+      print('Read stored user from disk error: $e');
       return null;
+    }
+  }
+
+  /// Get stored user data (enriched from Woo when online).
+  static Future<AuthUser?> getStoredUser() async {
+    try {
+      final authUser = await _readStoredUserFromDisk();
+      if (authUser == null) return null;
+
+      print(
+          'DEBUG: getStoredUser - Parsed user from JSON: ${authUser.firstName} ${authUser.lastName}, Phone: ${authUser.phone}');
+
+      return enrichUserProfile(authUser, persistIfChanged: true);
     } catch (e) {
       print('Get stored user error: $e');
       return null;

@@ -274,7 +274,9 @@ class AuthProvider with ChangeNotifier {
         if (newUser.id == 0) {
           await _recoverCorruptedSession('login_response_user_id_zero');
           return AuthResponse.error(
-            message: 'Invalid account state. Please sign in again.',
+            message: response.message.isNotEmpty
+                ? response.message
+                : 'Sign-in failed. Invalid account response from server.',
           );
         }
         // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — no explicit cache clear on login switch.

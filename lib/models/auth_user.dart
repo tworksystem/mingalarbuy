@@ -36,6 +36,23 @@ class AuthUser {
   String get fullName => ('$firstName $lastName').trim();
   String get displayName => fullName.isNotEmpty ? fullName : username;
 
+  /// Best label for profile headers when WP/WAF returns sparse `users/me` data.
+  String get profileDisplayLabel {
+    if (displayName.isNotEmpty) return displayName;
+    if (email.trim().isNotEmpty) return email.trim();
+    if (username.trim().isNotEmpty) return username.trim();
+    final phoneLabel = phone?.trim();
+    if (phoneLabel != null && phoneLabel.isNotEmpty) return phoneLabel;
+    if (id > 0) return 'User #$id';
+    return 'User';
+  }
+
+  static String? _trimmedNonEmpty(dynamic value) {
+    if (value == null) return null;
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
   factory AuthUser.fromJson(Map<String, dynamic> json) {
     final dynamic metaDynamic = json['meta'];
     String? metaPhone;
@@ -129,15 +146,45 @@ class AuthUser {
 
     print('DEBUG AuthUser.fromJson - Final customFields: $customFields');
 
+    var firstName = _trimmedNonEmpty(json['first_name']) ?? '';
+    var lastName = _trimmedNonEmpty(json['last_name']) ?? '';
+    if (firstName.isEmpty && lastName.isEmpty) {
+      firstName = _trimmedNonEmpty(billingMap?['first_name']) ?? '';
+      lastName = _trimmedNonEmpty(billingMap?['last_name']) ?? '';
+    }
+    if (firstName.isEmpty && lastName.isEmpty) {
+      final combinedName = _trimmedNonEmpty(json['name']);
+      if (combinedName != null) {
+        final parts =
+            combinedName.split(RegExp(r'\s+')).where((p) => p.isNotEmpty);
+        final list = parts.toList();
+        if (list.length == 1) {
+          firstName = list.first;
+        } else if (list.isNotEmpty) {
+          firstName = list.first;
+          lastName = list.sublist(1).join(' ');
+        }
+      }
+    }
+
+    var username = _trimmedNonEmpty(json['username']) ?? '';
+    if (username.isEmpty) {
+      username = _trimmedNonEmpty(json['nickname']) ??
+          _trimmedNonEmpty(json['slug']) ??
+          '';
+    }
+
+    final email = _trimmedNonEmpty(json['email']) ?? '';
+
     // Note: Activity status is tracked on backend only, not exposed to app
     // Backend tracks activity for admin purposes but does not send to mobile app
 
     return AuthUser(
       id: json['id'] ?? 0,
-      email: json['email'] ?? '',
-      firstName: json['first_name'] ?? '',
-      lastName: json['last_name'] ?? '',
-      username: json['username'] ?? '',
+      email: email,
+      firstName: firstName,
+      lastName: lastName,
+      username: username,
       avatar: json['avatar_url'],
       phone: billingMap?['phone'] ?? shippingMap?['phone'] ?? metaPhone,
       billingAddress: _formatAddress(billingMap),
@@ -195,6 +242,11 @@ class AuthUser {
       'date_created': dateCreated?.toIso8601String(),
       'is_paying_customer': isEmailVerified,
       'role': roles.isNotEmpty ? roles.first : 'customer',
+      if (customFields.isNotEmpty) 'custom_fields': customFields,
+      if (customFields.containsKey('points_balance'))
+        'points_balance': customFields['points_balance'],
+      if (customFields.containsKey('wallet_balance'))
+        'wallet_balance': customFields['wallet_balance'],
     };
   }
 
