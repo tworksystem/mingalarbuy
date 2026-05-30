@@ -23,7 +23,7 @@ class NetworkImageService {
           // headers: const <String, dynamic>{
           //   'User-Agent': 'HomeAid-Flutter-App/1.0',
           // },
-          headers: const <String, dynamic>{
+          headers: <String, dynamic>{
             'User-Agent': AppConfig.defaultUserAgent,
           },
         ),
@@ -48,7 +48,7 @@ class NetworkImageService {
           // headers: const <String, dynamic>{
           //   'User-Agent': 'HomeAid-Flutter-App/1.0',
           // },
-          headers: const <String, dynamic>{
+          headers: <String, dynamic>{
             'User-Agent': AppConfig.defaultUserAgent,
           },
         ),
@@ -89,7 +89,7 @@ class NetworkImageService {
             //   'Accept-Encoding': 'gzip, deflate',
             //   'Connection': 'keep-alive',
             // },
-            headers: const <String, dynamic>{
+            headers: <String, dynamic>{
               'User-Agent': AppConfig.defaultUserAgent,
               'Accept': 'image/*',
               'Accept-Encoding': 'gzip, deflate',

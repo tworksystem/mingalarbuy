@@ -25,7 +25,7 @@ class WebNetworkService {
           //   'Accept': 'application/json',
           //   'User-Agent': 'HomeAid-Flutter-App/1.0',
           // },
-          headers: const <String, dynamic>{
+          headers: <String, dynamic>{
             'Accept': 'application/json',
             'User-Agent': AppConfig.defaultUserAgent,
           },
@@ -64,7 +64,7 @@ class WebNetworkService {
           //   'Accept-Encoding': 'gzip, deflate',
           //   'Connection': 'keep-alive',
           // },
-          headers: const <String, dynamic>{
+          headers: <String, dynamic>{
             'Accept':
                 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'User-Agent': AppConfig.defaultUserAgent,
@@ -107,7 +107,7 @@ class WebNetworkService {
           //   'Connection': 'keep-alive',
           //   'Cache-Control': 'no-cache',
           // },
-          headers: const <String, dynamic>{
+          headers: <String, dynamic>{
             'Accept': 'image/*',
             'User-Agent': AppConfig.defaultUserAgent,
             'Accept-Encoding': 'gzip, deflate',
