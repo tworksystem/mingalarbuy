@@ -21,7 +21,6 @@ class PointHistoryPage extends StatefulWidget {
 /// Backend Transaction Type for filtering
 /// Represents specific transaction types from backend (Lucky Box, Exchange Request, etc.)
 enum BackendTransactionType {
-  luckyBox,
   exchangeRequest,
   quizReward,
   codeRedemption,
@@ -1164,7 +1163,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
     // Sort backend transaction types in a logical order
     final typeOrder = [
-      BackendTransactionType.luckyBox,
       BackendTransactionType.exchangeRequest,
       BackendTransactionType.quizReward,
       BackendTransactionType.codeRedemption,
@@ -1224,9 +1222,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final orderIdStr = transaction.orderId?.toLowerCase() ?? '';
     final descriptionStr = transaction.description?.toLowerCase() ?? '';
 
-    if (orderIdStr.contains('luckybox') || orderIdStr == 'luckybox') {
-      return BackendTransactionType.luckyBox;
-    } else if (orderIdStr.startsWith('exchange:') ||
+    if (orderIdStr.startsWith('exchange:') ||
         descriptionStr.contains('exchange request')) {
       return BackendTransactionType.exchangeRequest;
     } else if (orderIdStr.contains('quiz') ||
@@ -1259,8 +1255,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
   /// Get label for backend transaction type
   String _getBackendTypeLabel(BackendTransactionType type) {
     switch (type) {
-      case BackendTransactionType.luckyBox:
-        return 'Lucky Box';
       case BackendTransactionType.exchangeRequest:
         return 'Exchange Request';
       case BackendTransactionType.quizReward:
@@ -1416,8 +1410,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     final orderIdStr = transaction.orderId?.toLowerCase() ?? '';
     final descriptionStr = transaction.description?.toLowerCase() ?? '';
 
-    final isLuckyBox =
-        orderIdStr.contains('luckybox') || orderIdStr == 'luckybox';
     final isExchangeRequest = orderIdStr.startsWith('exchange:');
     final isQuizReward = orderIdStr.contains('quiz') ||
         descriptionStr.contains('quiz') ||
@@ -1444,7 +1436,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
     // Determine the transaction label
     final transactionLabel = _getTransactionLabel(
       transaction: transaction,
-      isLuckyBox: isLuckyBox,
       isExchangeRequest: isExchangeRequest,
       isQuizReward: isQuizReward,
       isManualPoint: isManualPoint,
@@ -1454,7 +1445,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
     // Determine the transaction label color
     final labelColor = _getTransactionLabelColor(
-      isLuckyBox: isLuckyBox,
       isExchangeRequest: isExchangeRequest,
       isQuizReward: isQuizReward,
       isManualPoint: isManualPoint,
@@ -1464,7 +1454,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
     // Determine the transaction label icon
     final labelIcon = _getTransactionLabelIcon(
-      isLuckyBox: isLuckyBox,
       isExchangeRequest: isExchangeRequest,
       isQuizReward: isQuizReward,
       isManualPoint: isManualPoint,
@@ -1604,8 +1593,7 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
                           style: TextStyle(
                             fontSize: 11,
                             color: labelColor,
-                            fontWeight: (isLuckyBox ||
-                                    isExchangeRequest ||
+                            fontWeight: (isExchangeRequest ||
                                     isQuizReward ||
                                     isManualPoint ||
                                     isManualReward ||
@@ -2690,8 +2678,6 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
   Color _getBackendTypeColor(BackendTransactionType type) {
     switch (type) {
-      case BackendTransactionType.luckyBox:
-        return Colors.purple[400]!;
       case BackendTransactionType.exchangeRequest:
         return Colors.orange[400]!;
       case BackendTransactionType.quizReward:
@@ -2960,16 +2946,13 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
   /// Get transaction label based on orderId and description
   String _getTransactionLabel({
     required PointTransaction transaction,
-    required bool isLuckyBox,
     required bool isExchangeRequest,
     required bool isQuizReward,
     required bool isManualPoint,
     required bool isManualReward,
     required bool isCodeRedemption,
   }) {
-    if (isLuckyBox) {
-      return 'Lucky Box Request';
-    } else if (isExchangeRequest) {
+    if (isExchangeRequest) {
       return 'Exchange Request';
     } else if (isQuizReward) {
       return 'Quiz Reward';
@@ -2988,16 +2971,13 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
   /// Get transaction label color
   Color _getTransactionLabelColor({
-    required bool isLuckyBox,
     required bool isExchangeRequest,
     required bool isQuizReward,
     required bool isManualPoint,
     required bool isManualReward,
     required bool isCodeRedemption,
   }) {
-    if (isLuckyBox) {
-      return Colors.purple[700]!;
-    } else if (isExchangeRequest) {
+    if (isExchangeRequest) {
       return Colors.orange[700]!;
     } else if (isQuizReward) {
       return Colors.green[700]!;
@@ -3013,16 +2993,13 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
 
   /// Get transaction label icon
   IconData? _getTransactionLabelIcon({
-    required bool isLuckyBox,
     required bool isExchangeRequest,
     required bool isQuizReward,
     required bool isManualPoint,
     required bool isManualReward,
     required bool isCodeRedemption,
   }) {
-    if (isLuckyBox) {
-      return Icons.casino_rounded;
-    } else if (isExchangeRequest) {
+    if (isExchangeRequest) {
       return Icons.swap_horiz;
     } else if (isQuizReward) {
       return Icons.quiz;

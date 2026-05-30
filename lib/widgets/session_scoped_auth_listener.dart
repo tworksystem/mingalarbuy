@@ -5,7 +5,6 @@ import '../providers/address_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/cart_provider.dart';
 import '../providers/review_provider.dart';
-import '../providers/spin_wheel_provider.dart';
 import '../providers/wishlist_provider.dart';
 import '../utils/logger.dart';
 
@@ -50,7 +49,6 @@ class _SessionScopedAuthListenerState extends State<SessionScopedAuthListener> {
     final wishlist = Provider.of<WishlistProvider>(context, listen: false);
     final review = Provider.of<ReviewProvider>(context, listen: false);
     final address = Provider.of<AddressProvider>(context, listen: false);
-    final spin = Provider.of<SpinWheelProvider>(context, listen: false);
     final cart = Provider.of<CartProvider>(context, listen: false);
 
     final isAuthenticated = auth.isAuthenticated;
@@ -74,12 +72,6 @@ class _SessionScopedAuthListenerState extends State<SessionScopedAuthListener> {
           .catchError(
             (Object e, StackTrace st) =>
                 _logAuthSyncError('Address handleAuthStateChange', e, st),
-          );
-      spin
-          .handleAuthStateChange(isAuthenticated: false, userId: null)
-          .catchError(
-            (Object e, StackTrace st) =>
-                _logAuthSyncError('SpinWheel handleAuthStateChange', e, st),
           );
       cart
           .handleAuthStateChange(isAuthenticated: false, userId: null)
@@ -107,12 +99,6 @@ class _SessionScopedAuthListenerState extends State<SessionScopedAuthListener> {
         .catchError(
           (Object e, StackTrace st) =>
               _logAuthSyncError('Address handleAuthStateChange', e, st),
-        );
-    spin
-        .handleAuthStateChange(isAuthenticated: true, userId: userId)
-        .catchError(
-          (Object e, StackTrace st) =>
-              _logAuthSyncError('SpinWheel handleAuthStateChange', e, st),
         );
     cart
         .handleAuthStateChange(isAuthenticated: true, userId: userId)

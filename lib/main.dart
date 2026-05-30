@@ -11,7 +11,6 @@ import 'package:ecommerce_int2/providers/review_provider.dart';
 import 'package:ecommerce_int2/providers/wishlist_provider.dart';
 import 'package:ecommerce_int2/providers/product_filter_provider.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
-import 'package:ecommerce_int2/providers/spin_wheel_provider.dart';
 import 'package:ecommerce_int2/providers/wallet_provider.dart';
 import 'package:ecommerce_int2/providers/category_provider.dart';
 import 'package:ecommerce_int2/providers/engagement_provider.dart';
@@ -1075,7 +1074,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ChangeNotifierProvider(create: (_) => WishlistProvider()),
         ChangeNotifierProvider(create: (_) => ProductFilterProvider()),
         ChangeNotifierProvider.value(value: PointProvider.instance),
-        ChangeNotifierProvider(create: (_) => SpinWheelProvider()),
         ChangeNotifierProvider.value(value: WalletProvider.instance),
         ChangeNotifierProvider(create: (_) => CategoryProvider()),
         ChangeNotifierProvider(create: (_) => EngagementProvider()),
