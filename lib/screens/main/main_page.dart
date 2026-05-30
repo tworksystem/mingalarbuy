@@ -277,7 +277,8 @@ class _MainPageState extends State<MainPage>
   void _setupPointBalanceListener() {
     // Use a periodic check to monitor point balance changes
     // This ensures we catch updates even if notifyListeners doesn't fire
-    _pointChangeCheckTimer = Timer.periodic(const Duration(seconds: 2), (
+    // Old Code: const Duration(seconds: 2) — frequent rebuilds during long Home/poll sessions.
+    _pointChangeCheckTimer = Timer.periodic(const Duration(seconds: 12), (
       timer,
     ) {
       if (!mounted || _isDisposed || !context.mounted) {

@@ -11,6 +11,7 @@ import '../services/point_balance_sync_lock.dart';
 import '../services/point_sync_telemetry.dart';
 import '../services/canonical_point_balance_sync.dart';
 import '../services/toast_service.dart';
+import '../utils/app_config.dart';
 import 'auth_provider.dart';
 
 /// Point provider for managing point state
@@ -117,6 +118,9 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   int _balanceIdentityEpoch = 0;
 
   List<PointTransaction> _transactions = [];
+  static const int _maxInMemoryTransactions =
+      AppConfig.maxInMemoryPointTransactions;
+  bool _transactionsTrimmedOnLastUpdate = false;
   bool _isLoading = false;
   bool _isLoadingMore = false;
   String? _errorMessage;
@@ -215,6 +219,17 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   // Getters
   PointBalance? get balance => _balance;
   List<PointTransaction> get transactions => List.unmodifiable(_transactions);
+
+  /// True once after in-memory list was trimmed — consume via [consumeTransactionsTrimmedNotice].
+  bool get transactionsWereTrimmedOnLastUpdate =>
+      _transactionsTrimmedOnLastUpdate;
+
+  /// One-shot flag for UI snackbar after load-more cap.
+  bool consumeTransactionsTrimmedNotice() {
+    if (!_transactionsTrimmedOnLastUpdate) return false;
+    _transactionsTrimmedOnLastUpdate = false;
+    return true;
+  }
   bool get isLoading => _isLoading;
   bool get isLoadingMore => _isLoadingMore;
   String? get errorMessage => _errorMessage;
@@ -2074,7 +2089,7 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
         final sortedFiltered = List<PointTransaction>.from(filteredTransactions)
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-        _transactions = sortedFiltered;
+        _transactions = _trimTransactionsToInMemoryCap(sortedFiltered);
         _currentUserId = userId;
         _notifyListenersDebounced(force: true); // Force immediate update
         Logger.info(
@@ -2470,6 +2485,26 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
   void _clearError() {
     _errorMessage = null;
     // No notification needed for clearing error
+  }
+
+  /// Keeps newest rows only — load-more can fetch older pages from API again.
+  List<PointTransaction> _trimTransactionsToInMemoryCap(
+    List<PointTransaction> list,
+  ) {
+    if (list.length <= _maxInMemoryTransactions) {
+      _transactionsTrimmedOnLastUpdate = false;
+      return list;
+    }
+    final trimmed = List<PointTransaction>.from(list)
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final kept = trimmed.take(_maxInMemoryTransactions).toList();
+    _transactionsTrimmedOnLastUpdate = true;
+    Logger.info(
+      'PointProvider trimmed in-memory transactions '
+      '${list.length} → ${kept.length} (cap=$_maxInMemoryTransactions)',
+      tag: 'PointProvider',
+    );
+    return kept;
   }
 
   @override

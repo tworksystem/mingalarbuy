@@ -8,6 +8,7 @@ import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/services/point_service.dart';
 import 'package:ecommerce_int2/providers/exchange_settings_provider.dart';
 import 'package:ecommerce_int2/widgets/modern_loading_indicator.dart';
+import 'package:ecommerce_int2/utils/app_config.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:intl/intl.dart';
 
@@ -392,6 +393,19 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
       dateFrom: _selectedDateRange?.start,
       dateTo: _selectedDateRange?.end,
     );
+
+    if (!mounted) return;
+    if (pointProvider.consumeTransactionsTrimmedNotice()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'နောက်ဆုံး ${AppConfig.maxInMemoryPointTransactions} ခု ပြသထားသည်။ '
+            'အဟောင်းကြည့်ရန် ရက်စွဲ filter သုံးပါ။',
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   @override
