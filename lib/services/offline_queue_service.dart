@@ -2,11 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../providers/auth_provider.dart';
+import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import 'connectivity_service.dart';
 import '../models/cart_item.dart';
 import '../models/address.dart';
 import '../models/order.dart';
+
+/// Stored in each queue item [OfflineQueueItem.data] for sync ownership checks.
+const String kOfflineQueueOwnerUserIdKey = 'owner_user_id';
 
 /// Offline queue item types
 enum OfflineQueueItemType {
@@ -164,6 +169,60 @@ class OfflineQueueService extends ChangeNotifier {
     }
   }
 
+  void _enforceQueueCap() {
+    final maxItems = AppConfig.maxOfflineQueueItems;
+    if (_queue.length <= maxItems) return;
+    final overflow = _queue.length - maxItems;
+    _queue.removeRange(0, overflow);
+    Logger.warning(
+      'Offline queue capped: dropped $overflow oldest item(s) '
+      '(max=$maxItems)',
+      tag: 'OfflineQueue',
+    );
+  }
+
+  Map<String, dynamic> _dataWithOwnerUserId(Map<String, dynamic> data) {
+    final payload = Map<String, dynamic>.from(data);
+    final existing = _resolveOwnerUserId(payload);
+    if (existing != null && existing.isNotEmpty) {
+      payload[kOfflineQueueOwnerUserIdKey] = existing;
+      return payload;
+    }
+    try {
+      final auth = AuthProvider();
+      if (auth.isAuthenticated && auth.user != null) {
+        payload[kOfflineQueueOwnerUserIdKey] = auth.user!.id.toString();
+      }
+    } catch (_) {
+      // Best-effort — legacy sync path may still apply.
+    }
+    return payload;
+  }
+
+  String? _resolveOwnerUserId(Map<String, dynamic> data) {
+    final owner = data[kOfflineQueueOwnerUserIdKey]?.toString().trim();
+    if (owner != null && owner.isNotEmpty) return owner;
+    final snake = data['user_id']?.toString().trim();
+    if (snake != null && snake.isNotEmpty) return snake;
+    final camel = data['userId']?.toString().trim();
+    if (camel != null && camel.isNotEmpty) return camel;
+    return null;
+  }
+
+  bool _isItemOwnedByCurrentSession(OfflineQueueItem item) {
+    final owner = _resolveOwnerUserId(item.data);
+    final auth = AuthProvider();
+    if (!auth.isAuthenticated || auth.user == null) {
+      return false;
+    }
+    final current = auth.user!.id.toString();
+    if (owner == null || owner.isEmpty) {
+      // Legacy queued items (pre owner_user_id): process only for active session.
+      return true;
+    }
+    return owner == current;
+  }
+
   /// Add item to offline queue
   Future<String> addToQueue(
     OfflineQueueItemType type,
@@ -180,11 +239,12 @@ class OfflineQueueService extends ChangeNotifier {
     final item = OfflineQueueItem(
       id: itemId,
       type: type,
-      data: data,
+      data: _dataWithOwnerUserId(data),
       createdAt: DateTime.now(),
     );
 
     _queue.add(item);
+    _enforceQueueCap();
     await _saveQueueToStorage();
     notifyListeners();
 
@@ -230,8 +290,17 @@ class OfflineQueueService extends ChangeNotifier {
       final itemsToProcess = List<OfflineQueueItem>.from(_queue);
       final List<String> processedIds = [];
       final List<String> failedIds = [];
+      final List<String> staleOwnerIds = [];
 
       for (final item in itemsToProcess) {
+        if (!_isItemOwnedByCurrentSession(item)) {
+          staleOwnerIds.add(item.id);
+          Logger.warning(
+            'Dropping offline queue item (owner mismatch): ${item.id}',
+            tag: 'OfflineQueue',
+          );
+          continue;
+        }
         try {
           final success = await _processQueueItem(item);
           if (success) {
@@ -270,9 +339,12 @@ class OfflineQueueService extends ChangeNotifier {
         }
       }
 
-      // Remove processed and failed items
+      // Remove processed, failed, and stale-owner items
       _queue.removeWhere(
-        (item) => processedIds.contains(item.id) || failedIds.contains(item.id),
+        (item) =>
+            processedIds.contains(item.id) ||
+            failedIds.contains(item.id) ||
+            staleOwnerIds.contains(item.id),
       );
       await _saveQueueToStorage();
       notifyListeners();
