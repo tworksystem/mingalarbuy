@@ -228,11 +228,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     );
 
     try {
-      // Force refresh if user changed, otherwise use normal refresh
+      // Always refresh poll timer/schedule from server (cache keeps vote prefs only).
       await engagementProvider.loadFeed(
         userId: currentUserId,
         token: token,
-        forceRefresh: userChanged, // Force refresh if user changed
+        forceRefresh: true,
       );
 
       // Log the result
@@ -456,8 +456,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
 
         return Consumer<EngagementProvider>(
           builder: (context, engagementProvider, child) {
-            // Show loading state
-            if (engagementProvider.isLoading) {
+            // Stale-while-revalidate: keep poll UI visible while feed refreshes.
+            if (engagementProvider.isLoading && !engagementProvider.hasItems) {
               return _buildLoadingState();
             }
 
@@ -1388,8 +1388,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         isForcedOverlay || (secondsUntilClose >= 1 && secondsUntilClose <= 10);
     final showPermanentTimer = !showOverlay && secondsUntilClose > 10;
 
-    // Timer hit zero before feed flips to showing_result — burst + shell (voters + spectators).
-    if (secondsUntilClose <= 0 && !isResultLikeStatus) {
+    // Timer hit zero before feed flips to showing_result — only when server end time is known.
+    final bool serverEndTimeKnown = serverEndsAtUtc != null;
+    if (secondsUntilClose <= 0 &&
+        !isResultLikeStatus &&
+        serverEndTimeKnown) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _kickPollResultTransitionBurst(item);
       });

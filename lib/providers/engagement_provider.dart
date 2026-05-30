@@ -547,6 +547,22 @@ class EngagementProvider with ChangeNotifier {
     );
   }
 
+  /// Strip server-live poll fields from disk cache (timer + totals must come from network).
+  EngagementItem _withoutCachedPollLiveFields(EngagementItem item) {
+    if (item.type != EngagementType.poll) {
+      return item;
+    }
+    return _withoutCachedPollOptionTotals(item).copyWith(
+      clearPollVotingSchedule: true,
+    );
+  }
+
+  List<EngagementItem> _withoutCachedPollLiveFieldsList(
+    List<EngagementItem> items,
+  ) {
+    return items.map(_withoutCachedPollLiveFields).toList();
+  }
+
   /// Strip [EngagementItem.pollOptionTotals] — never hydrate timer-strip totals from disk cache.
   EngagementItem _withoutCachedPollOptionTotals(EngagementItem item) {
     if (item.type != EngagementType.poll || item.pollOptionTotals == null) {
@@ -1166,9 +1182,11 @@ class EngagementProvider with ChangeNotifier {
       await _loadCachedFeedForUser(userId, notify: true);
     }
 
-    _setLoading(true);
     _error = null;
     final previousItems = List<EngagementItem>.from(_items);
+    if (previousItems.isEmpty) {
+      _setLoading(true);
+    }
 
     try {
       app_logger.Logger.info(
@@ -2254,7 +2272,7 @@ class EngagementProvider with ChangeNotifier {
         }
       }
       if (cachedItems.isEmpty) return;
-      _items = _withoutCachedPollOptionTotalsList(cachedItems);
+      _items = _withoutCachedPollLiveFieldsList(cachedItems);
       _hasLoadedForCurrentUser = true;
       if (notify) {
         notifyListeners();
