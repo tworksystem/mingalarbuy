@@ -4,6 +4,7 @@ import '../models/page_content.dart';
 import '../services/page_content_service.dart';
 import '../app_properties.dart';
 import '../theme/app_theme.dart';
+import '../utils/cms_html_sanitizer.dart';
 import '../utils/logger.dart' as app_logger;
 import 'app_pull_to_refresh.dart';
 import 'package:flutter_html/flutter_html.dart';
@@ -211,8 +212,9 @@ class _DynamicContentPageState extends State<DynamicContentPage> {
       return const SizedBox.shrink();
     }
 
+    final sanitized = CmsHtmlSanitizer.sanitize(html);
     return Html(
-      data: html,
+      data: sanitized,
       style: {
         'body': Style(
           margin: Margins.zero,
