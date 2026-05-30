@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 /// Professional app configuration management
 class AppConfig {
   static const String appName = 'PlanetMM';
-  static const String appVersion = '1.0.0';
-  static const String buildNumber = '1';
+  static const String appVersion = '1.0.1';
+  static const String buildNumber = '2';
 
   /// Honest native client id (do not spoof Chrome — TLS fingerprint mismatch triggers WAF bots).
   static String get defaultUserAgent {
@@ -112,7 +112,15 @@ class AppConfig {
 
   // Image Settings
   static const int maxImageCacheSize = 50;
+  /// ~80MB decoded image RAM budget (Flutter imageCache byte limit).
+  static const int maxImageCacheSizeBytes = 80 * 1024 * 1024;
   static const Duration imageCacheExpiry = Duration(hours: 1);
+
+  // Offline queue (prevents unbounded SharedPreferences growth)
+  static const int maxOfflineQueueItems = 100;
+
+  // Point history kept in RAM during long load-more sessions
+  static const int maxInMemoryPointTransactions = 300;
 
   // Security
   static const bool enableSSL = true;
