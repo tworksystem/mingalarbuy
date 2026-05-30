@@ -38,6 +38,8 @@ import 'package:ecommerce_int2/services/web_point_visibility_stub.dart'
     if (dart.library.html) 'package:ecommerce_int2/services/web_point_visibility_web.dart'
     as web_point_visibility;
 import 'package:ecommerce_int2/utils/logger.dart';
+import 'package:ecommerce_int2/utils/image_cache_config.dart';
+import 'package:ecommerce_int2/services/sync_coordinator.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -52,6 +54,7 @@ void main() async {
   // This ensures ensureInitialized and runApp are in the same zone
   // This prevents "Zone mismatch" errors
   WidgetsFlutterBinding.ensureInitialized();
+  AppImageCacheConfig.apply();
 
   // Initialize error handlers in root zone
   AppLogger.initialize();
@@ -238,6 +241,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   static const Duration _globalResumePointRefreshMinInterval = Duration(
     minutes: 2,
   );
+
+  DateTime? _lastLifecycleResumeHandledAt;
+  static const Duration _lifecycleResumeDebounce = Duration(seconds: 3);
 
   /// [MultiProvider] is returned from [build]; [State.context] on [_MyAppState] is **above**
   /// that subtree, so [Provider.of] must use a descendant context (e.g. navigator overlay).
@@ -693,7 +699,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           tag: 'Main',
         );
 
-        await engagementProvider.loadFeed(userId: userId, forceRefresh: true);
+        final syncKey = SyncCoordinator.engagementFcmKey(userId.toString());
+        await runGuarded(
+          key: syncKey,
+          minInterval: const Duration(seconds: 5),
+          priority: SyncCoordinatorPriority.critical,
+          force: true,
+          action: () => engagementProvider.loadFeed(
+            userId: userId,
+            forceRefresh: true,
+          ),
+        );
       } catch (e, stackTrace) {
         Logger.error(
           'Error in engagement feed refresh callback: $e',
@@ -721,11 +737,33 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   }
 
   @override
+  void didHaveMemoryPressure() {
+    super.didHaveMemoryPressure();
+    AppImageCacheConfig.trimUnderPressure();
+    Logger.info('Image cache trimmed (memory pressure)', tag: 'Main');
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // App came to foreground - start active polling for near-instant notifications
       _startActiveSync();
       _startReleaseFallbackSyncLoop();
+
+      final now = DateTime.now();
+      final lastResume = _lastLifecycleResumeHandledAt;
+      final skipHeavyResumeWork = lastResume != null &&
+          now.difference(lastResume) < _lifecycleResumeDebounce;
+      _lastLifecycleResumeHandledAt = now;
+
+      if (skipHeavyResumeWork) {
+        Logger.info(
+          'App resume heavy work skipped (debounce '
+          '${_lifecycleResumeDebounce.inSeconds}s); polling still active',
+          tag: 'Main',
+        );
+        return;
+      }
 
       // Refresh notification count when app comes to foreground
       try {
@@ -813,18 +851,32 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       _lastGlobalResumePointRefreshAt = now;
 
       final userId = authProvider.user!.id.toString();
+      SyncCoordinator.instance.resetForSessionChange(userId: userId);
 
-      await PointProvider.instance.refreshPointState(
-        userId: userId,
-        forceRefresh: true,
-        refreshBalance: true,
-        refreshTransactions: true,
-        refreshUserCallback: () => authProvider.refreshUser(),
+      final syncKey = SyncCoordinator.pointsResumeKey(userId);
+      final ran = await runGuarded(
+        key: syncKey,
+        minInterval: SyncCoordinator.resumeMinInterval,
+        priority: SyncCoordinatorPriority.high,
+        action: () => PointProvider.instance.refreshPointState(
+          userId: userId,
+          forceRefresh: true,
+          refreshBalance: true,
+          refreshTransactions: true,
+          refreshUserCallback: () => authProvider.refreshUser(),
+        ),
       );
-      Logger.info(
-        'Global resume point reconcile finished (userId=$userId)',
-        tag: 'Main',
-      );
+      if (ran) {
+        Logger.info(
+          'Global resume point reconcile finished (userId=$userId)',
+          tag: 'Main',
+        );
+      } else {
+        Logger.info(
+          'Global resume point reconcile skipped by coordinator (userId=$userId)',
+          tag: 'Main',
+        );
+      }
     } catch (e, stackTrace) {
       Logger.warning(
         'Global resume point reconcile failed: $e',
@@ -1031,26 +1083,34 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
 
       final userIdString = authProvider.user!.id.toString();
-      /*
-      Old Code: periodic history-only sync — balance drifted until manual refresh.
-      await PointProvider.instance.loadTransactions(
-        userIdString,
-        forceRefresh: true,
-      );
-      */
-      await PointProvider.instance.loadBalance(
-        userIdString,
-        forceRefresh: true,
-        notifyLoading: false,
-      );
-      await PointProvider.instance.loadTransactions(
-        userIdString,
-        forceRefresh: true,
-        notifyLoading: false,
-      );
-      Logger.info(
-        'Release fallback sync completed for user=$userIdString',
-        tag: 'Main',
+      final syncKey = SyncCoordinator.pointsFallbackKey(userIdString);
+      await runGuarded(
+        key: syncKey,
+        minInterval: SyncCoordinator.fallbackMinInterval,
+        priority: SyncCoordinatorPriority.normal,
+        action: () async {
+          /*
+          Old Code: periodic history-only sync — balance drifted until manual refresh.
+          await PointProvider.instance.loadTransactions(
+            userIdString,
+            forceRefresh: true,
+          );
+          */
+          await PointProvider.instance.loadBalance(
+            userIdString,
+            forceRefresh: true,
+            notifyLoading: false,
+          );
+          await PointProvider.instance.loadTransactions(
+            userIdString,
+            forceRefresh: true,
+            notifyLoading: false,
+          );
+          Logger.info(
+            'Release fallback sync completed for user=$userIdString',
+            tag: 'Main',
+          );
+        },
       );
     } catch (e, stackTrace) {
       Logger.warning(

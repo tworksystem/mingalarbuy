@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/engagement_service.dart';
 import '../services/poll_winner_popup_service.dart';
+import '../services/sync_coordinator.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/poll_display_helpers.dart';
 import '../utils/poll_option_totals_debug.dart';
@@ -2482,6 +2483,14 @@ class EngagementProvider with ChangeNotifier {
       }
       _lastEngagementFullFeedPollAt = now;
 
+      final pollKey = SyncCoordinator.engagementPollKey(userId.toString());
+      if (!SyncCoordinator.instance.tryBegin(
+        key: pollKey,
+        minInterval: computedInterval,
+      )) {
+        return;
+      }
+
       try {
         final items = await EngagementService.getFeed(
           userId: userId,
@@ -2577,6 +2586,8 @@ class EngagementProvider with ChangeNotifier {
           tag: 'EngagementProvider',
           error: e,
         );
+      } finally {
+        SyncCoordinator.instance.complete(pollKey);
       }
     });
   }

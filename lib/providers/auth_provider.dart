@@ -8,6 +8,8 @@ import '../models/register_request.dart';
 import '../services/auth_service.dart';
 import '../services/connectivity_service.dart';
 import '../services/missed_notification_recovery_service.dart';
+import '../services/sync_coordinator.dart';
+import '../services/offline_queue_service.dart';
 import '../services/push_notification_service.dart';
 import '../services/auth_session_cache_service.dart';
 import '../services/canonical_point_balance_sync.dart';
@@ -288,6 +290,9 @@ class AuthProvider with ChangeNotifier {
           await AuthSessionCacheService.clearAllSessionCaches();
         }
         _user = newUser;
+        SyncCoordinator.instance.resetForSessionChange(
+          userId: newUser.id.toString(),
+        );
         _status = AuthStatus.authenticated;
         // PROFESSIONAL FIX: Update cached token immediately after login
         // This ensures token is available synchronously for subsequent API calls
@@ -505,6 +510,7 @@ class AuthProvider with ChangeNotifier {
       // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — logout did not clear cart / product cache.
       await AuthSessionCacheService.clearAllSessionCaches();
       _user = null;
+      SyncCoordinator.instance.resetForSessionChange(userId: null);
       _cachedToken = null; // Clear cached token
       // Old Code: 35s non-downgrade guard reset (guard disabled).
       // _pointsBalanceNonDowngradeUntil = null;
@@ -527,6 +533,14 @@ class AuthProvider with ChangeNotifier {
               error: e,
             );
           });
+
+      await OfflineQueueService().clearQueue().catchError((Object e) {
+        Logger.warning(
+          'Logout: offline queue clear failed: $e',
+          tag: 'AuthProvider',
+          error: e,
+        );
+      });
 
       notifyListeners();
     } catch (e) {
