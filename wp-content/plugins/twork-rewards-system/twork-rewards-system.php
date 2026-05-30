@@ -271,11 +271,17 @@ class TWork_Rewards_System
         add_action('admin_post_twork_rewards_test_notification', array($this, 'handle_test_notification'));
 
 
-        // Transaction delete handlers
+        // Transaction delete handlers (legacy reward_transactions table)
         add_action('admin_post_twork_rewards_delete_transaction', array($this, 'handle_transaction_delete'));
         add_action('admin_post_twork_rewards_restore_transaction', array($this, 'handle_transaction_restore'));
         add_action('admin_post_twork_rewards_permanent_delete_transaction', array($this, 'handle_transaction_permanent_delete'));
         add_action('admin_post_twork_rewards_bulk_transaction_action', array($this, 'handle_bulk_transaction_action'));
+
+        // Point ledger trash workflow: trash -> archive on permanent delete; balance SUM unchanged.
+        add_action('admin_post_twork_rewards_delete_point_transaction', array($this, 'handle_point_transaction_delete'));
+        add_action('admin_post_twork_rewards_restore_point_transaction', array($this, 'handle_point_transaction_restore'));
+        add_action('admin_post_twork_rewards_permanent_delete_point_transaction', array($this, 'handle_point_transaction_permanent_delete'));
+        add_action('admin_post_twork_rewards_bulk_point_transaction_action', array($this, 'handle_bulk_point_transaction_action'));
 
         // Engagement Hub handlers
         add_action('admin_post_twork_rewards_save_engagement_item', array($this, 'handle_engagement_item_save'));
@@ -980,6 +986,217 @@ class TWork_Rewards_System
         return $wpdb->prefix . 'twork_reward_transactions';
     }
 
+    /**
+     * Points ledger table (single source of truth for app balance).
+     */
+    private function point_transactions_table_name()
+    {
+        global $wpdb;
+        return $wpdb->prefix . 'twork_point_transactions';
+    }
+
+    /**
+     * Archived point ledger rows (removed from admin/trash UI; still counted in balance SUM).
+     */
+    private function point_transactions_archive_table_name()
+    {
+        global $wpdb;
+        return $wpdb->prefix . 'twork_point_transactions_archive';
+    }
+
+    /**
+     * Whether the points ledger supports trash via deleted_at.
+     */
+    private function point_transactions_supports_soft_hide()
+    {
+        static $supports = null;
+        if ($supports !== null) {
+            return $supports;
+        }
+
+        global $wpdb;
+        $table = $this->point_transactions_table_name();
+        $columns = $wpdb->get_col("DESCRIBE $table");
+        if (empty($columns)) {
+            $supports = false;
+            return false;
+        }
+
+        $supports = in_array('deleted_at', array_map('strtolower', $columns), true);
+        return $supports;
+    }
+
+    /**
+     * SQL fragment: active (non-trashed) point ledger rows for history/admin lists only.
+     * Trashed + archived rows remain in balance SUM via main/archive tables.
+     */
+    private function point_transactions_visible_sql($alias = '')
+    {
+        if (!$this->point_transactions_supports_soft_hide()) {
+            return '';
+        }
+
+        $prefix = $alias !== '' ? $alias . '.' : '';
+        return ' AND ' . $prefix . 'deleted_at IS NULL';
+    }
+
+    /**
+     * Balance effect CASE expression for point ledger rows.
+     */
+    private function point_transaction_balance_effect_case_sql($column_prefix = '')
+    {
+        $prefix = $column_prefix !== '' ? $column_prefix . '.' : '';
+        return "CASE
+            WHEN {$prefix}type = 'earn' AND {$prefix}status = 'approved' THEN {$prefix}points
+            WHEN {$prefix}type = 'refund' AND {$prefix}status = 'approved' THEN {$prefix}points
+            WHEN {$prefix}type = 'redeem' AND {$prefix}status = 'approved' THEN -{$prefix}points
+            WHEN {$prefix}type = 'redeem' AND {$prefix}status = 'pending' THEN -{$prefix}points
+            ELSE 0
+        END";
+    }
+
+    /**
+     * Sum balance effects from one point ledger table for a user.
+     */
+    private function sum_point_ledger_balance_from_table($table_name, $user_id)
+    {
+        global $wpdb;
+
+        $user_id = absint($user_id);
+        if ($user_id <= 0) {
+            return 0;
+        }
+
+        $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
+        if ($table_exists !== $table_name) {
+            return 0;
+        }
+
+        $case_sql = $this->point_transaction_balance_effect_case_sql();
+        $sum = $wpdb->get_var($wpdb->prepare(
+            "SELECT COALESCE(SUM($case_sql), 0)
+             FROM $table_name
+             WHERE user_id = %d
+             AND (expires_at IS NULL OR expires_at > NOW())",
+            $user_id
+        ));
+
+        return $wpdb->last_error ? 0 : (int) $sum;
+    }
+
+    /**
+     * Ensure archive table exists (clone of live ledger + purge metadata).
+     */
+    private function ensure_point_transactions_archive_table()
+    {
+        global $wpdb;
+
+        $main_table = $this->point_transactions_table_name();
+        $archive_table = $this->point_transactions_archive_table_name();
+
+        $main_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $main_table));
+        if ($main_exists !== $main_table) {
+            return false;
+        }
+
+        $archive_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $archive_table));
+        if ($archive_exists !== $archive_table) {
+            $created = $wpdb->query("CREATE TABLE $archive_table LIKE $main_table");
+            if ($created === false) {
+                error_log('T-Work Rewards: Failed to create point transactions archive table. Error: ' . $wpdb->last_error);
+                return false;
+            }
+        }
+
+        $columns = $wpdb->get_col("DESCRIBE $archive_table");
+        $columns_lower = array_map('strtolower', $columns ?: array());
+
+        if (!in_array('source_transaction_id', $columns_lower, true)) {
+            $wpdb->query("ALTER TABLE $archive_table ADD COLUMN source_transaction_id bigint(20) UNSIGNED NULL DEFAULT NULL AFTER id");
+            $wpdb->query("ALTER TABLE $archive_table ADD INDEX idx_source_transaction_id (source_transaction_id)");
+        }
+
+        if (!in_array('purged_at', $columns_lower, true)) {
+            $wpdb->query("ALTER TABLE $archive_table ADD COLUMN purged_at datetime NULL DEFAULT NULL");
+            $wpdb->query("ALTER TABLE $archive_table ADD INDEX idx_purged_at (purged_at)");
+        }
+
+        return true;
+    }
+
+    /**
+     * Permanently delete a trashed point ledger row by archiving it first (balance unchanged).
+     *
+     * @param int $transaction_id
+     * @return true|WP_Error
+     */
+    private function permanently_purge_point_transaction($transaction_id)
+    {
+        global $wpdb;
+
+        $transaction_id = absint($transaction_id);
+        if ($transaction_id <= 0) {
+            return new WP_Error('invalid_transaction', __('Invalid transaction ID.', 'twork-rewards'));
+        }
+
+        if (!$this->ensure_point_transactions_archive_table()) {
+            return new WP_Error('archive_unavailable', __('Archive table is not available.', 'twork-rewards'));
+        }
+
+        $table = $this->point_transactions_table_name();
+        $archive_table = $this->point_transactions_archive_table_name();
+
+        $txn = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT * FROM $table WHERE id = %d AND deleted_at IS NOT NULL",
+                $transaction_id
+            ),
+            ARRAY_A
+        );
+
+        if (empty($txn) || !is_array($txn)) {
+            return new WP_Error('not_in_trash', __('Transaction not found or not in trash.', 'twork-rewards'));
+        }
+
+        $source_id = (int) $txn['id'];
+        unset($txn['id']);
+
+        $archive_columns = $wpdb->get_col("DESCRIBE $archive_table");
+        if (empty($archive_columns)) {
+            return new WP_Error('archive_schema', __('Archive table schema is unavailable.', 'twork-rewards'));
+        }
+
+        $insert_data = array(
+            'source_transaction_id' => $source_id,
+            'purged_at' => current_time('mysql'),
+        );
+
+        foreach ($archive_columns as $column_name) {
+            if ($column_name === 'id') {
+                continue;
+            }
+            if (array_key_exists($column_name, $insert_data)) {
+                continue;
+            }
+            if (array_key_exists($column_name, $txn)) {
+                $insert_data[$column_name] = $txn[$column_name];
+            }
+        }
+
+        $inserted = $wpdb->insert($archive_table, $insert_data);
+        if ($inserted === false || (int) $wpdb->insert_id <= 0) {
+            return new WP_Error('archive_failed', __('Failed to archive transaction before permanent delete.', 'twork-rewards'));
+        }
+
+        $deleted = $wpdb->delete($table, array('id' => $source_id), array('%d'));
+        if ($deleted === false) {
+            $wpdb->delete($archive_table, array('id' => (int) $wpdb->insert_id), array('%d'));
+            return new WP_Error('delete_failed', __('Failed to permanently delete transaction.', 'twork-rewards'));
+        }
+
+        return true;
+    }
+
     private function exchange_requests_table_name()
     {
         global $wpdb;
@@ -1068,6 +1285,7 @@ class TWork_Rewards_System
         // Required for poll winner awards, engagement points, exchanges. Without this,
         // sync_user_points falls back to meta-only and balance can be inconsistent.
         $this->create_point_transactions_table();
+        $this->ensure_point_transactions_archive_table();
 
         // PROFESSIONAL FIX: Run exchange table migrations for admin action tracking
         $this->run_exchange_migrations();
@@ -1666,6 +1884,7 @@ class TWork_Rewards_System
             selected_option text DEFAULT NULL,
             bet_amount decimal(10,2) DEFAULT NULL,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            deleted_at datetime NULL DEFAULT NULL,
             PRIMARY KEY (id),
             KEY idx_user_id (user_id),
             KEY idx_type (type),
@@ -1673,7 +1892,8 @@ class TWork_Rewards_System
             KEY idx_status (status),
             KEY idx_user_status (user_id, status),
             KEY idx_created_at (created_at),
-            KEY idx_expires_at (expires_at)
+            KEY idx_expires_at (expires_at),
+            KEY idx_deleted_at (deleted_at)
         ) $charset_collate;";
 
         require_once (ABSPATH . 'wp-admin/includes/upgrade.php');
@@ -1907,6 +2127,19 @@ class TWork_Rewards_System
                     error_log('T-Work Rewards: Failed to add meta_json column. Error: ' . $wpdb->last_error);
                 }
             }
+
+            // Trash support on points ledger (deleted_at). Permanent delete moves rows to archive table.
+            if (!in_array('deleted_at', $points_columns_lower)) {
+                $result = $wpdb->query("ALTER TABLE $points_table ADD COLUMN deleted_at datetime NULL DEFAULT NULL AFTER created_at");
+                if ($result !== false) {
+                    error_log('T-Work Rewards: Added deleted_at column to ' . $points_table);
+                    $wpdb->query("ALTER TABLE $points_table ADD INDEX idx_deleted_at (deleted_at)");
+                } else {
+                    error_log('T-Work Rewards: Failed to add deleted_at column to points table. Error: ' . $wpdb->last_error);
+                }
+            }
+
+            $this->ensure_point_transactions_archive_table();
         }
 
         // OLD CODE: No explicit V2 migration for selected_option / bet_amount on points ledger.
@@ -11407,10 +11640,12 @@ class TWork_Rewards_System
 
         $range_where_sql = " AND created_at >= %s AND created_at <= %s";
         $range_where_args = array($start_datetime, $end_datetime);
+        $points_visible_sql = $this->point_transactions_visible_sql();
 
         $transactions = $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM $points_table
             WHERE user_id = %d
+            $points_visible_sql
             $range_where_sql
             ORDER BY created_at ASC, id ASC",
             array_merge(array($user_id), $range_where_args)
@@ -11419,7 +11654,7 @@ class TWork_Rewards_System
         $points_table_ok = !$wpdb->last_error;
         if ($points_table_ok) {
             $total = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM $points_table WHERE user_id = %d $range_where_sql",
+                "SELECT COUNT(*) FROM $points_table WHERE user_id = %d $points_visible_sql $range_where_sql",
                 array_merge(array($user_id), $range_where_args)
             ));
             $summary['opening_balance'] = $this->calculate_points_opening_balance(
@@ -11588,6 +11823,9 @@ class TWork_Rewards_System
     private function calculate_points_opening_balance($table_name, $user_id, $start_datetime)
     {
         global $wpdb;
+        $visible_sql = ($table_name === $this->point_transactions_table_name())
+            ? $this->point_transactions_visible_sql()
+            : ' AND deleted_at IS NULL';
         $balance = $wpdb->get_var($wpdb->prepare(
             "SELECT
                 COALESCE(SUM(
@@ -11600,7 +11838,7 @@ class TWork_Rewards_System
                 ), 0)
             FROM $table_name
             WHERE user_id = %d
-            AND created_at < %s",
+            AND created_at < %s" . $visible_sql,
             $user_id,
             $start_datetime
         ));
@@ -13236,6 +13474,8 @@ class TWork_Rewards_System
         $date_to = isset($_GET['date_to']) ? sanitize_text_field(wp_unslash($_GET['date_to'])) : '';
         $type = isset($_GET['type']) ? sanitize_text_field(wp_unslash($_GET['type'])) : '';
         $status = isset($_GET['status']) ? sanitize_text_field(wp_unslash($_GET['status'])) : '';
+        $view = isset($_GET['view']) ? sanitize_text_field(wp_unslash($_GET['view'])) : '';
+        $show_trash = ($view === 'trash');
 
         $paged = isset($_GET['paged']) ? max(1, absint($_GET['paged'])) : 1;
         $per_page = isset($_GET['per_page']) ? absint($_GET['per_page']) : 50;
@@ -13278,6 +13518,14 @@ class TWork_Rewards_System
             $params[] = $status;
         }
 
+        if ($this->point_transactions_supports_soft_hide()) {
+            if ($show_trash) {
+                $where[] = 'deleted_at IS NOT NULL';
+            } else {
+                $where[] = 'deleted_at IS NULL';
+            }
+        }
+
         $where_sql = implode(' AND ', $where);
 
         $count_sql = "SELECT COUNT(*) FROM $table_name WHERE $where_sql";
@@ -13316,6 +13564,13 @@ class TWork_Rewards_System
         if (in_array($status, array('approved', 'pending', 'rejected'), true)) {
             $summary_where[] = 'status = %s';
             $summary_params[] = $status;
+        }
+        if ($this->point_transactions_supports_soft_hide()) {
+            if ($show_trash) {
+                $summary_where[] = 'deleted_at IS NOT NULL';
+            } else {
+                $summary_where[] = 'deleted_at IS NULL';
+            }
         }
         if (!empty($date_to) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
             $summary_where[] = 'created_at <= %s';
@@ -13392,10 +13647,57 @@ class TWork_Rewards_System
         ?>
         <div class="wrap">
             <h1 class="wp-heading-inline"><?php esc_html_e('Point Transactions', 'twork-rewards'); ?></h1>
+            <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                <?php if ($show_trash): ?>
+                    <a href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-point-transactions')); ?>" class="page-title-action"><?php esc_html_e('View Active', 'twork-rewards'); ?></a>
+                <?php else: ?>
+                    <a href="<?php echo esc_url(add_query_arg('view', 'trash', admin_url('admin.php?page=twork-rewards-point-transactions'))); ?>" class="page-title-action"><?php esc_html_e('View Trash', 'twork-rewards'); ?></a>
+                <?php endif; ?>
+            <?php endif; ?>
             <hr class="wp-header-end" />
+
+            <?php if (isset($_GET['deleted']) && intval($_GET['deleted']) > 0): ?>
+                <div class="notice notice-success is-dismissible"><p>
+                    <?php
+                    echo esc_html(
+                        sprintf(
+                            _n('%d transaction moved to trash (balance unchanged).', '%d transactions moved to trash (balance unchanged).', intval($_GET['deleted']), 'twork-rewards'),
+                            intval($_GET['deleted'])
+                        )
+                    );
+                    ?>
+                </p></div>
+            <?php endif; ?>
+            <?php if (isset($_GET['restored']) && intval($_GET['restored']) > 0): ?>
+                <div class="notice notice-success is-dismissible"><p>
+                    <?php
+                    echo esc_html(
+                        sprintf(
+                            _n('%d transaction restored from trash.', '%d transactions restored from trash.', intval($_GET['restored']), 'twork-rewards'),
+                            intval($_GET['restored'])
+                        )
+                    );
+                    ?>
+                </p></div>
+            <?php endif; ?>
+            <?php if (isset($_GET['permanent_deleted']) && intval($_GET['permanent_deleted']) > 0): ?>
+                <div class="notice notice-success is-dismissible"><p>
+                    <?php
+                    echo esc_html(
+                        sprintf(
+                            _n('%d transaction permanently deleted (balance unchanged).', '%d transactions permanently deleted (balance unchanged).', intval($_GET['permanent_deleted']), 'twork-rewards'),
+                            intval($_GET['permanent_deleted'])
+                        )
+                    );
+                    ?>
+                </p></div>
+            <?php endif; ?>
 
             <form method="get" class="twork-point-transactions-filters">
                 <input type="hidden" name="page" value="twork-rewards-point-transactions" />
+                <?php if ($show_trash): ?>
+                    <input type="hidden" name="view" value="trash" />
+                <?php endif; ?>
                 <?php
                 /*
                  * OLD CODE (kept for rollback safety):
@@ -13453,6 +13755,34 @@ class TWork_Rewards_System
                     <div style="font-size: 22px; margin-top: 6px;"><?php echo esc_html(number_format_i18n($current_balance)); ?></div>
                 </div>
             </div>
+
+            <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" id="twork-point-transactions-bulk-form" style="margin-bottom: 12px;">
+                    <?php wp_nonce_field('twork_rewards_bulk_point_transaction_action', 'twork_rewards_bulk_point_nonce'); ?>
+                    <input type="hidden" name="action" value="twork_rewards_bulk_point_transaction_action" />
+                    <input type="hidden" name="redirect_view" value="<?php echo esc_attr($show_trash ? 'trash' : 'active'); ?>" />
+                    <input type="hidden" name="redirect_user_id" value="<?php echo esc_attr($user_id); ?>" />
+                    <input type="hidden" name="redirect_date_from" value="<?php echo esc_attr($date_from); ?>" />
+                    <input type="hidden" name="redirect_date_to" value="<?php echo esc_attr($date_to); ?>" />
+                    <input type="hidden" name="redirect_type" value="<?php echo esc_attr($type); ?>" />
+                    <input type="hidden" name="redirect_status" value="<?php echo esc_attr($status); ?>" />
+                    <div class="tablenav top">
+                        <div class="alignleft actions bulkactions">
+                            <label for="bulk-action-selector-top" class="screen-reader-text"><?php esc_html_e('Select bulk action', 'twork-rewards'); ?></label>
+                            <select name="bulk_action" id="bulk-action-selector-top">
+                                <option value=""><?php esc_html_e('Bulk actions', 'twork-rewards'); ?></option>
+                                <?php if ($show_trash): ?>
+                                    <option value="restore"><?php esc_html_e('Restore', 'twork-rewards'); ?></option>
+                                    <option value="permanent_delete"><?php esc_html_e('Delete Permanently', 'twork-rewards'); ?></option>
+                                <?php else: ?>
+                                    <option value="delete"><?php esc_html_e('Move to Trash', 'twork-rewards'); ?></option>
+                                <?php endif; ?>
+                            </select>
+                            <?php submit_button(__('Apply', 'twork-rewards'), 'action', '', false); ?>
+                        </div>
+                    </div>
+                </form>
+            <?php endif; ?>
 
             <style>
                 /* OLD CODE (kept for rollback safety):
@@ -13547,6 +13877,9 @@ class TWork_Rewards_System
                          */
                         ?>
                         <th style="width:10%;"><?php esc_html_e('Date', 'twork-rewards'); ?></th>
+                        <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                            <th style="width:3%;" class="check-column"><input type="checkbox" id="twork-point-select-all" /></th>
+                        <?php endif; ?>
                         <th class="twork-col-user" style="width:12%;"><?php esc_html_e('User', 'twork-rewards'); ?></th>
                         <th style="width:8%;"><?php esc_html_e('Original Balance', 'twork-rewards'); ?></th>
                         <th style="width:7%;"><?php esc_html_e('Amount Added (+)', 'twork-rewards'); ?></th>
@@ -13585,6 +13918,9 @@ class TWork_Rewards_System
                         ?>
                         <th class="twork-col-win-details" style="width:15%;"><?php esc_html_e('Win Details', 'twork-rewards'); ?></th>
                         <th class="twork-col-description" style="width:17%;"><?php esc_html_e('Note / Description', 'twork-rewards'); ?></th>
+                        <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                            <th style="width:8%;"><?php esc_html_e('Actions', 'twork-rewards'); ?></th>
+                        <?php endif; ?>
                     </tr>
                 </thead>
                 <tbody>
@@ -13886,7 +14222,7 @@ class TWork_Rewards_System
                             $display_win_details_html = '-';
                         }
                         ?>
-                        <tr>
+                        <tr<?php echo ($show_trash ? ' style="opacity:0.75;"' : ''); ?>>
                             <?php
                             /*
                              * OLD CELLS (kept for rollback safety):
@@ -13902,6 +14238,11 @@ class TWork_Rewards_System
                             ?>
 
                             <td><?php echo esc_html($formatted_date ?: $txn->created_at); ?></td>
+                            <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                                <td class="check-column">
+                                    <input type="checkbox" name="transaction_ids[]" value="<?php echo esc_attr((int) $txn->id); ?>" form="twork-point-transactions-bulk-form" />
+                                </td>
+                            <?php endif; ?>
                             <?php
                             /*
                              * OLD CODE (kept for rollback safety):
@@ -13938,15 +14279,78 @@ class TWork_Rewards_System
                             ?>
                             <td class="twork-col-win-details" style="white-space:normal; word-wrap:break-word;"><?php echo $display_win_details_html === '-' ? '-' : wp_kses_post($display_win_details_html); ?></td>
                             <td class="twork-col-description" style="white-space:normal; word-wrap:break-word;"><?php echo esc_html(!empty($txn->description) ? $txn->description : '—'); ?></td>
+                            <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                                <td>
+                                    <?php if ($show_trash): ?>
+                                        <a href="<?php echo esc_url(wp_nonce_url(add_query_arg(array(
+                                            'action' => 'twork_rewards_restore_point_transaction',
+                                            'transaction_id' => (int) $txn->id,
+                                            'redirect_view' => 'trash',
+                                            'redirect_user_id' => $user_id,
+                                            'redirect_date_from' => $date_from,
+                                            'redirect_date_to' => $date_to,
+                                            'redirect_type' => $type,
+                                            'redirect_status' => $status,
+                                        ), admin_url('admin-post.php')), 'twork_rewards_restore_point_transaction', 'twork_rewards_restore_point_nonce')); ?>">
+                                            <?php esc_html_e('Restore', 'twork-rewards'); ?>
+                                        </a>
+                                        |
+                                        <a href="<?php echo esc_url(wp_nonce_url(add_query_arg(array(
+                                            'action' => 'twork_rewards_permanent_delete_point_transaction',
+                                            'transaction_id' => (int) $txn->id,
+                                            'redirect_view' => 'trash',
+                                            'redirect_user_id' => $user_id,
+                                            'redirect_date_from' => $date_from,
+                                            'redirect_date_to' => $date_to,
+                                            'redirect_type' => $type,
+                                            'redirect_status' => $status,
+                                        ), admin_url('admin-post.php')), 'twork_rewards_permanent_delete_point_transaction', 'twork_rewards_permanent_delete_point_nonce')); ?>"
+                                           style="color:#b91c1c;"
+                                           onclick="return confirm('<?php echo esc_js(__('Permanently delete this transaction? It will be removed from trash but user balance will not change.', 'twork-rewards')); ?>');">
+                                            <?php esc_html_e('Delete Permanently', 'twork-rewards'); ?>
+                                        </a>
+                                    <?php else: ?>
+                                        <a href="<?php echo esc_url(wp_nonce_url(add_query_arg(array(
+                                            'action' => 'twork_rewards_delete_point_transaction',
+                                            'transaction_id' => (int) $txn->id,
+                                            'redirect_user_id' => $user_id,
+                                            'redirect_date_from' => $date_from,
+                                            'redirect_date_to' => $date_to,
+                                            'redirect_type' => $type,
+                                            'redirect_status' => $status,
+                                        ), admin_url('admin-post.php')), 'twork_rewards_delete_point_transaction', 'twork_rewards_delete_point_nonce')); ?>"
+                                           onclick="return confirm('<?php echo esc_js(__('Move this transaction to trash? User balance will not change.', 'twork-rewards')); ?>');">
+                                            <?php esc_html_e('Trash', 'twork-rewards'); ?>
+                                        </a>
+                                    <?php endif; ?>
+                                </td>
+                            <?php endif; ?>
                         </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
                     <tr>
-                        <td colspan="9"><?php esc_html_e('No point transactions found for selected filters.', 'twork-rewards'); ?></td>
+                        <td colspan="<?php echo esc_attr($this->point_transactions_supports_soft_hide() ? '11' : '9'); ?>"><?php esc_html_e('No point transactions found for selected filters.', 'twork-rewards'); ?></td>
                     </tr>
                 <?php endif; ?>
                 </tbody>
             </table>
+
+            <?php if ($this->point_transactions_supports_soft_hide()): ?>
+                <script>
+                (function () {
+                    var selectAll = document.getElementById('twork-point-select-all');
+                    if (!selectAll) {
+                        return;
+                    }
+                    selectAll.addEventListener('change', function () {
+                        var boxes = document.querySelectorAll('input[name="transaction_ids[]"]');
+                        for (var i = 0; i < boxes.length; i++) {
+                            boxes[i].checked = selectAll.checked;
+                        }
+                    });
+                })();
+                </script>
+            <?php endif; ?>
 
             <?php if ($total_pages > 1): ?>
                 <div class="tablenav" style="margin-top: 12px;">
@@ -15418,6 +15822,228 @@ class TWork_Rewards_System
         }
 
         wp_safe_redirect(add_query_arg($redirect_args, admin_url('admin.php')));
+        exit;
+    }
+
+    /**
+     * Build redirect URL back to Point Transactions admin after trash actions.
+     */
+    private function point_transactions_admin_redirect_url($args = array())
+    {
+        $redirect = array(
+            'page' => 'twork-rewards-point-transactions',
+        );
+
+        $view = isset($args['redirect_view']) ? sanitize_text_field((string) $args['redirect_view']) : '';
+        if ($view === 'trash') {
+            $redirect['view'] = 'trash';
+        }
+
+        $user_id = isset($args['redirect_user_id']) ? absint($args['redirect_user_id']) : 0;
+        if ($user_id > 0) {
+            $redirect['user_id'] = $user_id;
+        }
+
+        foreach (array('redirect_date_from' => 'date_from', 'redirect_date_to' => 'date_to', 'redirect_type' => 'type', 'redirect_status' => 'status') as $source => $target) {
+            if (!empty($args[$source])) {
+                $redirect[$target] = sanitize_text_field((string) $args[$source]);
+            }
+        }
+
+        if (isset($args['deleted']) && (int) $args['deleted'] > 0) {
+            $redirect['deleted'] = (int) $args['deleted'];
+        }
+        if (isset($args['restored']) && (int) $args['restored'] > 0) {
+            $redirect['restored'] = (int) $args['restored'];
+        }
+        if (isset($args['permanent_deleted']) && (int) $args['permanent_deleted'] > 0) {
+            $redirect['permanent_deleted'] = (int) $args['permanent_deleted'];
+        }
+
+        return add_query_arg($redirect, admin_url('admin.php'));
+    }
+
+    /**
+     * Move one point ledger row to trash (balance SUM unchanged).
+     */
+    public function handle_point_transaction_delete()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_die(__('Insufficient permissions.', 'twork-rewards'));
+        }
+
+        check_admin_referer('twork_rewards_delete_point_transaction', 'twork_rewards_delete_point_nonce');
+
+        if (!$this->point_transactions_supports_soft_hide()) {
+            wp_die(__('Trash is not available until database migration completes.', 'twork-rewards'));
+        }
+
+        $transaction_id = isset($_GET['transaction_id']) ? absint($_GET['transaction_id']) : 0;
+        if ($transaction_id <= 0) {
+            wp_die(__('Missing transaction_id.', 'twork-rewards'));
+        }
+
+        global $wpdb;
+        $table = $this->point_transactions_table_name();
+        $result = $wpdb->query(
+            $wpdb->prepare(
+                "UPDATE $table SET deleted_at = %s WHERE id = %d AND deleted_at IS NULL",
+                current_time('mysql'),
+                $transaction_id
+            )
+        );
+
+        if ($result === false || (int) $result <= 0) {
+            wp_die(__('Failed to move transaction to trash.', 'twork-rewards'));
+        }
+
+        wp_safe_redirect($this->point_transactions_admin_redirect_url(array_merge($_GET, array('deleted' => 1))));
+        exit;
+    }
+
+    /**
+     * Restore a trashed point ledger row.
+     */
+    public function handle_point_transaction_restore()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_die(__('Insufficient permissions.', 'twork-rewards'));
+        }
+
+        check_admin_referer('twork_rewards_restore_point_transaction', 'twork_rewards_restore_point_nonce');
+
+        if (!$this->point_transactions_supports_soft_hide()) {
+            wp_die(__('Trash is not available until database migration completes.', 'twork-rewards'));
+        }
+
+        $transaction_id = isset($_GET['transaction_id']) ? absint($_GET['transaction_id']) : 0;
+        if ($transaction_id <= 0) {
+            wp_die(__('Missing transaction_id.', 'twork-rewards'));
+        }
+
+        global $wpdb;
+        $table = $this->point_transactions_table_name();
+        $result = $wpdb->query(
+            $wpdb->prepare(
+                "UPDATE $table SET deleted_at = NULL WHERE id = %d AND deleted_at IS NOT NULL",
+                $transaction_id
+            )
+        );
+
+        if ($result === false || (int) $result <= 0) {
+            wp_die(__('Failed to restore transaction.', 'twork-rewards'));
+        }
+
+        wp_safe_redirect($this->point_transactions_admin_redirect_url(array_merge($_GET, array('restored' => 1))));
+        exit;
+    }
+
+    /**
+     * Permanently delete a trashed point ledger row (archive first; balance unchanged).
+     */
+    public function handle_point_transaction_permanent_delete()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_die(__('Insufficient permissions.', 'twork-rewards'));
+        }
+
+        check_admin_referer('twork_rewards_permanent_delete_point_transaction', 'twork_rewards_permanent_delete_point_nonce');
+
+        $transaction_id = isset($_GET['transaction_id']) ? absint($_GET['transaction_id']) : 0;
+        if ($transaction_id <= 0) {
+            wp_die(__('Missing transaction_id.', 'twork-rewards'));
+        }
+
+        $result = $this->permanently_purge_point_transaction($transaction_id);
+        if (is_wp_error($result)) {
+            wp_die(esc_html($result->get_error_message()));
+        }
+
+        wp_safe_redirect($this->point_transactions_admin_redirect_url(array_merge($_GET, array('permanent_deleted' => 1))));
+        exit;
+    }
+
+    /**
+     * Bulk trash / restore / permanent delete for point ledger rows.
+     */
+    public function handle_bulk_point_transaction_action()
+    {
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_die(__('Insufficient permissions.', 'twork-rewards'));
+        }
+
+        check_admin_referer('twork_rewards_bulk_point_transaction_action', 'twork_rewards_bulk_point_nonce');
+
+        if (!$this->point_transactions_supports_soft_hide()) {
+            wp_die(__('Trash is not available until database migration completes.', 'twork-rewards'));
+        }
+
+        $action = isset($_POST['bulk_action']) ? sanitize_text_field(wp_unslash($_POST['bulk_action'])) : '';
+        $transaction_ids = isset($_POST['transaction_ids']) ? array_map('absint', (array) $_POST['transaction_ids']) : array();
+
+        if (empty($action) || empty($transaction_ids)) {
+            wp_safe_redirect($this->point_transactions_admin_redirect_url($_POST));
+            exit;
+        }
+
+        global $wpdb;
+        $table = $this->point_transactions_table_name();
+        $deleted_count = 0;
+        $restored_count = 0;
+        $permanent_deleted_count = 0;
+
+        foreach ($transaction_ids as $transaction_id) {
+            if ($transaction_id <= 0) {
+                continue;
+            }
+
+            switch ($action) {
+                case 'delete':
+                    $result = $wpdb->query(
+                        $wpdb->prepare(
+                            "UPDATE $table SET deleted_at = %s WHERE id = %d AND deleted_at IS NULL",
+                            current_time('mysql'),
+                            $transaction_id
+                        )
+                    );
+                    if ($result !== false && (int) $result > 0) {
+                        $deleted_count++;
+                    }
+                    break;
+
+                case 'restore':
+                    $result = $wpdb->query(
+                        $wpdb->prepare(
+                            "UPDATE $table SET deleted_at = NULL WHERE id = %d AND deleted_at IS NOT NULL",
+                            $transaction_id
+                        )
+                    );
+                    if ($result !== false && (int) $result > 0) {
+                        $restored_count++;
+                    }
+                    break;
+
+                case 'permanent_delete':
+                    $result = $this->permanently_purge_point_transaction($transaction_id);
+                    if (!is_wp_error($result)) {
+                        $permanent_deleted_count++;
+                    }
+                    break;
+            }
+        }
+
+        $redirect_args = $_POST;
+        if ($deleted_count > 0) {
+            $redirect_args['deleted'] = $deleted_count;
+        }
+        if ($restored_count > 0) {
+            $redirect_args['restored'] = $restored_count;
+        }
+        if ($permanent_deleted_count > 0) {
+            $redirect_args['permanent_deleted'] = $permanent_deleted_count;
+        }
+
+        wp_safe_redirect($this->point_transactions_admin_redirect_url($redirect_args));
         exit;
     }
 
@@ -17919,23 +18545,24 @@ class TWork_Rewards_System
         // NEW CODE: Use point transactions ledger so User Details matches Point Transactions page math.
         global $wpdb;
         $table = $wpdb->prefix . 'twork_point_transactions';
+        $points_visible_sql = $this->point_transactions_visible_sql();
         $user_transactions = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM $table WHERE user_id = %d ORDER BY created_at DESC, id DESC LIMIT 10",
+            "SELECT * FROM $table WHERE user_id = %d $points_visible_sql ORDER BY created_at DESC, id DESC LIMIT 10",
             $user_id
         ));
 
         $total_transactions = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table WHERE user_id = %d",
+            "SELECT COUNT(*) FROM $table WHERE user_id = %d $points_visible_sql",
             $user_id
         ));
 
         $pending_count = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'pending'",
+            "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'pending' $points_visible_sql",
             $user_id
         ));
 
         $approved_count = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'approved'",
+            "SELECT COUNT(*) FROM $table WHERE user_id = %d AND status = 'approved' $points_visible_sql",
             $user_id
         ));
 
@@ -18824,36 +19451,25 @@ class TWork_Rewards_System
     private function calculate_points_balance_from_transactions($user_id)
     {
         // Never short-circuit from points_balance_cache — it can stick stale behind Object Cache / CDN.
-        // Always aggregate live from wp_twork_point_transactions (single source of truth).
+        // Balance = SUM(live ledger) + SUM(archived ledger). Trashed rows in main table still count until purged.
         // $cached_balance = get_user_meta($user_id, 'points_balance_cache', true);
         // if ($cached_balance !== '') {
         //     return (int) $cached_balance;
         // }
 
+        $user_id = absint($user_id);
+        if ($user_id <= 0) {
+            return 0;
+        }
+
         global $wpdb;
-        $table_name = $wpdb->prefix . 'twork_point_transactions';
-
-        $balance = $wpdb->get_var($wpdb->prepare(
-            "SELECT 
-                COALESCE(SUM(
-                    CASE 
-                        WHEN type = 'earn' AND status = 'approved' THEN points
-                        WHEN type = 'refund' AND status = 'approved' THEN points
-                        WHEN type = 'redeem' AND status = 'approved' THEN -points
-                        WHEN type = 'redeem' AND status = 'pending' THEN -points
-                        ELSE 0
-                    END
-                ), 0) as balance
-            FROM $table_name
-            WHERE user_id = %d 
-            AND (expires_at IS NULL OR expires_at > NOW())",
-            $user_id
-        ));
-
+        $balance = $this->sum_point_ledger_balance_from_table($this->point_transactions_table_name(), $user_id);
         if ($wpdb->last_error) {
             $fallback_balance = get_user_meta($user_id, 'points_balance', true);
             return is_numeric($fallback_balance) ? max(0, (int) $fallback_balance) : 0;
         }
+
+        $balance += $this->sum_point_ledger_balance_from_table($this->point_transactions_archive_table_name(), $user_id);
 
         $final_balance = max(0, (int) $balance);
 
