@@ -148,17 +148,9 @@ class PointService {
       );
 
   static Map<String, dynamic> _requestHeaders() {
-    // OLD CODE:
-    // return const <String, dynamic>{
-    //   'Content-Type': 'application/json',
-    //   'Accept': 'application/json',
-    //   'User-Agent':
-    //       'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
-    // };
     return <String, dynamic>{
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': AppConfig.defaultUserAgent,
+      ...AppConfig.defaultApiHeaders,
     };
   }
 
@@ -322,18 +314,6 @@ class PointService {
     }
   }
 
-  /// Get WooCommerce authentication query parameters
-  ///
-  /// We send WooCommerce API credentials as query parameters instead of using
-  /// the Authorization header to avoid conflicts with JSON Basic
-  /// Authentication plugins (which also use Basic auth for WordPress users).
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Get user's point balance from API
   ///
   /// When [persistToStorage] is false, the response is not written to disk
@@ -352,7 +332,6 @@ class PointService {
             ),
           ).replace(
             queryParameters: {
-              ..._getWooCommerceAuthQueryParams(),
               // Use explicit `t` nonce to bypass intermediary cache layers.
               't':
                   (cacheBypassTimestampMs ??
@@ -545,7 +524,6 @@ class PointService {
       // Make direct API call to get pagination info
       // CRITICAL FIX: Request transactions sorted by date (newest first)
       final queryParams = {
-        ..._getWooCommerceAuthQueryParams(),
         'page': '1',
         'per_page': perPage.toString(),
         'orderby': 'created_at', // Request sorting by creation date
@@ -757,7 +735,6 @@ class PointService {
       // CRITICAL FIX: Request transactions sorted by date (newest first)
       // Add orderby parameter to ensure API returns newest transactions first
       final queryParams = {
-        ..._getWooCommerceAuthQueryParams(),
         'page': page.toString(),
         'per_page': perPage.toString(),
         'range_days': rangeDays.toString(),
@@ -1370,7 +1347,7 @@ class PointService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-request',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Map<String, dynamic> bodyMap = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
@@ -2469,9 +2446,7 @@ class PointService {
         ? AppConfig.tworkPointsRedeemEndpoint
         : AppConfig.tworkPointsEarnEndpoint;
     final endpoint = AppConfig.tworkEndpoint(endpointPath);
-    final uri = Uri.parse(
-      endpoint,
-    ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+    final uri = Uri.parse(endpoint);
 
     // Phase 1: Avoid nested retry stacks by issuing a single HTTP attempt here.
     // Retry policy is owned by `_syncPointsWithRetry` above.

@@ -18,13 +18,6 @@ class PointVerificationService {
   static String? get lastError => _lastError;
 
   /// Get WooCommerce authentication query parameters
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Verify user's point balance and get detailed breakdown.
   /// 
   /// Returns comprehensive verification data including:
@@ -43,7 +36,7 @@ class PointVerificationService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/points/verify-balance/$userId',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       app_logger.Logger.info(
         'Verifying balance for user: $userId',

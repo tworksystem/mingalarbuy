@@ -11,15 +11,6 @@ import '../utils/network_utils.dart';
 // Import AboutUsContent model
 // Note: AboutUsContent is defined in page_content.dart
 
-/// Get WooCommerce authentication query parameters
-/// Same as other services (point_service, engagement_service, etc.)
-Map<String, String> _getWooCommerceAuthQueryParams() {
-  return {
-    'consumer_key': AppConfig.consumerKey,
-    'consumer_secret': AppConfig.consumerSecret,
-  };
-}
-
 /// Page Content Service for fetching dynamic page content from backend
 class PageContentService {
   static String? _lastError;
@@ -40,7 +31,7 @@ class PageContentService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/page-content/$pageSlug',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       app_logger.Logger.info(
           'Fetching page content for slug: $pageSlug',
@@ -127,7 +118,7 @@ class PageContentService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/faq',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       app_logger.Logger.info('Fetching FAQ items', tag: 'PageContentService');
       app_logger.Logger.info('FAQ URL: $uri', tag: 'PageContentService');
@@ -237,7 +228,7 @@ class PageContentService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/page-content',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       app_logger.Logger.info('Fetching all pages', tag: 'PageContentService');
       app_logger.Logger.info('Pages URL: $uri', tag: 'PageContentService');
@@ -351,7 +342,7 @@ class PageContentService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/about-us',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       app_logger.Logger.info('Fetching About Us content', tag: 'PageContentService');
       app_logger.Logger.info('About Us URL: $uri', tag: 'PageContentService');

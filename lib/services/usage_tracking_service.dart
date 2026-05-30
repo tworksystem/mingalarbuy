@@ -17,13 +17,6 @@ class UsageTrackingService {
   static int? _currentSessionId;
 
   /// Get WooCommerce authentication query parameters
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Get device information
   static Future<String> _getDeviceInfo() async {
     try {
@@ -99,7 +92,7 @@ class UsageTrackingService {
       // Start new session
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/usage/start',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
@@ -202,7 +195,7 @@ class UsageTrackingService {
       // End session via API
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/usage/end',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
@@ -292,7 +285,7 @@ class UsageTrackingService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/usage/stats/$userId',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(

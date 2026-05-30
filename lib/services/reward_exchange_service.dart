@@ -21,13 +21,6 @@ class RewardExchangeService {
       Duration(seconds: 3); // Prevent requests within 3 seconds
 
   /// Get WooCommerce auth query parameters
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Clear cache for minimum exchange points
   /// Call this when backend updates the limit to force refresh
   static void clearMinExchangePointsCache() {
@@ -54,7 +47,7 @@ class RewardExchangeService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-settings',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
@@ -144,7 +137,7 @@ class RewardExchangeService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-request',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,
@@ -242,7 +235,7 @@ class RewardExchangeService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/rewards/exchange-request',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Map<String, dynamic> body = <String, dynamic>{
         'user_id': int.tryParse(userId) ?? 0,

@@ -29,13 +29,6 @@ class AppUpdateService {
       Duration(minutes: 5); // Cache for 5 minutes
 
   /// Get WooCommerce auth query parameters
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Clear cache for app update info
   /// Call this when backend updates the settings to force refresh
   static void clearCache() {
@@ -63,7 +56,7 @@ class AppUpdateService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/app/update-settings',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(

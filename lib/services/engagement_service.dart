@@ -7,6 +7,7 @@ import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart' as app_logger;
 import '../utils/network_utils.dart';
+import '../utils/waf_response_utils.dart';
 import '../utils/poll_display_helpers.dart';
 import '../utils/poll_option_totals_debug.dart';
 
@@ -249,6 +250,7 @@ class EngagementItem {
     Map<int, int>? userBetUnitsPerOption,
     bool clearPollResult = false,
     bool clearPollOptionTotals = false,
+    bool clearPollVotingSchedule = false,
   }) => EngagementItem(
     id: id,
     type: type,
@@ -263,7 +265,9 @@ class EngagementItem {
     userBetUnitsPerOption: userBetUnitsPerOption ?? this.userBetUnitsPerOption,
     rotationDurationSeconds: rotationDurationSeconds,
     interactionCount: interactionCount ?? this.interactionCount,
-    pollVotingSchedule: pollVotingSchedule ?? this.pollVotingSchedule,
+    pollVotingSchedule: clearPollVotingSchedule
+        ? null
+        : (pollVotingSchedule ?? this.pollVotingSchedule),
     pollResult: clearPollResult ? null : (pollResult ?? this.pollResult),
     pollOptionTotals: clearPollOptionTotals
         ? null
@@ -571,6 +575,14 @@ class EngagementService {
 
       if (NetworkUtils.isValidDioResponse(response)) {
         try {
+          if (ApiService.isWafBlockedResponse(response)) {
+            _lastError = WafResponseUtils.userFacingMessage;
+            app_logger.Logger.warning(
+              'Engagement feed blocked by WAF/bot-protection',
+              tag: 'EngagementService',
+            );
+            return [];
+          }
           final Map<String, dynamic>? data = ApiService.responseAsJsonMap(
             response,
           );

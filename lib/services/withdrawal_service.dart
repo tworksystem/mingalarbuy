@@ -19,13 +19,6 @@ import '../utils/network_utils.dart';
 /// - Transaction history tracking
 class WithdrawalService {
   /// Get WooCommerce authentication query parameters
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Minimum withdrawal amount (configurable)
   static const double minWithdrawalAmount = 1.0;
 
@@ -90,7 +83,7 @@ class WithdrawalService {
       WithdrawalRequest request) async {
     final uri = Uri.parse(
       '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/withdraw',
-    ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+    );
 
     final Response<dynamic>? response = await ApiService.executeWithRetry(
       () => ApiService.post(
@@ -249,7 +242,7 @@ class WithdrawalService {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/withdrawals/$userId',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
@@ -300,7 +293,6 @@ class WithdrawalService {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/check-withdrawal',
       ).replace(queryParameters: {
-        ..._getWooCommerceAuthQueryParams(),
         'user_id': userId,
         'amount': amount.toString(),
       });

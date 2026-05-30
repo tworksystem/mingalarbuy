@@ -16,19 +16,12 @@ class WalletService {
   static final SecurePrefs _securePrefs = SecurePrefs.instance;
 
   /// Get WooCommerce authentication query parameters
-  static Map<String, String> _getWooCommerceAuthQueryParams() {
-    return {
-      'consumer_key': AppConfig.consumerKey,
-      'consumer_secret': AppConfig.consumerSecret,
-    };
-  }
-
   /// Get user's wallet balance from API
   static Future<WalletBalance?> getWalletBalance(String userId) async {
     try {
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/balance/$userId',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.get(
@@ -103,7 +96,7 @@ class WalletService {
 
       final uri = Uri.parse(
         '${AppConfig.backendUrl}/wp-json/twork/v1/wallet/add',
-      ).replace(queryParameters: _getWooCommerceAuthQueryParams());
+      );
 
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.post(
