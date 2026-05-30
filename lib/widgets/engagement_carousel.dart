@@ -1275,9 +1275,33 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   /// Professional Poll Card Design
   /// Distinct from Quiz: Uses orange/amber color scheme, voting terminology, and poll-specific UI
   /// All poll modes (AUTO_RUN, Manual, Scheduled): use feed-based design
+  Widget _buildPollNextRoundTransition(
+    EngagementItem item,
+    String sessionKey, {
+    String message = 'Next round starting…',
+  }) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 180),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      child: KeyedSubtree(
+        key: ValueKey<String>('poll_next_round_${item.id}_$sessionKey'),
+        child: _PollResultTransitionShell(
+          item: item,
+          message: message,
+        ),
+      ),
+    );
+  }
+
   Widget _buildPollCard(EngagementItem item) {
     final sessionKey = _pollSessionKey(item);
     final schedule = item.pollVotingSchedule;
+    final pollMode =
+        (schedule?['poll_mode'] ?? '').toString().toLowerCase();
+    if (pollMode == 'auto_run' && !item.hasInteracted) {
+      _pollNextRoundFeedRefreshKeys.remove(sessionKey);
+    }
     final votingStatusRaw = schedule?['voting_status']?.toString() ?? 'open';
     final votingStatus = votingStatusRaw.toLowerCase();
     /*
@@ -1323,18 +1347,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _kickPollNextRoundFeedRefresh(item);
         });
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 180),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          child: KeyedSubtree(
-            key: ValueKey<String>('poll_next_round_${item.id}_$sessionKey'),
-            child: _PollResultTransitionShell(
-              item: item,
-              message: 'Next round starting…',
-            ),
-          ),
-        );
+        return _buildPollNextRoundTransition(item, sessionKey);
       }
       /*
       Old Code:
@@ -1374,6 +1387,13 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
           ),
         ),
       );
+    }
+
+    if (engagementItemShowsAutoRunStaleVoteTransition(item)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _kickPollNextRoundFeedRefresh(item);
+      });
+      return _buildPollNextRoundTransition(item, sessionKey);
     }
 
     final hasInteracted = item.hasInteracted;

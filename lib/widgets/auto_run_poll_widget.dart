@@ -1720,7 +1720,11 @@ class _VotingUIState extends State<_VotingUI> {
             ...widget.options.asMap().entries.map(
               (e) => Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: InkWell(
+                child: Semantics(
+                  button: true,
+                  label:
+                      'Poll option ${_optionText(e.value)}. ${_selectedIndices.contains(e.key) ? 'Selected' : 'Not selected'}',
+                  child: InkWell(
                   onTap: () {
                     setState(() {
                       if (_selectedIndices.contains(e.key)) {
@@ -1778,10 +1782,15 @@ class _VotingUIState extends State<_VotingUI> {
                     ),
                   ),
                 ),
+                ),
               ),
             ),
             const SizedBox(height: 12),
-            SizedBox(
+            Semantics(
+              button: true,
+              label: 'Submit poll vote',
+              enabled: _selectedIndices.isNotEmpty && !_isSubmitting,
+              child: SizedBox(
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: (_selectedIndices.isEmpty || _isSubmitting)
@@ -2299,6 +2308,7 @@ class _VotingUIState extends State<_VotingUI> {
                     : const Text('ကစားမည်'),
               ),
             ),
+            ),
           ],
         ],
       ),
@@ -2314,7 +2324,9 @@ class _CountdownUI extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return Semantics(
+      label: '$label countdown $seconds seconds remaining',
+      child: Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         gradient: LinearGradient(
@@ -2347,6 +2359,7 @@ class _CountdownUI extends StatelessWidget {
           ],
         ),
       ),
+    ),
     );
   }
 }

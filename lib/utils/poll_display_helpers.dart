@@ -830,11 +830,32 @@ bool engagementItemShouldShowPollVotingUi(EngagementItem item) {
   if (seconds > 0) return true;
 
   final mode = (schedule?['poll_mode'] ?? '').toString().toLowerCase();
+  /*
+  Old Code:
   if (mode == 'auto_run' && pollResultDisplayWindowEnded(schedule)) {
     return true;
   }
+  */
+  // New Code: do not force voting UI while result window just ended — carousel shows
+  // "Next round starting…" and refreshes feed first (prevents stale "Your choice" flash).
+  if (mode == 'auto_run' && pollResultDisplayWindowEnded(schedule)) {
+    return false;
+  }
 
   return false;
+}
+
+/// AUTO_RUN rollover: feed may still have [hasInteracted] from the previous session
+/// while [poll_result] is already cleared — show transition shell, not vote receipt UI.
+bool engagementItemShowsAutoRunStaleVoteTransition(EngagementItem item) {
+  if (item.type != EngagementType.poll) return false;
+  final schedule = item.pollVotingSchedule;
+  final mode = (schedule?['poll_mode'] ?? '').toString().toLowerCase();
+  if (mode != 'auto_run') return false;
+  if (!item.hasInteracted) return false;
+  if (!pollResultDisplayWindowEnded(schedule)) return false;
+  if (engagementItemShowsPollResultCard(item)) return false;
+  return true;
 }
 
 /// True when [poll_result] has enough data to render the in-feed winner card.
