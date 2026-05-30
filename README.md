@@ -80,6 +80,8 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 📊 **Live Poll Totals** - Real-time global per-option PNP totals in the poll timer strip
 - 💰 **My PNP Balance Sync** - Canonical balance reconciliation after poll win/loss with feed-aware result detection
 - 🔄 **Auto-Run Poll Cadence** - Engagement provider pauses polling during result/countdown phases
+- 🛡️ **WAF-Safe HTTP Client** - Honest native User-Agent, PlanetMM client headers, and Imunify360 block detection
+- 🔐 **Hardened Auth & Secure Storage** - WAF-aware sign-in fallback, sparse `users/me` recovery, encrypted Android prefs
 - 💰 **Digital Wallet** - P2P money transfers, payment processing, and transaction history
 - 📱 **Offline-First** - Full functionality without internet connection
 - 🔔 **Real-Time Notifications** - Firebase Cloud Messaging with in-app notifications
@@ -135,8 +137,6 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - **Exchange Requests** - Request rewards with approval workflow
 - **Exchange Settings** - Configurable minimum points and exchange limits
 - **Prize Codes** - Redeemable prize codes and vouchers
-- **Spin Wheel** - Interactive spin wheel for rewards with WordPress admin integration
-- **Lucky Box** - Surprise rewards and gifts
 - **Referral Program** - Earn points by referring friends
 - **Transaction History** - Complete point transaction history with sorting and filtering
 
@@ -531,12 +531,6 @@ static const String backendRegisterTokenEndpoint =
    - Activate the plugin through WordPress admin panel
    - Configure Firebase service account key
 
-4. **Install T-Work Spin Wheel Plugin** (Optional)
-   - Copy `wp-content/plugins/twork-spin-wheel/` to your WordPress installation
-   - Activate the plugin through WordPress admin panel
-   - Configure spin wheel settings and prizes through admin interface
-   - See [twork-spin-wheel/README.md](wp-content/plugins/twork-spin-wheel/README.md) for details
-
 For detailed plugin documentation, see:
 - [README_POINTS_SYSTEM.md](README_POINTS_SYSTEM.md)
 - [ENGAGEMENT_HUB_DEMO_GUIDE.md](ENGAGEMENT_HUB_DEMO_GUIDE.md)
@@ -611,7 +605,6 @@ mingalarbuy/
 │   │   ├── payment_service.dart       # Payment processing
 │   │   ├── wallet_service.dart       # Wallet operations
 │   │   ├── engagement_service.dart   # Engagement hub
-│   │   ├── spin_wheel_service.dart   # Spin wheel rewards
 │   │   ├── reward_exchange_service.dart # Reward exchange
 │   │   ├── offline_queue_service.dart # Offline sync queue
 │   │   ├── notification_service.dart  # Push/local notifications
@@ -631,7 +624,6 @@ mingalarbuy/
 │   │   ├── point_provider.dart
 │   │   ├── wallet_provider.dart
 │   │   ├── engagement_provider.dart
-│   │   ├── spin_wheel_provider.dart
 │   │   ├── exchange_settings_provider.dart # Exchange settings
 │   │   ├── category_provider.dart
 │   │   ├── product_filter_provider.dart
@@ -663,6 +655,7 @@ mingalarbuy/
 │   ├── utils/                        # Utilities and helpers
 │   │   ├── app_config.dart           # App configuration
 │   │   ├── poll_display_helpers.dart # Poll totals, labels, and timer strip formatters
+│   │   ├── waf_response_utils.dart   # Imunify360 / WAF bot-protection detection
 │   │   ├── logger.dart               # Logging utilities
 │   │   └── monitoring.dart           # Performance monitoring
 │   │
@@ -682,7 +675,6 @@ mingalarbuy/
 │       ├── twork-points-system/    # Points system plugin
 │       ├── twork-rewards-system/   # Rewards & engagement plugin
 │       ├── twork-fcm-notify/       # FCM notification plugin
-│       └── twork-spin-wheel/       # Spin wheel rewards plugin
 │
 ├── backend/                         # Backend services (optional)
 │   └── webhook_server.js           # Webhook server for notifications
@@ -875,11 +867,11 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) with a dated
 
 ```bash
 git add .
-git commit -m "feat: 25052026 - add your feature description"
+git commit -m "feat: 30052026 - add your feature description"
 # or
-git commit -m "fix: 25052026 - resolve bug description"
+git commit -m "fix: 30052026 - resolve bug description"
 # or
-git commit -m "docs: 25052026 - update README for new API field"
+git commit -m "docs: 30052026 - update README for new API field"
 ```
 
 #### 6. Push and Create Pull Request
@@ -911,15 +903,15 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/) with a **
 
 | Type | When to use | Example |
 | --- | --- | --- |
-| `feat:` | New capability or user-facing enhancement | `feat: 25052026 - expose poll_option_totals in engagement feed` |
-| `fix:` | Bug fix or regression | `fix: 25052026 - pad sparse vote-count arrays in poll helpers` |
-| `docs:` | README, comments, or API docs only | `docs: 25052026 - document live poll option totals payload` |
-| `refactor:` | Internal restructure, no behavior change | `refactor: 25052026 - extract poll totals builder in rewards plugin` |
-| `perf:` | Measurable performance improvement | `perf: 25052026 - skip carousel rebuild when poll totals unchanged` |
-| `test:` | Tests added or updated | `test: 25052026 - cover formatPollGlobalOptionTotalsLine edge cases` |
-| `chore:` | Tooling, deps, or maintenance | `chore: 25052026 - bump flutter_lints to latest minor` |
-| `ci:` | CI/CD pipeline changes | `ci: 25052026 - add analyze step to GitHub Actions` |
-| `style:` | Formatting only (no logic change) | `style: 25052026 - run dart format on engagement widgets` |
+| `feat:` | New capability or user-facing enhancement | `feat: 30052026 - expose poll_option_totals in engagement feed` |
+| `fix:` | Bug fix or regression | `fix: 30052026 - pad sparse vote-count arrays in poll helpers` |
+| `docs:` | README, comments, or API docs only | `docs: 30052026 - document live poll option totals payload` |
+| `refactor:` | Internal restructure, no behavior change | `refactor: 30052026 - extract poll totals builder in rewards plugin` |
+| `perf:` | Measurable performance improvement | `perf: 30052026 - skip carousel rebuild when poll totals unchanged` |
+| `test:` | Tests added or updated | `test: 30052026 - cover formatPollGlobalOptionTotalsLine edge cases` |
+| `chore:` | Tooling, deps, or maintenance | `chore: 30052026 - bump flutter_lints to latest minor` |
+| `ci:` | CI/CD pipeline changes | `ci: 30052026 - add analyze step to GitHub Actions` |
+| `style:` | Formatting only (no logic change) | `style: 30052026 - run dart format on engagement widgets` |
 
 ### Hot Reload & Hot Restart
 
@@ -1042,11 +1034,17 @@ flutter build ios --release --flavor production
    - The repository has been cleaned of any previously committed secrets
 
 2. **Secure Storage**
-   - Use `flutter_secure_storage` for sensitive data
+   - Use `flutter_secure_storage` for sensitive data via `SecureStorageConfig` (encrypted shared preferences on Android)
    - Encrypt data at rest when possible
    - Use HTTPS for all API communications
 
-3. **API Security**
+3. **WAF & Bot Protection (Imunify360)**
+   - Use honest native `User-Agent` strings — do not spoof browser fingerprints
+   - Send `X-PlanetMM-Client` headers for hosting allow-list rules
+   - Detect WAF block payloads via `WafResponseUtils` (HTTP 200 + JSON `message`)
+   - Auth sign-in falls back to `POST /wp-json/twork/v1/auth/sign-in` when `/users/me` is blocked
+
+4. **API Security**
    - Validate all user inputs
    - Use HTTPS only
    - Implement proper authentication and authorization
@@ -1125,7 +1123,15 @@ cd ..
 - Verify database tables exist
 - Check offline queue for pending transactions
 
-#### 6. Engagement Hub Not Loading
+#### 6. WAF / Sign-In Blocked on Release APK
+
+- Confirm hosting allow-list includes `X-PlanetMM-Client: 1` header
+- Check Imunify360 bot-protection logs for blocked IPs
+- Verify `POST /wp-json/twork/v1/auth/sign-in` endpoint is reachable
+- Ensure app uses honest native User-Agent (not spoofed Chrome)
+- Review `auth_service.dart` logs for `waf_blocked` error flag
+
+#### 7. Engagement Hub Not Loading
 
 - Verify WordPress plugin is activated
 - Check API endpoints are accessible
@@ -1317,13 +1323,40 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Status**: ✅ Production Ready
 
-**Last Updated**: 25 May 2026
+**Last Updated**: 30 May 2026
 
 **Author**: Maw Kunn Myat
 
 **Maintained by**: T-Work System
 
 **Contributors**: Mapoee Phyu (mapoeeiphyu2017.miitinternship@gmail.com)
+
+### Recent Updates (30 May 2026)
+
+#### 🛡️ WAF Hardening & HTTP Client Identity
+- ✅ **Honest native User-Agent** — Replaced fake Chrome UA with `PlanetMM/{version} (Platform; build; Flutter)` to avoid TLS fingerprint mismatches
+- ✅ **PlanetMM client headers** — `X-PlanetMM-Client`, `X-PlanetMM-Version`, `X-PlanetMM-Build`, `X-PlanetMM-Platform` for Imunify360 allow-list rules
+- ✅ **WafResponseUtils** — Detects Imunify360 / bot-protection JSON bodies even on HTTP 200 responses
+- ✅ **ApiService interceptor** — Tags WAF-blocked responses in `response.extra` for downstream services
+- ✅ **Engagement service** — Surfaces user-facing WAF error message instead of silent empty feeds
+
+#### 🔐 Authentication & Secure Storage
+- ✅ **WAF-aware sign-in fallback** — `POST /twork/v1/auth/sign-in` when `/users/me` returns bot-protection payload
+- ✅ **Sparse users/me recovery** — Merges WooCommerce customer + stored identity when WordPress profile is incomplete
+- ✅ **SecureStorageConfig** — Centralized `FlutterSecureStorage` with `encryptedSharedPreferences` for Android release builds
+- ✅ **profileDisplayLabel** — Resilient profile header label when name/email fields are empty after WAF throttling
+- ✅ **Removed WooCommerce credential query params** — Wallet/points endpoints rely on authenticated REST headers only
+
+#### 🎯 Engagement Hub & Poll UX
+- ✅ **Stale-while-revalidate carousel** — Poll UI stays visible while feed refreshes (no full-screen spinner on every poll tick)
+- ✅ **Live field cache hygiene** — Disk cache strips poll timer/schedule; only vote preferences persist offline
+- ✅ **Server end-time guard** — Result transition burst fires only when server `ends_at` is known
+- ✅ **Auto-run poll resolution (backend)** — Session-scoped winner lookup for transaction history labels
+
+#### 🧹 Feature Cleanup
+- ✅ **Spin Wheel removed** — Mobile spin wheel provider, service, and home UI retired
+- ✅ **Lucky Box removed** — Lucky box banner, request sheet, and backend admin module retired
+- ✅ **Point history cleanup** — Lucky Box transaction filter and labels removed
 
 ### Recent Updates (25 May 2026)
 
@@ -1395,7 +1428,6 @@ We would like to express our gratitude to the following technologies, platforms,
 #### Previous Updates
 - ✅ **App Update Service** - Dynamic app update notifications and version management
 - ✅ **Point Notification System** - Enhanced point notifications with modal popups
-- ✅ **Spin Wheel Plugin** - Complete spin wheel rewards system with WordPress integration
 - ✅ **Exchange Settings Provider** - Improved reward exchange settings management
 
 ---
