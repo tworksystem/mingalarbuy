@@ -173,31 +173,16 @@ class TWork_Poll_Auto_Run {
             );
         }
 
-        $start_ts = strtotime($started_at);
-        $now_ts = time();
-        $elapsed = max(0, $now_ts - $start_ts);
-
-        $iteration = (int) floor($elapsed / $cycle_seconds);
-        $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
-        $voting_ends_ts = $cycle_start_ts + $voting_seconds;
-        $results_ends_ts = $cycle_start_ts + $cycle_seconds;
-
-        $session_id = 's' . $iteration;
-
-        if ($now_ts < $voting_ends_ts) {
-            $state = 'ACTIVE';
-            $ends_at = gmdate('Y-m-d\TH:i:s\Z', $voting_ends_ts);
-        } elseif ($now_ts < $results_ends_ts) {
-            $state = 'SHOWING_RESULTS';
-            $ends_at = gmdate('Y-m-d\TH:i:s\Z', $results_ends_ts);
-        } else {
-            $state = 'ACTIVE';
-            $iteration++;
-            $session_id = 's' . $iteration;
-            $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
-            $voting_ends_ts = $cycle_start_ts + $voting_seconds;
-            $ends_at = gmdate('Y-m-d\TH:i:s\Z', $voting_ends_ts);
-        }
+        $phase = class_exists('TWork_Rewards_System')
+            ? TWork_Rewards_System::derive_auto_run_phase_at_timestamp($quiz_data, time())
+            : array(
+                'session_id' => 's0',
+                'state' => 'ACTIVE',
+                'ends_at' => null,
+            );
+        $session_id = (string) ($phase['session_id'] ?? 's0');
+        $state = (string) ($phase['state'] ?? 'ACTIVE');
+        $ends_at = isset($phase['ends_at']) ? (string) $phase['ends_at'] : null;
 
         // Throttled server tick: run AUTO_RUN process (awards, cycle reset) when any client requests state.
         // Supplements WP-Cron so narrow award windows are not missed when the app is backgrounded/closed.
@@ -379,46 +364,31 @@ class TWork_Poll_Auto_Run {
         $poll_mode = strtoupper((string) ($quiz_data['poll_mode'] ?? ''));
         $is_auto_run = ($poll_mode === 'AUTO_RUN');
 
-        $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
-
         // Determine winning index:
-        // - AUTO_RUN: optional transient lock; else DB correct_index (from process_auto_run_poll) or
-        //   admin override only — never random_int here (cron resolves random winners).
-        // - Other modes: honour explicit correct_index when present, otherwise
-        //   fall back to vote-based winner (and persist for future calls).
+        // - AUTO_RUN: per-session immutable store (twork_poll_session_rewards), transient, or
+        //   global correct_index only when it matches the current cycle session — never live override.
+        // - Other modes: honour explicit correct_index when present, otherwise vote-based winner.
         $winning_index = 0;
 
         if ($is_auto_run) {
-            $force_winner_raw = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
-            $force_winner_effective = ($force_winner_raw < 0) ? 'random' : (string) $force_winner_raw;
+            $winning_index = -1;
+            if (class_exists('TWork_Rewards_System')) {
+                $winning_index = TWork_Rewards_System::get_instance()->lookup_auto_run_session_winner_index(
+                    $poll_id,
+                    $session_id,
+                    $quiz_data
+                );
+            }
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    '[twork poll-auto-run] poll_id=%d pre-resolution force_winner(auto_run_override_index)=%s raw=%d correct_index=%d',
+                    '[twork poll-auto-run] poll_id=%d session=%s winning_index=%d (session-scoped lookup)',
                     (int) $poll_id,
-                    $force_winner_effective,
-                    $force_winner_raw,
-                    $correct_index
+                    (string) $session_id,
+                    (int) $winning_index
                 ));
             }
-
-            $transient_key = 'twork_auto_run_winner_' . (int) $poll_id . '_' . md5((string) $session_id);
-            $saved_winner = get_transient($transient_key);
-            if ($saved_winner !== false) {
-                $winning_index = (int) $saved_winner;
-            } else {
-                if ($correct_index < 0) {
-                    $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
-                    if ($override_index >= 0 && $override_index < $num_options) {
-                        $correct_index = $override_index;
-                    } else {
-                        $correct_index = -1; // Keep it as -1. Wait for cron job to resolve it!
-                    }
-                }
-                if ($correct_index >= 0 && $correct_index < $num_options) {
-                    $winning_index = $correct_index;
-                } else {
-                    $winning_index = -1;
-                }
+            if ($winning_index < 0 || $winning_index >= $num_options) {
+                $winning_index = -1;
             }
         } else {
             // Non AUTO_RUN modes: prefer explicit correct_index when configured.

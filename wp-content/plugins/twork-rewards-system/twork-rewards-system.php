@@ -64,9 +64,6 @@ class TWork_Rewards_System
 {
     private static $instance = null;
 
-    private const OPTION_LUCKYBOX_ENABLED = 'twork_rewards_luckybox_enabled';
-    private const OPTION_LUCKYBOX_BANNER = 'twork_rewards_luckybox_banner';
-    private const USER_META_LUCKYBOX_ENABLED = 'twork_luckybox_enabled';
     // Vote System Settings Constants
     private const OPTION_VOTE_ENABLED = 'twork_rewards_vote_enabled';
     // User Page Settings Constants
@@ -267,10 +264,10 @@ class TWork_Rewards_System
 
         // Form handlers
         add_action('admin_post_twork_rewards_update_transaction', array($this, 'handle_transaction_update'));
-        add_action('admin_post_twork_rewards_update_user_luckybox', array($this, 'handle_user_luckybox_update'));
         add_action('admin_post_twork_rewards_handle_exchange', array($this, 'handle_exchange_action'));
         add_action('admin_post_twork_rewards_save_exchange', array($this, 'handle_exchange_save'));
         add_action('admin_post_twork_rewards_bulk_exchange_action', array($this, 'handle_bulk_exchange_action'));
+        add_action('admin_post_twork_rewards_update_user_rewards', array($this, 'handle_user_rewards_update'));
         add_action('admin_post_twork_rewards_test_notification', array($this, 'handle_test_notification'));
 
 
@@ -610,7 +607,20 @@ class TWork_Rewards_System
                 continue;
             }
 
-            if (!isset($poll_cache[$item_id])) {
+            $meta_payload = array();
+            $meta_raw = isset($row['meta_json']) ? trim((string) $row['meta_json']) : '';
+            if ($meta_raw !== '') {
+                $decoded_meta = json_decode($meta_raw, true);
+                if (is_array($decoded_meta)) {
+                    $meta_payload = $decoded_meta;
+                }
+            }
+            $txn_session_id = isset($meta_payload['session_id'])
+                ? trim((string) $meta_payload['session_id'])
+                : '';
+            $cache_key = $item_id . '|' . $txn_session_id;
+
+            if (!isset($poll_cache[$cache_key])) {
                 $item_row = $wpdb->get_row($wpdb->prepare(
                     "SELECT quiz_data
                      FROM $items_table
@@ -619,7 +629,7 @@ class TWork_Rewards_System
                     $item_id
                 ), ARRAY_A);
 
-                $poll_cache[$item_id] = array(
+                $poll_cache[$cache_key] = array(
                     'is_resolved' => false,
                     'correct_index' => -1,
                     'winning_option' => null,
@@ -627,199 +637,27 @@ class TWork_Rewards_System
 
                 if (is_array($item_row) && isset($item_row['quiz_data'])) {
                     $quiz_data = json_decode((string) $item_row['quiz_data'], true);
-                    if (is_array($quiz_data) && isset($quiz_data['correct_index']) && is_numeric($quiz_data['correct_index'])) {
-                        $correct_index = (int) $quiz_data['correct_index'];
-                        if ($correct_index >= 0) {
-                            // OLD CODE (kept for rollback safety):
-                            // Previous resolver handled common options/answers/choices layouts.
-                            //
-                            // New code: master search resolver for unknown legacy quiz_data schemas.
-                            $is_placeholder_label = static function ($value) {
-                                if (!is_string($value)) {
-                                    return false;
-                                }
-                                $trimmed = trim($value);
-                                return $trimmed === '' || (bool) preg_match('/^Option\s+\d+$/i', $trimmed);
-                            };
-                            $normalize_candidate = static function ($value) use ($is_placeholder_label) {
-                                $candidate = is_string($value) || is_numeric($value) ? trim((string) $value) : '';
-                                if ($candidate === '' || $is_placeholder_label($candidate)) {
-                                    return '';
-                                }
-                                return $candidate;
-                            };
-                            $extract_label_from_node = static function ($node) use ($normalize_candidate) {
-                                if (is_string($node) || is_numeric($node)) {
-                                    return $normalize_candidate($node);
-                                }
-                                if (!is_array($node)) {
-                                    return '';
-                                }
-                                $keys = array(
-                                    'text', 'label', 'value', 'name', 'title',
-                                    'option', 'answer', 'option_text', 'option_label',
-                                    'choice', 'display', 'content',
+                    if (is_array($quiz_data)) {
+                        $poll_mode = strtolower((string) ($quiz_data['poll_mode'] ?? ''));
+                        $correct_index = -1;
+                        if ($poll_mode === 'auto_run') {
+                            if ($txn_session_id !== '') {
+                                $correct_index = $this->lookup_auto_run_session_winner_index(
+                                    $item_id,
+                                    $txn_session_id,
+                                    $quiz_data
                                 );
-                                foreach ($keys as $k) {
-                                    if (isset($node[$k])) {
-                                        $candidate = $normalize_candidate($node[$k]);
-                                        if ($candidate !== '') {
-                                            return $candidate;
-                                        }
-                                    }
-                                }
-                                return '';
-                            };
-                            $extract_index_from_node = static function ($node) {
-                                if (!is_array($node)) {
-                                    return null;
-                                }
-                                $idx_keys = array('index', 'id', 'option_index', 'answer_index', 'choice_index', 'position');
-                                foreach ($idx_keys as $k) {
-                                    if (isset($node[$k]) && is_numeric($node[$k])) {
-                                        return (int) $node[$k];
-                                    }
-                                }
-                                return null;
-                            };
-                            $collect_strings_recursive = static function ($node, &$out) use (&$collect_strings_recursive, $normalize_candidate) {
-                                if (is_string($node) || is_numeric($node)) {
-                                    $candidate = $normalize_candidate($node);
-                                    if ($candidate !== '') {
-                                        $out[] = $candidate;
-                                    }
-                                    return;
-                                }
-                                if (!is_array($node)) {
-                                    return;
-                                }
-                                foreach ($node as $child) {
-                                    $collect_strings_recursive($child, $out);
-                                }
-                            };
-
-                            // Step 2: key guessing pool.
-                            $source_arrays = array();
-                            $source_keys = array('options', 'answers', 'choices', 'questions', 'quiz_data', 'mcq_data');
-                            foreach ($source_keys as $src_key) {
-                                if (isset($quiz_data[$src_key]) && is_array($quiz_data[$src_key])) {
-                                    $source_arrays[] = $quiz_data[$src_key];
-                                }
                             }
-                            if (isset($quiz_data['options']) && is_array($quiz_data['options'])) {
-                                $source_arrays[] = $quiz_data['options'];
-                            }
-                            if (empty($source_arrays)) {
-                                $source_arrays[] = $quiz_data;
-                            }
-
-                            $winning_label = '';
-                            $index_candidates = array($correct_index);
-                            if ($correct_index > 0) {
-                                $index_candidates[] = $correct_index - 1; // Step D (zero-based/backward check)
-                            }
-                            $index_candidates = array_values(array_unique($index_candidates));
-
-                            // Step B + D: direct key/index and object index matching.
-                            foreach ($source_arrays as $src) {
-                                if (!is_array($src)) {
-                                    continue;
-                                }
-                                foreach ($index_candidates as $idx) {
-                                    if (isset($src[$idx])) {
-                                        $candidate = $extract_label_from_node($src[$idx]);
-                                        if ($candidate !== '') {
-                                            $winning_label = $candidate;
-                                            break 2;
-                                        }
-                                    }
-                                }
-                                foreach ($src as $node) {
-                                    if (!is_array($node)) {
-                                        continue;
-                                    }
-                                    $node_index = $extract_index_from_node($node);
-                                    if ($node_index === null) {
-                                        continue;
-                                    }
-                                    foreach ($index_candidates as $idx) {
-                                        if ($node_index === $idx || $node_index === ($idx + 1)) {
-                                            $candidate = $extract_label_from_node($node);
-                                            if ($candidate !== '') {
-                                                $winning_label = $candidate;
-                                                break 3;
-                                            }
-                                        }
-                                    }
-                                }
-                                $src_values = array_values($src);
-                                foreach ($index_candidates as $idx) {
-                                    if (isset($src_values[$idx])) {
-                                        $candidate = $extract_label_from_node($src_values[$idx]);
-                                        if ($candidate !== '') {
-                                            $winning_label = $candidate;
-                                            break 2;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Step 4: root-level option_N / answer_N keys.
-                            if ($winning_label === '') {
-                                foreach ($index_candidates as $idx) {
-                                    $root_keys = array(
-                                        'option_' . ($idx + 1),
-                                        'option_' . $idx,
-                                        'answer_' . ($idx + 1),
-                                        'answer_' . $idx,
-                                        'choice_' . ($idx + 1),
-                                        'choice_' . $idx,
-                                    );
-                                    foreach ($root_keys as $rk) {
-                                        if (isset($quiz_data[$rk])) {
-                                            $candidate = $extract_label_from_node($quiz_data[$rk]);
-                                            if ($candidate !== '') {
-                                                $winning_label = $candidate;
-                                                break 2;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Step 1 + 3 (deep recursive collection as final attempt).
-                            if ($winning_label === '') {
-                                $all_candidates = array();
-                                $collect_strings_recursive($quiz_data, $all_candidates);
-                                $all_candidates = array_values(array_unique(array_filter($all_candidates, 'strlen')));
-                                foreach ($index_candidates as $idx) {
-                                    if (isset($all_candidates[$idx]) && !$is_placeholder_label($all_candidates[$idx])) {
-                                        $winning_label = $all_candidates[$idx];
-                                        break;
-                                    }
-                                }
-                                if ($winning_label === '' && !empty($all_candidates)) {
-                                    $winning_label = $all_candidates[0];
-                                }
-                            }
-
-                            if ($winning_label === '') {
-                                // OLD CODE (kept for rollback safety):
-                                // $winning_label = 'Option ' . ($correct_index + 1);
-                                //
-                                // New code: explicit unknown marker for force-overwrite diagnostics.
-                                $winning_label = '[No Label Found]';
-                            }
-                            $label = $winning_label;
-                            if ($label === '') {
-                                $label = '[No Label Found]';
-                            }
-                            $poll_cache[$item_id] = array(
+                        } elseif (isset($quiz_data['correct_index']) && is_numeric($quiz_data['correct_index'])) {
+                            $correct_index = (int) $quiz_data['correct_index'];
+                        }
+                        if ($correct_index >= 0) {
+                            $poll_cache[$cache_key] = array(
                                 'is_resolved' => true,
                                 'correct_index' => $correct_index,
-                                'winning_option' => array(
-                                    'index' => $correct_index,
-                                    'label' => $label,
+                                'winning_option' => $this->build_poll_winning_option_payload_from_quiz(
+                                    $quiz_data,
+                                    $correct_index
                                 ),
                             );
                         }
@@ -827,22 +665,23 @@ class TWork_Rewards_System
                 }
             }
 
-            $poll_info = $poll_cache[$item_id];
+            $poll_info = $poll_cache[$cache_key];
             if (!is_array($poll_info) || empty($poll_info['is_resolved'])) {
                 $skipped++;
                 continue;
             }
 
             // Skip winners: migration is for loser deduction snapshots only.
-            $latest_interaction = $wpdb->get_var($wpdb->prepare(
-                "SELECT interaction_value
+            $interaction_sql = "SELECT interaction_value
                  FROM $interactions_table
-                 WHERE user_id = %d AND item_id = %d
-                 ORDER BY id DESC
-                 LIMIT 1",
-                $user_id,
-                $item_id
-            ));
+                 WHERE user_id = %d AND item_id = %d";
+            $interaction_args = array($user_id, $item_id);
+            if ($txn_session_id !== '') {
+                $interaction_sql .= ' AND session_id = %s';
+                $interaction_args[] = $txn_session_id;
+            }
+            $interaction_sql .= ' ORDER BY id DESC LIMIT 1';
+            $latest_interaction = $wpdb->get_var($wpdb->prepare($interaction_sql, ...$interaction_args));
             if (
                 is_string($latest_interaction) &&
                 $latest_interaction !== '' &&
@@ -851,14 +690,17 @@ class TWork_Rewards_System
                 $skipped++;
                 continue;
             }
-
-            $meta_payload = array();
-            $meta_raw = isset($row['meta_json']) ? trim((string) $row['meta_json']) : '';
-            if ($meta_raw !== '') {
-                $decoded_meta = json_decode($meta_raw, true);
-                if (is_array($decoded_meta)) {
-                    $meta_payload = $decoded_meta;
-                }
+            // Never downgrade already won rows during legacy loser snapshot sync.
+            $existing_status = isset($meta_payload['result_status']) ? strtolower(trim((string) $meta_payload['result_status'])) : '';
+            $existing_win_amount = 0;
+            if (isset($meta_payload['win_amount']) && is_numeric($meta_payload['win_amount'])) {
+                $existing_win_amount = (int) round((float) $meta_payload['win_amount']);
+            } elseif (isset($meta_payload['won_amount_pnp']) && is_numeric($meta_payload['won_amount_pnp'])) {
+                $existing_win_amount = (int) round((float) $meta_payload['won_amount_pnp']);
+            }
+            if ($existing_status === 'won' || $existing_win_amount > 0) {
+                $skipped++;
+                continue;
             }
             // OLD CODE (kept for rollback safety):
             // Some versions skipped rows if winning_option already existed.
@@ -873,6 +715,9 @@ class TWork_Rewards_System
                 'won_amount_pnp' => 0,
                 'win_amount' => 0,
             );
+            if ($txn_session_id !== '') {
+                $meta_overlay['session_id'] = $txn_session_id;
+            }
             $merged_meta = array_merge($meta_payload, $meta_overlay);
 
             $update_result = $wpdb->update(
@@ -1483,6 +1328,9 @@ class TWork_Rewards_System
                 $sql = "CREATE TABLE IF NOT EXISTS $table (
                     poll_id bigint(20) UNSIGNED NOT NULL,
                     session_id varchar(50) NOT NULL,
+                    correct_index smallint NOT NULL DEFAULT -1,
+                    answer_mode varchar(16) NOT NULL DEFAULT '',
+                    resolved_at datetime DEFAULT NULL,
                     rewards_distributed tinyint(1) NOT NULL DEFAULT 1,
                     distributed_at datetime DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (poll_id, session_id)
@@ -1491,6 +1339,33 @@ class TWork_Rewards_System
                 dbDelta($sql);
                 update_option('twork_rewards_poll_pnp_migration_done', true);
             }
+        }
+
+        // Per-session immutable AUTO_RUN winner (prevents live override from rewriting past results).
+        $session_winner_migration_done = get_option('twork_rewards_poll_session_winner_migration_done', false);
+        if (!$session_winner_migration_done) {
+            $table = $wpdb->prefix . 'twork_poll_session_rewards';
+            if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === $table) {
+                $col_correct = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table) . "` LIKE 'correct_index'");
+                if (empty($col_correct)) {
+                    $wpdb->query(
+                        'ALTER TABLE `' . esc_sql($table) . '` ADD COLUMN `correct_index` smallint NOT NULL DEFAULT -1 AFTER `session_id`'
+                    );
+                }
+                $col_mode = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table) . "` LIKE 'answer_mode'");
+                if (empty($col_mode)) {
+                    $wpdb->query(
+                        'ALTER TABLE `' . esc_sql($table) . '` ADD COLUMN `answer_mode` varchar(16) NOT NULL DEFAULT \'\' AFTER `correct_index`'
+                    );
+                }
+                $col_resolved = $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table) . "` LIKE 'resolved_at'");
+                if (empty($col_resolved)) {
+                    $wpdb->query(
+                        'ALTER TABLE `' . esc_sql($table) . '` ADD COLUMN `resolved_at` datetime DEFAULT NULL AFTER `answer_mode`'
+                    );
+                }
+            }
+            update_option('twork_rewards_poll_session_winner_migration_done', true);
         }
     }
 
@@ -2414,8 +2289,6 @@ class TWork_Rewards_System
         }
 
         $webhook_url = get_option('twork_rewards_webhook_url', '');
-        $luckybox_enabled = (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1);
-        $luckybox_banner = get_option(self::OPTION_LUCKYBOX_BANNER, '');
         $vote_enabled = (int) get_option(self::OPTION_VOTE_ENABLED, 1);
         global $wpdb;
         $raw_min_exchange_points = $wpdb->get_var(
@@ -2462,54 +2335,6 @@ class TWork_Rewards_System
                                     esc_html(number_format_i18n(TWORK_MAX_MIN_EXCHANGE))
                                 );
                                 ?>
-                            </p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">
-                            <label for="twork_rewards_luckybox_enabled"><?php esc_html_e('Lucky Box (Front-end)', 'twork-rewards'); ?></label>
-                        </th>
-                        <td>
-                            <label>
-                                <input type="checkbox"
-                                       name="twork_rewards_luckybox_enabled"
-                                       id="twork_rewards_luckybox_enabled"
-                                       value="1" <?php checked($luckybox_enabled, 1); ?> />
-                                <?php esc_html_e('Default Lucky Box state for users (can be overridden per user)', 'twork-rewards'); ?>
-                            </label>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">
-                            <label for="twork_rewards_luckybox_banner"><?php esc_html_e('Lucky Box Banner Content', 'twork-rewards'); ?></label>
-                        </th>
-                        <td>
-                            <?php
-                            // Use wp_editor for rich text editing
-                            wp_editor(
-                                $luckybox_banner,
-                                'twork_rewards_luckybox_banner',
-                                array(
-                                    'textarea_name' => 'twork_rewards_luckybox_banner',
-                                    'textarea_rows' => 15,
-                                    'media_buttons' => true,
-                                    'teeny' => false,
-                                    'tinymce' => array(
-                                        'toolbar1' => 'bold,italic,underline,strikethrough,|,bullist,numlist,|,link,unlink,|,forecolor,backcolor,|,alignleft,aligncenter,alignright,|,code,fullscreen',
-                                        'toolbar2' => '',
-                                    ),
-                                )
-                            );
-                            ?>
-                            <p class="description">
-                                <?php esc_html_e('Creative banner content displayed below the Lucky Box button. Supports HTML, CSS, and images. This content will be rendered in the mobile app.', 'twork-rewards'); ?>
-                            </p>
-                            <p class="description">
-                                <strong><?php esc_html_e('Tips:', 'twork-rewards'); ?></strong><br>
-                                <?php esc_html_e('• Use inline CSS for styling', 'twork-rewards'); ?><br>
-                                <?php esc_html_e('• Keep content mobile-friendly', 'twork-rewards'); ?><br>
-                                <?php esc_html_e('• Use relative URLs or full URLs for images', 'twork-rewards'); ?><br>
-                                <?php esc_html_e('• Test on mobile devices for best results', 'twork-rewards'); ?>
                             </p>
                         </td>
                     </tr>
@@ -3518,21 +3343,10 @@ class TWork_Rewards_System
         $url = $get_sanitized_url_or_existing('twork_rewards_webhook_url', 'twork_rewards_webhook_url', '');
         update_option('twork_rewards_webhook_url', $url);
 
-        // Get old value before updating
-        $old_luckybox_enabled = (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1);
-        $luckybox_enabled = isset($_POST['twork_rewards_luckybox_enabled']) ? 1 : 0;
-        update_option(self::OPTION_LUCKYBOX_ENABLED, $luckybox_enabled);
-
         // Get old value before updating Vote setting
         $old_vote_enabled = (int) get_option(self::OPTION_VOTE_ENABLED, 1);
         $vote_enabled = isset($_POST['twork_rewards_vote_enabled']) ? 1 : 0;
         update_option(self::OPTION_VOTE_ENABLED, $vote_enabled);
-
-        // Save Lucky Box banner content (preserve existing when input is empty).
-        $existing_luckybox_banner = (string) get_option(self::OPTION_LUCKYBOX_BANNER, '');
-        $luckybox_banner_raw = isset($_POST['twork_rewards_luckybox_banner']) ? trim((string) wp_unslash($_POST['twork_rewards_luckybox_banner'])) : '';
-        $luckybox_banner = $luckybox_banner_raw === '' ? $existing_luckybox_banner : wp_kses_post($luckybox_banner_raw);
-        update_option(self::OPTION_LUCKYBOX_BANNER, $luckybox_banner);
 
         // Update minimum exchange points only when setting payload is present.
         if (isset($_POST['twork_v2_min_exchange_points'])) {
@@ -3564,15 +3378,6 @@ class TWork_Rewards_System
 
         // Save User Page Settings
         $this->save_user_page_settings();
-
-        // Send notification if Lucky Box setting changed
-        if ($old_luckybox_enabled !== $luckybox_enabled) {
-            $this->send_luckybox_settings_notification(array(
-                'type' => 'global',
-                'enabled' => (bool) $luckybox_enabled,
-                'user_id' => null,  // Global setting affects all users
-            ));
-        }
 
         wp_cache_flush();
         wp_redirect(admin_url('admin.php?page=twork-rewards-settings&settings-updated=true'));
@@ -3865,48 +3670,114 @@ class TWork_Rewards_System
         return true;
     }
 
+
     /**
-     * REST API routes for Lucky Box toggle and request flow.
+     * Mobile sign-in fallback when WAF blocks GET/POST /wp/v2/users/me.
      *
-     * Mobile app calls:
-     * - GET  /wp-json/twork/v1/luckybox/config/{userId}
-     * - POST /wp-json/twork/v1/luckybox/open   body: { "user_id": 123 }
+     * POST /wp-json/twork/v1/auth/sign-in
+     * Body: { "email": "user@example.com", "password": "..." }
      */
-    public function register_luckybox_routes()
+    public function register_auth_routes()
     {
-        register_rest_route('twork/v1', '/luckybox/config/(?P<user_id>\d+)', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'rest_luckybox_get_config'),
-            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
-            'args' => array(
-                'user_id' => array(
-                    'validate_callback' => function ($param) {
-                        return absint($param) > 0;
-                    }
-                ),
-            ),
-        ));
-
-        register_rest_route('twork/v1', '/luckybox/open', array(
-            'methods' => 'POST',
-            'callback' => array($this, 'rest_luckybox_open'),
-            'permission_callback' => array($this, 'rest_permission_user_or_admin'),
-            'args' => array(
-                'user_id' => array(
-                    'required' => true,
-                    'type' => 'integer',
-                    'validate_callback' => function ($param) {
-                        return absint($param) > 0;
-                    }
-                ),
-            ),
-        ));
-
-        register_rest_route('twork/v1', '/luckybox/banner', array(
-            'methods' => 'GET',
-            'callback' => array($this, 'rest_luckybox_banner'),
+        register_rest_route('twork/v1', '/auth/sign-in', array(
+            'methods' => WP_REST_Server::CREATABLE,
+            'callback' => array($this, 'rest_auth_sign_in'),
             'permission_callback' => array($this, 'rest_permission_public'),
+            'args' => array(
+                'email' => array(
+                    'required' => true,
+                    'type' => 'string',
+                    'sanitize_callback' => 'sanitize_text_field',
+                ),
+                'password' => array(
+                    'required' => true,
+                    'type' => 'string',
+                ),
+            ),
         ));
+    }
+
+    /**
+     * Authenticate app user and return a users/me-shaped payload.
+     *
+     * @param WP_REST_Request $request Request.
+     * @return WP_REST_Response
+     */
+    public function rest_auth_sign_in(WP_REST_Request $request)
+    {
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : 'unknown';
+        $rate_key = 'twork_auth_signin_' . md5($ip);
+        $attempts = absint(get_transient($rate_key));
+        if ($attempts >= 12) {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'code' => 'too_many_attempts',
+                'message' => __('Too many sign-in attempts. Please try again later.', 'twork-rewards'),
+            ), 429);
+        }
+        set_transient($rate_key, $attempts + 1, 60);
+
+        $login = sanitize_text_field((string) $request->get_param('email'));
+        $password = (string) $request->get_param('password');
+        if ($login === '' || $password === '') {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'code' => 'invalid_credentials',
+                'message' => __('Invalid email or password', 'twork-rewards'),
+            ), 401);
+        }
+
+        $user = null;
+        if (is_email($login)) {
+            $user = get_user_by('email', $login);
+        }
+        if (!$user instanceof WP_User) {
+            $user = get_user_by('login', $login);
+        }
+        if (!$user instanceof WP_User) {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'code' => 'invalid_credentials',
+                'message' => __('Invalid email or password', 'twork-rewards'),
+            ), 401);
+        }
+
+        $authenticated = wp_authenticate($user->user_login, $password);
+        if (is_wp_error($authenticated) || !($authenticated instanceof WP_User)) {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'code' => 'invalid_credentials',
+                'message' => __('Invalid email or password', 'twork-rewards'),
+            ), 401);
+        }
+
+        wp_set_current_user((int) $authenticated->ID);
+
+        $user_id = (int) $authenticated->ID;
+        $points_balance = (string) max(0, $this->calculate_points_balance_from_transactions($user_id));
+        $wallet_balance = get_user_meta($user_id, 'wallet_balance', true);
+        if ($wallet_balance === '' || $wallet_balance === false) {
+            $wallet_balance = '0';
+        }
+
+        $payload = array(
+            'id' => $user_id,
+            'email' => $authenticated->user_email,
+            'username' => $authenticated->user_login,
+            'first_name' => get_user_meta($user_id, 'first_name', true),
+            'last_name' => get_user_meta($user_id, 'last_name', true),
+            'name' => $authenticated->display_name,
+            'meta' => array(
+                'billing_phone' => get_user_meta($user_id, 'billing_phone', true),
+            ),
+            'points_balance' => $points_balance,
+            'wallet_balance' => (string) $wallet_balance,
+        );
+
+        return new WP_REST_Response(array(
+            'success' => true,
+            'user' => $payload,
+        ), 200);
     }
 
     /**
@@ -4130,7 +4001,7 @@ class TWork_Rewards_System
     {
         // No need to check - we're called from rest_api_init hook, so REST API is available
         // Register all routes
-        $this->register_luckybox_routes();
+        $this->register_auth_routes();
         // CRITICAL: Point History depends on this route. If it's not registered,
         // the mobile app receives 404 and shows an empty transaction history.
         $this->register_transactions_route();
@@ -5225,8 +5096,8 @@ class TWork_Rewards_System
                 'error' => 'invalid_quiz_data',
             );
         }
-        $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
-        if ($correct_index >= 0) {
+        $session_id = $this->derive_auto_run_session_id_for_resolve($quiz_data, $current_ts);
+        if ($session_id !== '' && $this->lookup_auto_run_session_winner_index($item_id, $session_id, $quiz_data) >= 0) {
             return array(
                 'resolved' => false,
                 'award' => null,
@@ -5246,22 +5117,14 @@ class TWork_Rewards_System
         set_transient($lock_key, true, 60);
 
         $award_out = null;
-        $session_id = 's0';
 
         try {
             $options = $quiz_data['options'] ?? array();
             $num_options = count($options);
             $override_index = isset($quiz_data['auto_run_override_index']) ? (int) $quiz_data['auto_run_override_index'] : -1;
-            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? '';
-            $start_ts = strtotime($started_at);
-            if (!$start_ts) {
-                $start_ts = time();
+            if ($session_id === '') {
+                $session_id = $this->derive_auto_run_session_id_for_resolve($quiz_data, $current_ts);
             }
-            $result_display_seconds = (int) $result_display_seconds;
-            $cycle_seconds = ((int) $period_minutes * 60) + $result_display_seconds;
-            $elapsed = max(0, (int) $current_ts - $start_ts);
-            $iteration = (int) floor($elapsed / $cycle_seconds);
-            $session_id = 's' . $iteration;
 
             if ($override_index >= 0 && $override_index < $num_options) {
                 $correct_index = $override_index;
@@ -5292,7 +5155,16 @@ class TWork_Rewards_System
                 )
             );
 
-            $award_out = $this->award_poll_winner_points($item_id);
+            $answer_mode = ($override_index >= 0) ? 'fixed' : 'random';
+            $this->persist_auto_run_session_winner_record(
+                $item_id,
+                $session_id,
+                (int) $correct_index,
+                $answer_mode,
+                $current_time
+            );
+
+            $award_out = $this->award_poll_winner_points($item_id, $session_id);
             if (is_array($award_out) && !empty($award_out['error'])) {
                 $this->twork_rewards_log_auto_run(
                     'award_returned_error',
@@ -5315,10 +5187,13 @@ class TWork_Rewards_System
                 array(
                     'poll_id' => $item_id,
                     'session_id' => $session_id,
+                    'correct_index' => (int) $correct_index,
+                    'answer_mode' => $answer_mode,
+                    'resolved_at' => $current_time,
                     'rewards_distributed' => 1,
                     'distributed_at' => current_time('mysql'),
                 ),
-                array('%d', '%s', '%d', '%s')
+                array('%d', '%s', '%d', '%s', '%s', '%d', '%s')
             );
 
             $fresh = $wpdb->get_row(
@@ -5443,6 +5318,19 @@ class TWork_Rewards_System
         $result_end_ts = $end_ts + $result_display_seconds;
         $correct_index = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
 
+        // Align with /poll/state: persist global anchor once so session ids (sN) stay consistent.
+        if (empty($quiz_data['started_at'])) {
+            $quiz_data['started_at'] = current_time('mysql');
+            $wpdb->update(
+                $table_items,
+                array('quiz_data' => wp_json_encode($quiz_data)),
+                array('id' => $item_id),
+                array('%s'),
+                array('%d')
+            );
+            $item['quiz_data'] = wp_json_encode($quiz_data);
+        }
+
         // Auto Run: If no end time set (e.g. legacy poll, or first load), initialize now
         if ($end_ts <= 0) {
             $now = current_time('mysql');
@@ -5450,7 +5338,7 @@ class TWork_Rewards_System
             // CRITICAL FIX: Eliminate Time Drift!
             // Calculate the exact mathematical boundaries of the current cycle
             // based on 'started_at' so it perfectly matches the App's rest_poll_state logic.
-            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? $now;
+            $started_at = $quiz_data['started_at'] ?? $now;
             $start_ts = strtotime($started_at);
             if (!$start_ts) {
                 $start_ts = strtotime($now);
@@ -5564,9 +5452,25 @@ class TWork_Rewards_System
             unset($quiz_data['poll_resolved_at']);
             $now = current_time('mysql');
             $now_ts = strtotime($now);
-            $new_end_ts = $now_ts + ($period_minutes * 60);
-            $quiz_data['poll_actual_start_at'] = $now;
-            $quiz_data['poll_voting_start_time'] = $now;
+            $voting_seconds = (int) $period_minutes * 60;
+            $cycle_seconds = $voting_seconds + (int) $result_display_seconds;
+            $started_at = $quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? $now;
+            $start_ts = strtotime($started_at);
+            if (!$start_ts) {
+                $start_ts = $now_ts;
+                $quiz_data['started_at'] = $now;
+            }
+            $elapsed = max(0, $now_ts - $start_ts);
+            $iteration = (int) floor($elapsed / $cycle_seconds);
+            $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
+            $results_ends_ts = $cycle_start_ts + $cycle_seconds;
+            if ($now_ts >= $results_ends_ts) {
+                $iteration++;
+                $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
+            }
+            $new_end_ts = $cycle_start_ts + $voting_seconds;
+            $quiz_data['poll_actual_start_at'] = date('Y-m-d H:i:s', $cycle_start_ts);
+            $quiz_data['poll_voting_start_time'] = date('Y-m-d H:i:s', $cycle_start_ts);
             $quiz_data['poll_voting_end_time'] = date('Y-m-d H:i:s', $new_end_ts);
 
             $wpdb->update(
@@ -6063,6 +5967,11 @@ class TWork_Rewards_System
                                     $deduction_meta = $decoded_deduction_meta;
                                 }
                             }
+                            // Keep winner snapshot bound to the currently resolving poll session.
+                            $deduction_session = isset($deduction_meta['session_id']) ? trim((string) $deduction_meta['session_id']) : '';
+                            if ($deduction_session !== '' && $deduction_session !== (string) $session_id) {
+                                continue;
+                            }
                             if (
                                 !$has_selected_options &&
                                 isset($deduction_meta['selected_options']) &&
@@ -6240,10 +6149,7 @@ class TWork_Rewards_System
                     }
                 }
             }
-            $winning_option_payload = array(
-                'index' => $correct_index,
-                'label' => (string) $label,
-            );
+            $winning_option_payload = $this->build_poll_winning_option_payload_from_quiz($quiz_data, $correct_index);
 
             $seen_loser_users = array();
             foreach ($candidate_cost_rows as $cost_row) {
@@ -6271,6 +6177,11 @@ class TWork_Rewards_System
                     if (is_array($decoded_cost_meta)) {
                         $cost_meta = $decoded_cost_meta;
                     }
+                }
+                // Avoid cross-session updates when the same poll runs in multiple rounds.
+                $cost_session = isset($cost_meta['session_id']) ? trim((string) $cost_meta['session_id']) : '';
+                if ($cost_session !== '' && $cost_session !== (string) $session_id) {
+                    continue;
                 }
 
                 if (
@@ -6460,6 +6371,269 @@ class TWork_Rewards_System
     }
 
     /**
+     * AUTO_RUN phase at a timestamp — must match GET /poll/state session + state rules.
+     *
+     * @param array    $quiz_data
+     * @param int|null $now_ts
+     * @return array{session_id: string, state: string, ends_at: string|null}
+     */
+    public static function derive_auto_run_phase_at_timestamp(array $quiz_data, $now_ts = null)
+    {
+        $started_at = (string) ($quiz_data['started_at'] ?? $quiz_data['poll_actual_start_at'] ?? '');
+        $start_ts = !empty($started_at) ? strtotime($started_at) : 0;
+        if ($start_ts <= 0) {
+            return array(
+                'session_id' => '',
+                'state' => 'ACTIVE',
+                'ends_at' => null,
+            );
+        }
+
+        $period_minutes = isset($quiz_data['poll_duration'])
+            ? (int) $quiz_data['poll_duration']
+            : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
+        if ($period_minutes < 1) {
+            $period_minutes = 15;
+        }
+        $result_display_seconds = self::resolve_result_display_duration_seconds($quiz_data);
+        $voting_seconds = $period_minutes * 60;
+        $cycle_seconds = $voting_seconds + $result_display_seconds;
+        if ($cycle_seconds <= 0) {
+            return array(
+                'session_id' => '',
+                'state' => 'ACTIVE',
+                'ends_at' => null,
+            );
+        }
+
+        $now_ts = $now_ts !== null ? (int) $now_ts : time();
+        $elapsed = max(0, $now_ts - $start_ts);
+        $iteration = (int) floor($elapsed / $cycle_seconds);
+        $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
+        $voting_ends_ts = $cycle_start_ts + $voting_seconds;
+        $results_ends_ts = $cycle_start_ts + $cycle_seconds;
+
+        $session_id = 's' . $iteration;
+        if ($now_ts < $voting_ends_ts) {
+            return array(
+                'session_id' => $session_id,
+                'state' => 'ACTIVE',
+                'ends_at' => gmdate('Y-m-d\TH:i:s\Z', $voting_ends_ts),
+            );
+        }
+        if ($now_ts < $results_ends_ts) {
+            return array(
+                'session_id' => $session_id,
+                'state' => 'SHOWING_RESULTS',
+                'ends_at' => gmdate('Y-m-d\TH:i:s\Z', $results_ends_ts),
+            );
+        }
+
+        $iteration++;
+        $cycle_start_ts = $start_ts + ($iteration * $cycle_seconds);
+        $voting_ends_ts = $cycle_start_ts + $voting_seconds;
+
+        return array(
+            'session_id' => 's' . $iteration,
+            'state' => 'ACTIVE',
+            'ends_at' => gmdate('Y-m-d\TH:i:s\Z', $voting_ends_ts),
+        );
+    }
+
+    /**
+     * AUTO_RUN session id at a timestamp (aligned with /poll/state).
+     *
+     * @param array    $quiz_data
+     * @param int|null $now_ts
+     * @return string
+     */
+    public static function derive_auto_run_session_id_for_timestamp(array $quiz_data, $now_ts = null)
+    {
+        $phase = self::derive_auto_run_phase_at_timestamp($quiz_data, $now_ts);
+
+        return (string) ($phase['session_id'] ?? '');
+    }
+
+    /**
+     * Session id for the voting cycle being resolved (uses poll_voting_end_time, not "now" floor).
+     *
+     * @param array    $quiz_data
+     * @param int|null $current_ts
+     * @return string
+     */
+    public function derive_auto_run_session_id_for_resolve(array $quiz_data, $current_ts = null)
+    {
+        $end_time = $quiz_data['poll_voting_end_time'] ?? '';
+        $end_ts = !empty($end_time) ? strtotime($end_time) : 0;
+        if ($end_ts > 0) {
+            $result_display_seconds = self::resolve_result_display_duration_seconds($quiz_data);
+            $result_end_ts = $end_ts + $result_display_seconds;
+            $now_ts = $current_ts !== null ? (int) $current_ts : current_time('timestamp');
+            // Anchor inside the result window for the cycle that just closed (catch-up safe).
+            $anchor_ts = $end_ts + 1;
+            if ($now_ts > $end_ts && $now_ts < $result_end_ts) {
+                $anchor_ts = $now_ts;
+            }
+
+            return self::derive_auto_run_session_id_for_timestamp($quiz_data, $anchor_ts);
+        }
+
+        return self::derive_auto_run_session_id_for_timestamp(
+            $quiz_data,
+            $current_ts !== null ? (int) $current_ts : current_time('timestamp')
+        );
+    }
+
+    /**
+     * Derive AUTO_RUN current session id from quiz timing metadata.
+     *
+     * @param array $quiz_data
+     * @param int|null $current_ts
+     * @return string
+     */
+    private function derive_auto_run_current_session_id(array $quiz_data, $current_ts = null)
+    {
+        $mode = strtolower((string) ($quiz_data['poll_mode'] ?? ''));
+        if ($mode !== 'auto_run') {
+            return '';
+        }
+
+        return self::derive_auto_run_session_id_for_timestamp(
+            $quiz_data,
+            $current_ts !== null ? (int) $current_ts : current_time('timestamp')
+        );
+    }
+
+    /**
+     * Transient key for an AUTO_RUN session winner snapshot (REST fallback).
+     *
+     * @param int    $poll_id
+     * @param string $session_id
+     * @return string
+     */
+    public static function auto_run_session_winner_transient_key($poll_id, $session_id)
+    {
+        return 'twork_auto_run_winner_' . absint($poll_id) . '_' . md5((string) $session_id);
+    }
+
+    /**
+     * Lookup immutable winner for a past AUTO_RUN session (never uses live admin override).
+     *
+     * @param int    $poll_id
+     * @param string $session_id
+     * @param array  $quiz_data
+     * @return int Winner index, or -1 when unknown / not yet resolved.
+     */
+    public function lookup_auto_run_session_winner_index($poll_id, $session_id, array $quiz_data)
+    {
+        global $wpdb;
+
+        $poll_id = absint($poll_id);
+        $session_id = sanitize_text_field((string) $session_id);
+        if ($poll_id <= 0) {
+            return -1;
+        }
+
+        $table_rewards = $wpdb->prefix . 'twork_poll_session_rewards';
+        if ($session_id !== '' && $wpdb->get_var("SHOW TABLES LIKE '$table_rewards'") === $table_rewards) {
+            $stored = $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT correct_index FROM $table_rewards WHERE poll_id = %d AND session_id = %s",
+                    $poll_id,
+                    $session_id
+                )
+            );
+            if ($stored !== null && (int) $stored >= 0) {
+                return (int) $stored;
+            }
+        }
+
+        $saved = get_transient(self::auto_run_session_winner_transient_key($poll_id, $session_id));
+        if ($saved !== false && (int) $saved >= 0) {
+            return (int) $saved;
+        }
+
+        $global_correct = isset($quiz_data['correct_index']) ? (int) $quiz_data['correct_index'] : -1;
+        if ($global_correct >= 0 && $session_id !== '') {
+            $current_session = self::derive_auto_run_session_id_for_timestamp(
+                $quiz_data,
+                current_time('timestamp')
+            );
+            if ($session_id === $current_session) {
+                return $global_correct;
+            }
+            // Result phase: same session id as /poll/state while showing results.
+            $phase = self::derive_auto_run_phase_at_timestamp($quiz_data, current_time('timestamp'));
+            if (
+                ($phase['state'] ?? '') === 'SHOWING_RESULTS'
+                && $session_id === ($phase['session_id'] ?? '')
+            ) {
+                return $global_correct;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * Persist per-session AUTO_RUN winner at resolve time (immutable for historical REST).
+     *
+     * @param int    $poll_id
+     * @param string $session_id
+     * @param int    $correct_index
+     * @param string $answer_mode fixed|random
+     * @param string $resolved_at MySQL datetime
+     * @return void
+     */
+    private function persist_auto_run_session_winner_record(
+        $poll_id,
+        $session_id,
+        $correct_index,
+        $answer_mode,
+        $resolved_at
+    ) {
+        set_transient(
+            self::auto_run_session_winner_transient_key($poll_id, $session_id),
+            (int) $correct_index,
+            7 * DAY_IN_SECONDS
+        );
+    }
+
+    /**
+     * Resolve winning option index from quiz data or statistics fallback.
+     *
+     * @param array|null $quiz_data
+     * @param array|null $stats
+     * @return int|null
+     */
+    private function resolve_poll_winning_index_for_result($quiz_data, $stats)
+    {
+        if (is_array($quiz_data) && isset($quiz_data['correct_index'])) {
+            $ix = (int) $quiz_data['correct_index'];
+            if ($ix >= 0) {
+                return $ix;
+            }
+        }
+        if (!is_array($stats) || !isset($stats['vote_counts']) || !is_array($stats['vote_counts'])) {
+            return null;
+        }
+        $bestIndex = null;
+        $bestVotes = -1;
+        foreach ($stats['vote_counts'] as $k => $v) {
+            $ix = is_numeric($k) ? (int) $k : intval(preg_replace('/[^0-9-]/', '', (string) $k));
+            if ($ix < 0) {
+                continue;
+            }
+            $votes = max(0, (int) $v);
+            if ($votes > $bestVotes) {
+                $bestVotes = $votes;
+                $bestIndex = $ix;
+            }
+        }
+        return $bestIndex;
+    }
+
+    /**
      * Build a single engagement feed item for auto-update (same structure as feed array items).
      * Used in interact response so the app can merge without calling feed again.
      *
@@ -6603,6 +6777,7 @@ class TWork_Rewards_System
                     'voting_status' => $voting_status,
                     'current_time' => $current_time,
                     'poll_mode' => $poll_mode,
+                    'current_session_id' => $this->derive_auto_run_current_session_id($quiz_data, $current_timestamp),
                     'poll_period_minutes' => $poll_period_minutes,
                     'poll_duration' => $poll_period_minutes,
                     'seconds_until_close' => $seconds_until_close,
@@ -6610,8 +6785,12 @@ class TWork_Rewards_System
                     'result_display_seconds' => $result_display_seconds,
                     'result_display_duration_seconds' => $result_display_seconds,
                 );
+                if (!empty($quiz_data['poll_actual_start_at'])) {
+                    $feed_item['poll_voting_schedule']['poll_actual_start_at'] = $quiz_data['poll_actual_start_at'];
+                }
                 if (!empty($quiz_data['poll_voting_start_time'])) {
                     $feed_item['poll_voting_schedule']['start_time'] = $quiz_data['poll_voting_start_time'];
+                    $feed_item['poll_voting_schedule']['poll_voting_start_time'] = $quiz_data['poll_voting_start_time'];
                     $feed_item['poll_voting_schedule']['start_time_formatted'] = date_i18n(
                         get_option('date_format') . ' ' . get_option('time_format'),
                         strtotime($quiz_data['poll_voting_start_time'])
@@ -6631,13 +6810,14 @@ class TWork_Rewards_System
                 if ($voting_status === 'showing_result' || $voting_status === 'ended') {
                     $stats = $this->get_engagement_item_statistics($item_id);
                     if ($stats) {
+                        $resolved_winning_index = $this->resolve_poll_winning_index_for_result($quiz_data, $stats);
                         $winning_option_single = null;
-                        if ($correct_index_for_result !== null &&
-                                $correct_index_for_result >= 0 &&
+                        if ($resolved_winning_index !== null &&
+                                $resolved_winning_index >= 0 &&
                                 isset($stats['options']) &&
                                 is_array($stats['options']) &&
-                                array_key_exists($correct_index_for_result, $stats['options'])) {
-                            $raw_win = $stats['options'][$correct_index_for_result];
+                                array_key_exists($resolved_winning_index, $stats['options'])) {
+                            $raw_win = $stats['options'][$resolved_winning_index];
                             if (is_array($raw_win)) {
                                 $winning_option_single = array(
                                     'text' => isset($raw_win['text']) ? (string) $raw_win['text'] : (isset($raw_win[0]) ? (string) $raw_win[0] : ''),
@@ -6656,7 +6836,7 @@ class TWork_Rewards_System
                         $user_outcome = $this->compute_poll_feed_user_outcome_for_user(
                             $item,
                             is_array($quiz_full_for_user) ? $quiz_full_for_user : array(),
-                            ($correct_index_for_result !== null && $correct_index_for_result >= 0) ? $correct_index_for_result : null,
+                            ($resolved_winning_index !== null && $resolved_winning_index >= 0) ? $resolved_winning_index : null,
                             $has_interacted && $interaction_data ? $interaction_data : null
                         );
                         $feed_item['poll_result'] = array(
@@ -6664,7 +6844,7 @@ class TWork_Rewards_System
                             'vote_percentages' => $stats['vote_percentages'],
                             'total_votes' => $stats['total_votes'],
                             'options' => $stats['options'],
-                            'winning_index' => ($correct_index_for_result !== null && $correct_index_for_result >= 0) ? $correct_index_for_result : null,
+                            'winning_index' => ($resolved_winning_index !== null && $resolved_winning_index >= 0) ? $resolved_winning_index : null,
                             'winning_option' => $winning_option_single,
                             'user_won' => (bool) $user_outcome['user_won'],
                             'points_earned' => (int) $user_outcome['points_earned'],
@@ -6835,6 +7015,7 @@ class TWork_Rewards_System
                         'voting_allowed' => $voting_allowed,
                         'voting_status' => $voting_status,
                         'poll_mode' => $quiz_data['poll_mode'] ?? 'schedule',
+                        'current_session_id' => $this->derive_auto_run_current_session_id($quiz_data, $current_ts),
                         'poll_period_minutes' => $period_minutes,
                         'poll_duration' => $period_minutes,
                         'seconds_until_close' => $seconds_until_close,
@@ -6842,13 +7023,17 @@ class TWork_Rewards_System
                         'result_display_seconds' => $result_display_sec,
                         'result_display_duration_seconds' => $result_display_sec,
                     );
+                    if (!empty($quiz_data['poll_actual_start_at'])) {
+                        $entry['poll_voting_schedule']['poll_actual_start_at'] = $quiz_data['poll_actual_start_at'];
+                    }
+                    if (!empty($quiz_data['poll_voting_start_time'])) {
+                        $entry['poll_voting_schedule']['poll_voting_start_time'] = $quiz_data['poll_voting_start_time'];
+                    }
                     $this->attach_poll_option_totals_for_open_voting($entry, $id, $voting_status);
                     if ($voting_status === 'showing_result' || $voting_status === 'ended') {
                         $stats = $this->get_engagement_item_statistics($id);
                         if ($stats) {
-                            $win_ix = (isset($quiz_data['correct_index']) && (int) $quiz_data['correct_index'] >= 0)
-                                ? (int) $quiz_data['correct_index']
-                                : null;
+                            $win_ix = $this->resolve_poll_winning_index_for_result($quiz_data, $stats);
                             $row_for_item = array(
                                 'id' => (int) $item_row['id'],
                                 'reward_points' => isset($item_row['reward_points']) ? (int) $item_row['reward_points'] : 0,
@@ -7126,6 +7311,7 @@ class TWork_Rewards_System
                                 'voting_status' => $voting_status,
                                 'current_time' => $current_time,
                                 'poll_mode' => $poll_mode,
+                                'current_session_id' => $this->derive_auto_run_current_session_id($quiz_data, $current_timestamp),
                                 'poll_period_minutes' => $poll_period_minutes,
                                 'poll_duration' => $poll_period_minutes,
                                 'seconds_until_close' => $seconds_until_close,
@@ -7133,9 +7319,13 @@ class TWork_Rewards_System
                                 'result_display_seconds' => $result_display_sec,
                                 'result_display_duration_seconds' => $result_display_sec,
                             );
+                            if (!empty($quiz_data['poll_actual_start_at'])) {
+                                $feed_item['poll_voting_schedule']['poll_actual_start_at'] = $quiz_data['poll_actual_start_at'];
+                            }
 
                             if (!empty($quiz_data['poll_voting_start_time'])) {
                                 $feed_item['poll_voting_schedule']['start_time'] = $quiz_data['poll_voting_start_time'];
+                                $feed_item['poll_voting_schedule']['poll_voting_start_time'] = $quiz_data['poll_voting_start_time'];
                                 $feed_item['poll_voting_schedule']['start_time_formatted'] = date_i18n(
                                     get_option('date_format') . ' ' . get_option('time_format'),
                                     strtotime($quiz_data['poll_voting_start_time'])
@@ -7599,10 +7789,8 @@ class TWork_Rewards_System
             if ($item['type'] === 'poll' && $session_id === '' && !empty($item['quiz_data'])) {
                 $qd = json_decode($item['quiz_data'], true);
                 if (is_array($qd) && strtoupper((string) ($qd['poll_mode'] ?? '')) === 'AUTO_RUN') {
-                    $started_at = $qd['started_at'] ?? $qd['poll_actual_start_at'] ?? '';
-                    if (empty($started_at)) {
-                        $started_at = current_time('mysql');
-                        $qd['started_at'] = $started_at;
+                    if (empty($qd['started_at']) && empty($qd['poll_actual_start_at'])) {
+                        $qd['started_at'] = current_time('mysql');
                         $wpdb->update(
                             $table_items,
                             array('quiz_data' => wp_json_encode($qd)),
@@ -7611,21 +7799,7 @@ class TWork_Rewards_System
                             array('%d')
                         );
                     }
-                    $poll_dur = max(1, (int) ($qd['poll_duration'] ?? 15));
-                    $result_sec = self::resolve_result_display_duration_seconds($qd);
-                    $cycle_sec = ($poll_dur * 60) + $result_sec;
-                    $voting_sec = $poll_dur * 60;
-                    $start_ts = strtotime($started_at);
-                    $now_ts = time();
-                    $elapsed = max(0, $now_ts - $start_ts);
-                    $iteration = (int) floor($elapsed / $cycle_sec);
-                    $cycle_start_ts = $start_ts + ($iteration * $cycle_sec);
-                    $voting_ends_ts = $cycle_start_ts + $voting_sec;
-                    $results_ends_ts = $cycle_start_ts + $cycle_sec;
-                    if ($now_ts >= $results_ends_ts) {
-                        $iteration++;
-                    }
-                    $session_id = 's' . $iteration;
+                    $session_id = self::derive_auto_run_session_id_for_timestamp($qd, time());
                 }
             }
 
@@ -9958,9 +10132,10 @@ class TWork_Rewards_System
      * @param int $points Points to deduct (positive number)
      * @param int $request_id Exchange request ID
      * @param string $phone Phone number for reference
+     * @param string $status Transaction status (pending = legacy hold; approved = deducts balance)
      * @return int|false Transaction ID or false on failure
      */
-    private function create_exchange_point_transaction($user_id, $points, $request_id, $phone = '')
+    private function create_exchange_point_transaction($user_id, $points, $request_id, $phone = '', $status = 'approved')
     {
         global $wpdb;
 
@@ -10035,7 +10210,7 @@ class TWork_Rewards_System
                 'order_id' => $order_id,
                 'expires_at' => null,  // Redeem transactions don't expire
                 'created_at' => current_time('mysql'),
-                'status' => 'pending',  // Exchange requests start as pending until admin approves
+                'status' => in_array($status, array('pending', 'approved', 'rejected'), true) ? $status : 'approved',
             ),
             array('%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s')
         );
@@ -10071,6 +10246,118 @@ class TWork_Rewards_System
         }
 
         return $transaction_id;
+    }
+
+    /**
+     * Sum points_value for pending exchange requests (not yet deducted from balance).
+     *
+     * @param int $user_id User ID.
+     * @param int $exclude_request_id Optional request ID to exclude from the sum.
+     * @return float
+     */
+    private function get_user_pending_exchange_points_sum($user_id, $exclude_request_id = 0)
+    {
+        global $wpdb;
+        $exchange_table = $this->exchange_requests_table_name();
+
+        if ($exclude_request_id > 0) {
+            $sum = $wpdb->get_var($wpdb->prepare(
+                "SELECT COALESCE(SUM(CAST(points_value AS DECIMAL(20,2))), 0) 
+                 FROM $exchange_table 
+                 WHERE user_id = %d AND status = %s AND id != %d",
+                $user_id,
+                'pending',
+                $exclude_request_id
+            ));
+        } else {
+            $sum = $wpdb->get_var($wpdb->prepare(
+                "SELECT COALESCE(SUM(CAST(points_value AS DECIMAL(20,2))), 0) 
+                 FROM $exchange_table 
+                 WHERE user_id = %d AND status = %s",
+                $user_id,
+                'pending'
+            ));
+        }
+
+        return is_numeric($sum) ? (float) $sum : 0.0;
+    }
+
+    /**
+     * Deduct points when admin approves an exchange (not on request creation).
+     *
+     * @param int    $user_id User ID.
+     * @param int    $request_id Exchange request ID.
+     * @param int    $points Points to deduct.
+     * @param string $phone Optional phone reference.
+     * @return bool
+     */
+    private function deduct_exchange_points_on_approve($user_id, $request_id, $points, $phone = '')
+    {
+        if ($points <= 0) {
+            return false;
+        }
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'twork_point_transactions';
+        $table_exists = $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s AND table_name = %s',
+            DB_NAME,
+            $table_name
+        ));
+
+        if (!$table_exists) {
+            $existing_points_raw = get_user_meta($user_id, 'my_points', true);
+            $existing_points = ($existing_points_raw === '' || $existing_points_raw === false || $existing_points_raw === null)
+                ? 0.0
+                : (is_numeric($existing_points_raw) ? (float) $existing_points_raw : 0.0);
+            $new_points = max(0.0, $existing_points - (float) $points);
+            $stored = (floor($new_points) == $new_points)
+                ? (string) (int) $new_points
+                : (string) $new_points;
+            update_user_meta($user_id, 'my_points', $stored);
+            update_user_meta($user_id, 'my_point', $stored);
+            update_user_meta($user_id, 'points_balance', max(0, (int) $new_points));
+            update_user_meta($user_id, 'my_points_updated_at', time());
+            return true;
+        }
+
+        $order_id_pattern = 'exchange:' . $request_id . ':%';
+        $existing = $wpdb->get_row($wpdb->prepare(
+            "SELECT id, status FROM $table_name 
+             WHERE user_id = %d 
+             AND order_id LIKE %s 
+             AND type = 'redeem'
+             ORDER BY created_at DESC
+             LIMIT 1",
+            $user_id,
+            $order_id_pattern
+        ));
+
+        if ($existing) {
+            if ($existing->status === 'approved') {
+                $this->refresh_user_points_cache($user_id);
+                return true;
+            }
+            // Legacy: pending redeem created at request time — mark approved (already in balance calc).
+            $wpdb->update(
+                $table_name,
+                array('status' => 'approved'),
+                array('id' => $existing->id),
+                array('%s'),
+                array('%d')
+            );
+        } else {
+            $created = $this->create_exchange_point_transaction($user_id, $points, $request_id, $phone, 'approved');
+            if ($created === false) {
+                return false;
+            }
+        }
+
+        delete_user_meta($user_id, 'points_balance_cache');
+        delete_user_meta($user_id, 'points_balance_cache_time');
+        $this->refresh_user_points_cache($user_id);
+
+        return true;
     }
 
     /**
@@ -10135,10 +10422,8 @@ class TWork_Rewards_System
         foreach ($transactions as $txn) {
             $txn_status = $txn['status'];
 
-            // Only count transactions that actually deducted points
-            // Pending and approved redeem transactions both deduct points
-            // Rejected transactions are ignored (they don't affect balance)
-            if (in_array($txn_status, array('pending', 'approved'), true)) {
+            // Only approved redeems actually deducted balance (pending holds are legacy only).
+            if ($txn_status === 'approved') {
                 $valid_transactions[] = $txn;
             }
         }
@@ -10377,45 +10662,6 @@ class TWork_Rewards_System
      */
     private function refund_exchange_points($user_id, $points, $request_id, $reason = '')
     {
-        if ($points <= 0) {
-            error_log(sprintf(
-                'T-Work Rewards: Cannot refund exchange points - invalid points amount. User ID: %d, Points: %s, Request ID: %d',
-                $user_id,
-                $points,
-                $request_id
-            ));
-            return false;
-        }
-
-        // CRITICAL PROFESSIONAL FIX: Validate refund amount against request amount
-        // This is the FINAL safety check to prevent double refunds
-        // Get the request amount from database as absolute source of truth
-        global $wpdb;
-        $exchange_table = $this->exchange_requests_table_name();
-        $request_data = $wpdb->get_row($wpdb->prepare(
-            "SELECT points_value FROM $exchange_table WHERE id = %d",
-            $request_id
-        ), ARRAY_A);
-
-        if ($request_data && !empty($request_data['points_value'])) {
-            $request_points_value = (float) $request_data['points_value'];
-
-            // ABSOLUTE SAFETY: Never refund more than the request amount
-            // If the passed points exceed the request amount, cap it at request amount
-            if ($points > $request_points_value) {
-                error_log(sprintf(
-                    'T-Work Rewards: CRITICAL SAFETY - refund_exchange_points: Refund amount (%s) exceeds request amount (%s). Capping at request amount to prevent double refund. User ID: %d, Request ID: %d',
-                    $points,
-                    $request_points_value,
-                    $user_id,
-                    $request_id
-                ));
-                $points = $request_points_value;  // Cap at request amount
-            }
-        }
-
-        // PROFESSIONAL FIX: Check if a refund transaction already exists for this request
-        // This prevents duplicate refunds if the function is called multiple times
         global $wpdb;
         $table_name = $wpdb->prefix . 'twork_point_transactions';
         $table_exists = $wpdb->get_var($wpdb->prepare(
@@ -10425,180 +10671,28 @@ class TWork_Rewards_System
         ));
 
         if (!$table_exists) {
-            // CRITICAL FIX: If points system table doesn't exist, we need to manually update user meta
-            // This ensures backward compatibility and prevents silent failures
-            error_log(sprintf(
-                'T-Work Rewards: Points system table not found. Manually updating user meta for refund. User ID: %d, Points: %s, Request ID: %d',
-                $user_id,
-                $points,
-                $request_id
-            ));
-
-            // Manually update my_points and points_balance
-            $existing_points_raw = get_user_meta($user_id, 'my_points', true);
-            $existing_points = ($existing_points_raw === '' || $existing_points_raw === false || $existing_points_raw === null)
-                ? 0.0
-                : (is_numeric($existing_points_raw) ? (float) $existing_points_raw : 0.0);
-
-            $new_points = max(0.0, $existing_points + (float) $points);
-            $stored_points = (floor($new_points) == $new_points)
-                ? (string) (int) $new_points
-                : (string) $new_points;
-
-            update_user_meta($user_id, 'my_points', $stored_points);
-            update_user_meta($user_id, 'my_point', $stored_points);
-            update_user_meta($user_id, 'my_points_updated_at', time());
-
-            // Also update points_balance
-            $current_balance = (int) get_user_meta($user_id, 'points_balance', true);
-            if ($current_balance === false || $current_balance === '') {
-                $current_balance = 0;
+            if ($points > 0) {
+                $existing_points_raw = get_user_meta($user_id, 'my_points', true);
+                $existing_points = ($existing_points_raw === '' || $existing_points_raw === false || $existing_points_raw === null)
+                    ? 0.0
+                    : (is_numeric($existing_points_raw) ? (float) $existing_points_raw : 0.0);
+                $new_points = max(0.0, $existing_points + (float) $points);
+                $stored_points = (floor($new_points) == $new_points)
+                    ? (string) (int) $new_points
+                    : (string) $new_points;
+                update_user_meta($user_id, 'my_points', $stored_points);
+                update_user_meta($user_id, 'my_point', $stored_points);
+                update_user_meta($user_id, 'my_points_updated_at', time());
+                $current_balance = (int) get_user_meta($user_id, 'points_balance', true);
+                if ($current_balance === false || $current_balance === '') {
+                    $current_balance = 0;
+                }
+                update_user_meta($user_id, 'points_balance', max(0, $current_balance + (int) $points));
             }
-            $new_balance = max(0, $current_balance + (int) $points);
-            update_user_meta($user_id, 'points_balance', $new_balance);
-
-            error_log(sprintf(
-                'T-Work Rewards: Exchange points refunded (manual update). User ID: %d, Points: %s, Request ID: %d, Old Balance: %s, New Balance: %s',
-                $user_id,
-                $points,
-                $request_id,
-                $existing_points_raw ?: '0',
-                $stored_points
-            ));
-
             return true;
         }
 
-        // CRITICAL PROFESSIONAL FIX: Check for existing refund transaction WITHOUT time limit
-        // This prevents ANY duplicate refunds, not just recent ones
-        // Use a more specific pattern to match exact refund transactions for this request
-        $existing_refund = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table_name 
-             WHERE user_id = %d 
-             AND order_id LIKE %s 
-             AND type = 'refund'
-             AND status = 'approved'
-             LIMIT 1",
-            $user_id,
-            'exchange_refund:' . $request_id . ':%'
-        ));
-
-        if ($existing_refund) {
-            // CRITICAL: Refund already exists - log and skip to prevent double refund
-            error_log(sprintf(
-                'T-Work Rewards: CRITICAL - Exchange request #%d already has a refund transaction (ID: %d). Skipping duplicate refund to prevent 2x refund. User ID: %d, Request ID: %d',
-                $request_id,
-                $existing_refund,
-                $user_id,
-                $request_id
-            ));
-            // CRITICAL FIX: Even if refund exists, refresh cache to ensure balance is correct
-            $this->refresh_user_points_cache($user_id);
-            return true;  // Already refunded, return success
-        }
-
-        // CRITICAL PROFESSIONAL FIX: Double-check for existing refund BEFORE creating
-        // This prevents race conditions where two calls happen simultaneously
-        $double_check_refund = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table_name 
-             WHERE user_id = %d 
-             AND order_id LIKE %s 
-             AND type = 'refund'
-             AND status = 'approved'
-             LIMIT 1",
-            $user_id,
-            'exchange_refund:' . $request_id . ':%'
-        ));
-
-        if ($double_check_refund) {
-            error_log(sprintf(
-                'T-Work Rewards: CRITICAL - Race condition detected: Refund transaction already exists (ID: %d) before creation. Skipping to prevent 2x refund. User ID: %d, Request ID: %d',
-                $double_check_refund,
-                $user_id,
-                $request_id
-            ));
-            $this->refresh_user_points_cache($user_id);
-            return true;  // Already refunded
-        }
-
-        // CRITICAL PROFESSIONAL FIX: Final validation before creating refund transaction
-        // Get request amount one more time to ensure we're using the correct value
-        $exchange_table = $this->exchange_requests_table_name();
-        $final_request_check = $wpdb->get_row($wpdb->prepare(
-            "SELECT points_value FROM $exchange_table WHERE id = %d",
-            $request_id
-        ), ARRAY_A);
-
-        if ($final_request_check && !empty($final_request_check['points_value'])) {
-            $final_request_points = (float) $final_request_check['points_value'];
-
-            // ABSOLUTE FINAL SAFETY: If points parameter doesn't match request, use request amount
-            if (abs($points - $final_request_points) > 0.01) {
-                error_log(sprintf(
-                    'T-Work Rewards: CRITICAL - Points parameter (%s) does not match request amount (%s). Using request amount for refund transaction. User ID: %d, Request ID: %d',
-                    $points,
-                    $final_request_points,
-                    $user_id,
-                    $request_id
-                ));
-                $points = $final_request_points;  // Use request amount
-            }
-        }
-
-        // CRITICAL LOG: Log exactly what we're about to refund
-        error_log(sprintf(
-            'T-Work Rewards: Creating refund transaction. User ID: %d, Request ID: %d, Points to Refund: %s, Request Points Value: %s',
-            $user_id,
-            $request_id,
-            $points,
-            $final_request_check && !empty($final_request_check['points_value']) ? $final_request_check['points_value'] : 'N/A'
-        ));
-
-        // PROFESSIONAL ARCHITECTURE: Create refund transaction (single source of truth).
-        $refund_transaction_id = $this->create_exchange_refund_transaction(
-            $user_id,
-            (int) round($points),  // Use round() to ensure proper integer conversion
-            $request_id,
-            $reason
-        );
-
-        // CRITICAL FIX: Validate that refund transaction was created successfully
-        if ($refund_transaction_id === false) {
-            error_log(sprintf(
-                'T-Work Rewards: CRITICAL ERROR - Failed to create refund transaction. User ID: %d, Points: %s, Request ID: %d, Reason: %s',
-                $user_id,
-                $points,
-                $request_id,
-                $reason
-            ));
-            return false;  // Return false if transaction creation failed
-        }
-
-        // CRITICAL VERIFICATION: Verify only ONE refund transaction was created
-        $refund_count = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table_name 
-             WHERE user_id = %d 
-             AND order_id LIKE %s 
-             AND type = 'refund'
-             AND status = 'approved'",
-            $user_id,
-            'exchange_refund:' . $request_id . ':%'
-        ));
-
-        if ($refund_count > 1) {
-            error_log(sprintf(
-                'T-Work Rewards: CRITICAL ERROR - Multiple refund transactions detected (%d) for request. This indicates a serious bug. User ID: %d, Request ID: %d, Refund Transaction ID: %d',
-                $refund_count,
-                $user_id,
-                $request_id,
-                $refund_transaction_id
-            ));
-            // Don't fail, but log the critical error for investigation
-        }
-
-        // CRITICAL FIX: Update ALL original redeem transactions status to rejected BEFORE refreshing balance
-        // This ensures balance calculation doesn't count them twice
-        // Update status for ALL transactions matching this request (in case of duplicates)
+        // Void exchange redeems only — never add a separate refund transaction (prevents 2x balance).
         $order_id_pattern = 'exchange:' . $request_id . ':%';
         $status_update_result = $wpdb->query($wpdb->prepare(
             "UPDATE $table_name 
@@ -10613,60 +10707,25 @@ class TWork_Rewards_System
 
         if ($status_update_result === false) {
             error_log(sprintf(
-                'T-Work Rewards: WARNING - Failed to update original transaction status to rejected. User ID: %d, Request ID: %d. Refund transaction was created (ID: %d), Error: %s',
+                'T-Work Rewards: Failed to void exchange redeem on reject. User ID: %d, Request ID: %d, Error: %s',
                 $user_id,
                 $request_id,
-                $refund_transaction_id,
                 $wpdb->last_error ?: 'Unknown error'
             ));
-            // Don't fail the refund if status update fails - refund transaction is more important
-        } else {
-            $updated_count = intval($status_update_result);
-            if ($updated_count > 1) {
-                error_log(sprintf(
-                    'T-Work Rewards: WARNING - Updated %d redeem transactions to rejected status (possible duplicates detected). User ID: %d, Request ID: %d. This may indicate duplicate transactions were created.',
-                    $updated_count,
-                    $user_id,
-                    $request_id
-                ));
-            } else if ($updated_count === 0) {
-                error_log(sprintf(
-                    'T-Work Rewards: WARNING - No redeem transactions found to update to rejected status. User ID: %d, Request ID: %d. They may already be rejected or not exist.',
-                    $user_id,
-                    $request_id
-                ));
-            }
+            return false;
         }
 
-        // CRITICAL: Refresh cache from transactions to ensure balance is updated.
-        // This must happen AFTER updating transaction statuses to 'rejected'
-        // so that rejected transactions are not counted in balance calculation
-        $updated_balance = $this->refresh_user_points_cache($user_id);
+        $voided_count = intval($status_update_result);
+        $this->refresh_user_points_cache($user_id);
 
-        // CRITICAL FIX: Verify that balance was actually updated
-        $final_balance = get_user_meta($user_id, 'my_points', true);
-        if (empty($final_balance) || !is_numeric($final_balance)) {
-            error_log(sprintf(
-                'T-Work Rewards: WARNING - Balance refresh may have failed. User ID: %d, Calculated Balance: %d, Stored my_points: %s',
-                $user_id,
-                $updated_balance,
-                $final_balance ?: 'empty'
-            ));
-        }
-
-        // Professional logging.
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log(
-                sprintf(
-                    'T-Work Rewards: Exchange points refunded successfully. User ID: %d, Points: %d, Request ID: %d, Reason: %s, New Balance: %d, Refund Transaction ID: %d',
-                    $user_id,
-                    $points,
-                    $request_id,
-                    $reason,
-                    $updated_balance,
-                    $refund_transaction_id
-                )
-            );
+            error_log(sprintf(
+                'T-Work Rewards: Exchange reject voided %d redeem transaction(s). User ID: %d, Request ID: %d, Reason: %s',
+                $voided_count,
+                $user_id,
+                $request_id,
+                $reason
+            ));
         }
 
         return true;
@@ -11090,99 +11149,6 @@ class TWork_Rewards_System
         return true;
     }
 
-    public function rest_luckybox_get_config(WP_REST_Request $request)
-    {
-        $user_id = absint($request->get_param('user_id'));
-        if ($user_id <= 0 || !get_user_by('ID', $user_id)) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Invalid user',
-            ), 400);
-        }
-
-        // Rate limiting: Prevent abuse (max 60 requests per minute per user)
-        $rate_limit_key = 'twork_luckybox_config_' . $user_id;
-        $request_count = get_transient($rate_limit_key);
-
-        if ($request_count !== false && $request_count >= 60) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Rate limit exceeded. Please try again later.',
-            ), 429);
-        }
-
-        // Increment counter
-        $new_count = ($request_count === false) ? 1 : ($request_count + 1);
-        set_transient($rate_limit_key, $new_count, 60);  // 60 seconds
-
-        // OPTIMIZED: Load all user meta in single query instead of multiple get_user_meta calls
-        global $wpdb;
-        $meta_keys = array(self::USER_META_LUCKYBOX_ENABLED, 'twork_luckybox_pending');
-        $placeholders = implode(',', array_fill(0, count($meta_keys), '%s'));
-        $meta_query = $wpdb->prepare(
-            "SELECT meta_key, meta_value FROM $wpdb->usermeta WHERE user_id = %d AND meta_key IN ($placeholders)",
-            array_merge(array($user_id), $meta_keys)
-        );
-        $meta_results = $wpdb->get_results($meta_query);
-        $user_meta = array();
-        foreach ($meta_results as $meta) {
-            $user_meta[$meta->meta_key] = $meta->meta_value;
-        }
-
-        // Per-user override: if set, it wins. Otherwise fallback to global default.
-        $user_enabled_raw = isset($user_meta[self::USER_META_LUCKYBOX_ENABLED]) ? $user_meta[self::USER_META_LUCKYBOX_ENABLED] : '';
-        if ($user_enabled_raw === '' || $user_enabled_raw === null) {
-            $enabled = ((int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)) === 1;
-        } else {
-            $enabled = ((int) $user_enabled_raw) === 1;
-        }
-
-        // Check transaction status to determine subtitle
-        // Priority: Approved > Pending > Before Click
-        $table = $this->table_name();
-
-        // Check for approved transaction first (highest priority) - exclude trashed
-        $approved_transaction = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $table WHERE user_id = %d AND (order_id LIKE %s OR order_id = %s) AND status = 'approved' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
-            $user_id,
-            'luckybox:%',
-            'luckybox'
-        ));
-
-        // Check for pending transaction (only if no approved transaction) - exclude trashed
-        $pending_transaction = null;
-        if (!$approved_transaction) {
-            $pending_transaction = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM $table WHERE user_id = %d AND (order_id LIKE %s OR order_id = %s) AND status = 'pending' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
-                $user_id,
-                'luckybox:%',
-                'luckybox'
-            ));
-        }
-
-        // Determine subtitle state with priority: Approved > Pending > Before Click
-        $subtitle_state = 'before_click';  // Default: "🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ"
-        $subtitle_text = '🎁 Lucky Box ကို ဖွင့်ကြည့်ပါ';
-
-        if ($approved_transaction) {
-            // Has approved transaction: "🎉 ကံကောင်းပါတယ်!" (Highest priority)
-            $subtitle_state = 'approved';
-            $subtitle_text = '🎉 ကံကောင်းပါတယ်!';
-        } elseif ($pending_transaction) {
-            // Has pending transaction: "⏳ တောင်းဆိုမှု စောင့်ဆိုင်းနေပါတယ်"
-            $subtitle_state = 'pending';
-            $subtitle_text = '⏳ တောင်းဆိုမှု စောင့်ဆိုင်းနေပါတယ်';
-        }
-
-        return new WP_REST_Response(array(
-            'success' => true,
-            'enabled' => $enabled,
-            'has_pending' => (bool) $pending_transaction,
-            'can_open' => $enabled,  // Only depends on backend On/Off setting
-            'subtitle_state' => $subtitle_state,  // 'before_click', 'pending', or 'approved'
-            'subtitle_text' => $subtitle_text,  // Subtitle text for mobile app
-        ), 200);
-    }
 
     /**
      * REST API: Get Point Balance
@@ -12261,43 +12227,39 @@ class TWork_Rewards_System
         if (is_string($transaction_meta_json) && trim($transaction_meta_json) !== '') {
             $decoded_txn_meta = json_decode($transaction_meta_json, true);
             if (is_array($decoded_txn_meta)) {
+                // Always hydrate winner/status fields from transaction meta,
+                // even when selected_options is missing in legacy rows.
+                $txn_winning_source = null;
+                if (isset($decoded_txn_meta['win_option']) && is_array($decoded_txn_meta['win_option'])) {
+                    $txn_winning_source = $decoded_txn_meta['win_option'];
+                } elseif (isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])) {
+                    $txn_winning_source = $decoded_txn_meta['winning_option'];
+                }
+                if (is_array($txn_winning_source)) {
+                    $resolved_winning_option = array(
+                        'index' => isset($txn_winning_source['index']) ? (int) $txn_winning_source['index'] : -1,
+                        'label' => isset($txn_winning_source['label']) ? (string) $txn_winning_source['label'] : '',
+                    );
+                }
+                if (isset($decoded_txn_meta['win_amount'])) {
+                    $resolved_won = $normalize_non_negative_int($decoded_txn_meta['win_amount']);
+                } elseif (isset($decoded_txn_meta['won_amount_pnp'])) {
+                    $resolved_won = $normalize_non_negative_int($decoded_txn_meta['won_amount_pnp']);
+                }
+                if (isset($decoded_txn_meta['result_status']) && trim((string) $decoded_txn_meta['result_status']) !== '') {
+                    $resolved_status = (string) $decoded_txn_meta['result_status'];
+                }
+                if (isset($decoded_txn_meta['session_id']) && trim((string) $decoded_txn_meta['session_id']) !== '') {
+                    $resolved_session = (string) $decoded_txn_meta['session_id'];
+                }
+                if (isset($decoded_txn_meta['poll_title']) && trim((string) $decoded_txn_meta['poll_title']) !== '') {
+                    $resolved_title = (string) $decoded_txn_meta['poll_title'];
+                }
+
                 $meta_selected = isset($decoded_txn_meta['selected_options']) ? $decoded_txn_meta['selected_options'] : array();
                 $resolved_selected_options = $normalize_selected_options($meta_selected);
                 if (!empty($resolved_selected_options)) {
                     $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
-                    // OLD CODE:
-                    // $resolved_winning_option = isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])
-                    //     ? array(
-                    //         'index' => isset($decoded_txn_meta['winning_option']['index']) ? (int) $decoded_txn_meta['winning_option']['index'] : -1,
-                    //         'label' => isset($decoded_txn_meta['winning_option']['label']) ? (string) $decoded_txn_meta['winning_option']['label'] : '',
-                    //     )
-                    //     : null;
-                    // $resolved_won = isset($decoded_txn_meta['won_amount_pnp']) ? $normalize_non_negative_int($decoded_txn_meta['won_amount_pnp']) : 0;
-                    //
-                    // New code: prefer explicit win_option/win_amount (if present), then fallback
-                    // to existing winning_option/won_amount_pnp keys for compatibility.
-                    $txn_winning_source = null;
-                    if (isset($decoded_txn_meta['win_option']) && is_array($decoded_txn_meta['win_option'])) {
-                        $txn_winning_source = $decoded_txn_meta['win_option'];
-                    } elseif (isset($decoded_txn_meta['winning_option']) && is_array($decoded_txn_meta['winning_option'])) {
-                        $txn_winning_source = $decoded_txn_meta['winning_option'];
-                    }
-                    $resolved_winning_option = is_array($txn_winning_source)
-                        ? array(
-                            'index' => isset($txn_winning_source['index']) ? (int) $txn_winning_source['index'] : -1,
-                            'label' => isset($txn_winning_source['label']) ? (string) $txn_winning_source['label'] : '',
-                        )
-                        : null;
-                    if (isset($decoded_txn_meta['win_amount'])) {
-                        $resolved_won = $normalize_non_negative_int($decoded_txn_meta['win_amount']);
-                    } else {
-                        $resolved_won = isset($decoded_txn_meta['won_amount_pnp']) ? $normalize_non_negative_int($decoded_txn_meta['won_amount_pnp']) : 0;
-                    }
-                    $resolved_status = isset($decoded_txn_meta['result_status']) ? (string) $decoded_txn_meta['result_status'] : 'pending';
-                    $resolved_session = isset($decoded_txn_meta['session_id']) ? (string) $decoded_txn_meta['session_id'] : '';
-                    if (isset($decoded_txn_meta['poll_title']) && trim((string) $decoded_txn_meta['poll_title']) !== '') {
-                        $resolved_title = (string) $decoded_txn_meta['poll_title'];
-                    }
                 }
             }
         }
@@ -12625,6 +12587,256 @@ class TWork_Rewards_System
     }
 
     /**
+     * Resolve fallback "Actual Result" label for admin poll_cost rows.
+     *
+     * @param string $order_id
+     * @param array  $label_cache Poll+session keyed in-request cache.
+     * @param string $session_id Session from txn meta (AUTO_RUN); empty for legacy manual polls.
+     * @return array{label:string,poll_id:int,correct_index:int,source:string,reason:string}
+     */
+    private function resolve_poll_actual_result_label_from_order_id($order_id, array &$label_cache, $session_id = '')
+    {
+        global $wpdb;
+
+        $order_id = is_string($order_id) ? trim($order_id) : '';
+        $session_id = is_string($session_id) ? sanitize_text_field($session_id) : '';
+        if ($order_id === '') {
+            return array(
+                'label' => '',
+                'poll_id' => 0,
+                'correct_index' => -1,
+                'source' => 'none',
+                'reason' => 'empty_order_id',
+            );
+        }
+        if (!preg_match('/^engagement:poll_cost:(\d+):/', $order_id, $matches)) {
+            return array(
+                'label' => '',
+                'poll_id' => 0,
+                'correct_index' => -1,
+                'source' => 'none',
+                'reason' => 'order_not_poll_cost',
+            );
+        }
+        $poll_id = isset($matches[1]) ? (int) $matches[1] : 0;
+        if ($poll_id <= 0) {
+            return array(
+                'label' => '',
+                'poll_id' => 0,
+                'correct_index' => -1,
+                'source' => 'none',
+                'reason' => 'invalid_poll_id',
+            );
+        }
+
+        $cache_key = $poll_id . '|' . $session_id;
+        if (isset($label_cache[$cache_key]) && is_array($label_cache[$cache_key])) {
+            $cached = $label_cache[$cache_key];
+            return array(
+                'label' => isset($cached['label']) ? (string) $cached['label'] : '',
+                'poll_id' => $poll_id,
+                'correct_index' => isset($cached['correct_index']) ? (int) $cached['correct_index'] : -1,
+                'source' => 'cache',
+                'reason' => isset($cached['reason']) ? (string) $cached['reason'] : 'cache_hit',
+            );
+        }
+
+        $items_table = $wpdb->prefix . 'twork_engagement_items';
+        $quiz_data_raw = $wpdb->get_var($wpdb->prepare(
+            "SELECT quiz_data FROM $items_table WHERE id = %d LIMIT 1",
+            $poll_id
+        ));
+        if (!is_string($quiz_data_raw) || trim($quiz_data_raw) === '') {
+            $label_cache[$cache_key] = array(
+                'label' => '',
+                'correct_index' => -1,
+                'reason' => 'quiz_data_not_found',
+            );
+            return array(
+                'label' => '',
+                'poll_id' => $poll_id,
+                'correct_index' => -1,
+                'source' => 'db',
+                'reason' => 'quiz_data_not_found',
+            );
+        }
+
+        $quiz_data = json_decode($quiz_data_raw, true);
+        if (!is_array($quiz_data)) {
+            $label_cache[$cache_key] = array(
+                'label' => '',
+                'correct_index' => -1,
+                'reason' => 'quiz_data_invalid_json',
+            );
+            return array(
+                'label' => '',
+                'poll_id' => $poll_id,
+                'correct_index' => -1,
+                'source' => 'db',
+                'reason' => 'quiz_data_invalid_json',
+            );
+        }
+
+        $poll_mode = strtolower((string) ($quiz_data['poll_mode'] ?? ''));
+        $correct_index = -1;
+        $source = 'db';
+
+        if ($poll_mode === 'auto_run') {
+            if ($session_id === '') {
+                $label_cache[$cache_key] = array(
+                    'label' => '',
+                    'correct_index' => -1,
+                    'reason' => 'session_id_required',
+                );
+                return array(
+                    'label' => '',
+                    'poll_id' => $poll_id,
+                    'correct_index' => -1,
+                    'source' => 'session',
+                    'reason' => 'session_id_required',
+                );
+            }
+            $correct_index = $this->lookup_auto_run_session_winner_index($poll_id, $session_id, $quiz_data);
+            $source = 'session_rewards';
+        } elseif (isset($quiz_data['correct_index']) && is_numeric($quiz_data['correct_index'])) {
+            $correct_index = (int) $quiz_data['correct_index'];
+            $source = 'quiz_data';
+        }
+
+        if ($correct_index < 0) {
+            $label_cache[$cache_key] = array(
+                'label' => '',
+                'correct_index' => -1,
+                'reason' => 'correct_index_missing',
+            );
+            return array(
+                'label' => '',
+                'poll_id' => $poll_id,
+                'correct_index' => -1,
+                'source' => $source,
+                'reason' => 'correct_index_missing',
+            );
+        }
+
+        $resolved_label = $this->build_poll_option_label_from_quiz_data($quiz_data, $correct_index);
+
+        $label_cache[$cache_key] = array(
+            'label' => $resolved_label,
+            'correct_index' => $correct_index,
+            'reason' => 'resolved',
+        );
+        return array(
+            'label' => $resolved_label,
+            'poll_id' => $poll_id,
+            'correct_index' => $correct_index,
+            'source' => $source,
+            'reason' => 'resolved',
+        );
+    }
+
+    /**
+     * Human-readable label for a poll option index from quiz_data.
+     *
+     * @param array $quiz_data
+     * @param int   $correct_index
+     * @return string
+     */
+    private function build_poll_option_label_from_quiz_data(array $quiz_data, $correct_index)
+    {
+        $correct_index = (int) $correct_index;
+        $resolved_label = '';
+        if (isset($quiz_data['options']) && is_array($quiz_data['options']) && array_key_exists($correct_index, $quiz_data['options'])) {
+            $node = $quiz_data['options'][$correct_index];
+            if (is_array($node)) {
+                $resolved_label = isset($node['text']) ? trim((string) $node['text']) : '';
+                if ($resolved_label === '' && isset($node['label'])) {
+                    $resolved_label = trim((string) $node['label']);
+                }
+            } else {
+                $resolved_label = trim((string) $node);
+            }
+        }
+        if ($resolved_label === '') {
+            $resolved_label = 'Option ' . ($correct_index + 1);
+        }
+
+        return $resolved_label;
+    }
+
+    /**
+     * Build winning_option payload for point-transaction meta snapshots.
+     *
+     * @param array $quiz_data
+     * @param int   $correct_index
+     * @return array{index:int,label:string}
+     */
+    private function build_poll_winning_option_payload_from_quiz(array $quiz_data, $correct_index)
+    {
+        $correct_index = (int) $correct_index;
+
+        return array(
+            'index' => $correct_index,
+            'label' => $this->build_poll_option_label_from_quiz_data($quiz_data, $correct_index),
+        );
+    }
+
+    /**
+     * Whether this user received a poll win credit for poll/session (admin Win Details column).
+     *
+     * @param int    $user_id
+     * @param int    $poll_id
+     * @param string $session_id Optional AUTO_RUN session id from cost row meta.
+     * @return bool
+     */
+    private function admin_user_has_poll_win_transaction($user_id, $poll_id, $session_id = '')
+    {
+        global $wpdb;
+
+        $user_id = absint($user_id);
+        $poll_id = absint($poll_id);
+        if ($user_id <= 0 || $poll_id <= 0) {
+            return false;
+        }
+
+        $points_table = $wpdb->prefix . 'twork_point_transactions';
+        $order_like = $wpdb->esc_like('engagement:poll:' . $poll_id . ':') . '%';
+
+        if (is_string($session_id) && trim($session_id) !== '') {
+            $session_token = sanitize_text_field($session_id);
+            $session_like = '%' . $wpdb->esc_like('session:' . $session_token) . ':%';
+            $win_id = $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT id FROM $points_table
+                     WHERE user_id = %d
+                       AND points > 0
+                       AND order_id LIKE %s
+                       AND order_id LIKE %s
+                     LIMIT 1",
+                    $user_id,
+                    $order_like,
+                    $session_like
+                )
+            );
+
+            return (int) $win_id > 0;
+        }
+
+        $win_id = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT id FROM $points_table
+                 WHERE user_id = %d
+                   AND points > 0
+                   AND order_id LIKE %s
+                 LIMIT 1",
+                $user_id,
+                $order_like
+            )
+        );
+
+        return (int) $win_id > 0;
+    }
+
+    /**
      * Map transaction type from rewards system to points system format
      * PROFESSIONAL FIX: Detect manual adjustments and map to 'adjust' type
      */
@@ -12652,7 +12864,7 @@ class TWork_Rewards_System
     {
         if (!empty($transaction->order_id)) {
             if (strpos($transaction->order_id, 'luckybox') === 0) {
-                return 'Lucky Box Request';
+                return __('Reward Request', 'twork-rewards');
             }
             return 'Order #' . $transaction->order_id;
         }
@@ -12664,200 +12876,7 @@ class TWork_Rewards_System
         return 'Points Transaction';
     }
 
-    /**
-     * REST API: Get Lucky Box Banner Content
-     * Returns the banner HTML content to display below the Lucky Box button
-     */
-    public function rest_luckybox_banner(WP_REST_Request $request)
-    {
-        $banner_content = get_option(self::OPTION_LUCKYBOX_BANNER, '');
 
-        // If banner content is empty, return empty response
-        if (empty($banner_content)) {
-            return new WP_REST_Response(array(
-                'success' => true,
-                'has_banner' => false,
-                'content' => '',
-            ), 200);
-        }
-
-        // Process content - apply WordPress filters for proper rendering
-        // This allows shortcodes, auto-embeds, etc. to work
-        $processed_content = apply_filters('the_content', $banner_content);
-
-        // Clean up any extra whitespace
-        $processed_content = trim($processed_content);
-
-        return new WP_REST_Response(array(
-            'success' => true,
-            'has_banner' => true,
-            'content' => $processed_content,  // HTML content ready for display
-        ), 200);
-    }
-
-    public function rest_luckybox_open(WP_REST_Request $request)
-    {
-        // DEBUG: Log incoming request
-        error_log('T-Work Rewards: rest_luckybox_open called');
-        error_log('T-Work Rewards: Request method: ' . $request->get_method());
-        error_log('T-Work Rewards: Request params: ' . print_r($request->get_params(), true));
-        error_log('T-Work Rewards: Request body: ' . $request->get_body());
-        error_log('T-Work Rewards: JSON params: ' . print_r($request->get_json_params(), true));
-
-        // Try multiple ways to get user_id
-        $params = $request->get_json_params();
-        if (empty($params)) {
-            // Try getting from body directly
-            $body = $request->get_body();
-            if (!empty($body)) {
-                $decoded = json_decode($body, true);
-                if ($decoded && isset($decoded['user_id'])) {
-                    $params = $decoded;
-                }
-            }
-        }
-
-        // Also try from URL params
-        if (empty($params) || !isset($params['user_id'])) {
-            $url_user_id = $request->get_param('user_id');
-            if ($url_user_id) {
-                $params = array('user_id' => $url_user_id);
-            }
-        }
-
-        $user_id = isset($params['user_id']) ? absint($params['user_id']) : 0;
-
-        error_log('T-Work Rewards: Parsed user_id: ' . $user_id);
-
-        if ($user_id <= 0) {
-            error_log('T-Work Rewards: Invalid user_id (0 or negative): ' . $user_id);
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Invalid user_id. Please provide a valid user_id in the request body.',
-                'debug' => array(
-                    'received_params' => $params,
-                    'body' => $request->get_body(),
-                ),
-            ), 400);
-        }
-
-        $user = get_user_by('ID', $user_id);
-        if (!$user) {
-            error_log('T-Work Rewards: User not found: ' . $user_id);
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'User not found',
-            ), 400);
-        }
-
-        // Rate limiting: Prevent abuse (max 10 requests per minute per user)
-        $rate_limit_key = 'twork_luckybox_open_' . $user_id;
-        $request_count = get_transient($rate_limit_key);
-
-        if ($request_count !== false && $request_count >= 10) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Rate limit exceeded. Please try again later.',
-            ), 429);
-        }
-
-        // Increment counter
-        $new_count = ($request_count === false) ? 1 : ($request_count + 1);
-        set_transient($rate_limit_key, $new_count, 60);  // 60 seconds
-
-        // OPTIMIZED: Load all user meta in single query instead of multiple get_user_meta calls
-        global $wpdb;
-        $meta_keys = array(self::USER_META_LUCKYBOX_ENABLED, 'twork_luckybox_pending');
-        $placeholders = implode(',', array_fill(0, count($meta_keys), '%s'));
-        $meta_query = $wpdb->prepare(
-            "SELECT meta_key, meta_value FROM $wpdb->usermeta WHERE user_id = %d AND meta_key IN ($placeholders)",
-            array_merge(array($user_id), $meta_keys)
-        );
-        $meta_results = $wpdb->get_results($meta_query);
-        $user_meta = array();
-        foreach ($meta_results as $meta) {
-            $user_meta[$meta->meta_key] = $meta->meta_value;
-        }
-
-        $user_enabled_raw = isset($user_meta[self::USER_META_LUCKYBOX_ENABLED]) ? $user_meta[self::USER_META_LUCKYBOX_ENABLED] : '';
-        if ($user_enabled_raw === '' || $user_enabled_raw === null) {
-            $enabled = ((int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)) === 1;
-        } else {
-            $enabled = ((int) $user_enabled_raw) === 1;
-        }
-        if (!$enabled) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Lucky Box is disabled',
-            ), 200);
-        }
-
-        // Check if there's a pending transaction - if yes, don't create new transaction (exclude trashed)
-        $table = $this->table_name();
-        $pending_transaction = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $table WHERE user_id = %d AND order_id LIKE %s AND status = 'pending' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
-            $user_id,
-            'luckybox:%'
-        ));
-
-        if ($pending_transaction) {
-            // Already has pending transaction - return pending message
-            return new WP_REST_Response(array(
-                'success' => true,
-                'transaction_id' => $pending_transaction->id,
-                'status' => 'pending',
-                'subtitle_state' => 'pending',
-                'subtitle_text' => '⏳ တောင်းဆိုမှု စောင့်ဆိုင်းနေပါတယ်',
-                'message' => '⏳ တောင်းဆိုမှု စောင့်ဆိုင်းနေပါတယ်',
-            ), 200);
-        }
-
-        // Check if there's an approved transaction - if yes, allow creating new transaction
-        $approved_transaction = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $table WHERE user_id = %d AND order_id LIKE %s AND status = 'approved' ORDER BY created_at DESC LIMIT 1",
-            $user_id,
-            'luckybox:%'
-        ));
-
-        // Get points value from request (optional - can be set by admin later)
-        $points_value = isset($params['points']) ? sanitize_text_field($params['points']) : '';
-
-        // Create pending transaction for Lucky Box
-        error_log('T-Work Rewards: Creating lucky box transaction for user ' . $user_id);
-        $transaction_id = $this->create_luckybox_transaction($user_id, $points_value);
-
-        if ($transaction_id === false) {
-            $error_message = $wpdb->last_error ? $wpdb->last_error : 'Database error occurred';
-            error_log('T-Work Rewards: rest_luckybox_open failed to create transaction for user ' . $user_id . '. Error: ' . $error_message);
-            error_log('T-Work Rewards: Last query: ' . $wpdb->last_query);
-
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Failed to create transaction. Please try again later.',
-                'debug' => $error_message,  // Include in response for debugging
-            ), 500);
-        }
-
-        error_log('T-Work Rewards: Transaction created successfully. ID: ' . $transaction_id);
-
-        // Set pending flag
-        update_user_meta($user_id, 'twork_luckybox_pending', 1);
-        update_user_meta($user_id, 'twork_luckybox_pending_at', current_time('mysql'));
-        update_user_meta($user_id, 'twork_luckybox_transaction_id', $transaction_id);
-
-        $response = array(
-            'success' => true,
-            'transaction_id' => $transaction_id,
-            'status' => 'pending',
-            'subtitle_state' => 'pending',
-            'subtitle_text' => '⏳ တောင်းဆိုမှု စောင့်ဆိုင်းနေပါတယ်',
-            'message' => 'Lucky Box opened. Transaction created.',
-        );
-
-        error_log('T-Work Rewards: Returning response: ' . print_r($response, true));
-
-        return new WP_REST_Response($response, 200);
-    }
 
     /**
      * REST API: Handle exchange request from app
@@ -12979,14 +12998,17 @@ class TWork_Rewards_System
             );
         }
 
-        // Validate user has enough points.
+        // Validate user has enough points (include other pending requests — balance is not deducted until approve).
         $points_to_exchange = (float) $points_value;
-        if ($current_balance < $points_to_exchange) {
+        $pending_exchange_total = $this->get_user_pending_exchange_points_sum($user_id);
+        $available_after_pending = $current_balance - $pending_exchange_total;
+        if ($available_after_pending < $points_to_exchange) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Exchange request failed - Insufficient balance. User ID: %d, Balance: %d, Requested: %s',
+                    'T-Work Rewards: Exchange request failed - Insufficient balance (pending requests reserved). User ID: %d, Balance: %d, Pending: %s, Requested: %s',
                     $user_id,
                     $current_balance,
+                    $pending_exchange_total,
                     $points_value
                 )
             );
@@ -12994,9 +13016,9 @@ class TWork_Rewards_System
                 array(
                     'success' => false,
                     'message' => sprintf(
-                        /* translators: 1: current balance, 2: requested points */
-                        __('Insufficient points balance. You have %1$s points, but trying to exchange %2$s points.', 'twork-rewards'),
-                        number_format($current_balance, 0),
+                        /* translators: 1: available balance, 2: requested points */
+                        __('Insufficient points balance. You have %1$s points available (%2$s requested). Other pending exchange requests are included.', 'twork-rewards'),
+                        number_format(max(0, $available_after_pending), 0),
                         number_format($points_to_exchange, 0)
                     ),
                 ),
@@ -13049,45 +13071,10 @@ class TWork_Rewards_System
 
         $request_id = $wpdb->insert_id;
 
-        // PROFESSIONAL ARCHITECTURE: Create transaction (single source of truth).
-        // Transaction table is the PRIMARY source, meta fields are cache only.
-        $points_transaction_id = $this->create_exchange_point_transaction(
-            $user_id,
-            (int) $points_to_exchange,
-            $request_id,
-            $phone
-        );
+        // Balance is NOT deducted until admin approves — only record the exchange request.
+        $updated_balance = $current_balance;
 
-        if (false === $points_transaction_id) {
-            // Transaction creation failed - rollback exchange request.
-            $wpdb->delete(
-                $exchange_table,
-                array('id' => $request_id),
-                array('%d')
-            );
-
-            error_log(
-                sprintf(
-                    'T-Work Rewards: Failed to create point transaction for exchange. Rolling back. User ID: %d, Request ID: %d',
-                    $user_id,
-                    $request_id
-                )
-            );
-
-            return new WP_REST_Response(
-                array(
-                    'success' => false,
-                    'message' => __('Failed to process exchange request. Please try again.', 'twork-rewards'),
-                ),
-                500
-            );
-        }
-
-        // CRITICAL: Refresh cache from transactions (single source of truth).
-        // This ensures meta fields match the transaction table.
-        $updated_balance = $this->refresh_user_points_cache($user_id);
-
-        // STEP 2: Also create a transaction in the rewards system table (legacy compatibility).
+        // Legacy rewards table row for admin transaction list (no point balance impact).
         $table = $this->table_name();
         $order_id = 'exchange:' . $request_id;
 
@@ -13135,7 +13122,7 @@ class TWork_Rewards_System
                 'request_id' => $request_id,
                 'points' => (int) $points_to_exchange,
                 'points_value' => $points_value,
-                'description' => sprintf('Exchange request created: %d points reserved', (int) $points_to_exchange),
+                'description' => sprintf('Exchange request submitted: %d points pending approval', (int) $points_to_exchange),
             )
         );
 
@@ -13156,7 +13143,7 @@ class TWork_Rewards_System
                 'success' => true,
                 'request_id' => $request_id,
                 'status' => 'pending',
-                'message' => __('Points exchange request submitted successfully. Points have been reserved pending admin approval.', 'twork-rewards'),
+                'message' => __('Points exchange request submitted successfully. Your balance is unchanged until admin approves.', 'twork-rewards'),
                 'type' => 'points',
                 'points_value' => $points_value,
                 'previous_balance' => $current_balance,
@@ -13167,96 +13154,15 @@ class TWork_Rewards_System
         );
     }
 
-    /**
-     * Create a pending transaction for Lucky Box
-     *
-     * Note: Always creates a new transaction (multiple clicks allowed).
-     * Each click creates a separate pending transaction in the dashboard.
-     *
-     * @param int $user_id User ID
-     * @param string $points_value Points value (optional, can be set by admin later)
-     * @return int|false Transaction ID on success, false on failure
-     */
-    private function create_luckybox_transaction($user_id, $points_value = '')
-    {
-        global $wpdb;
-        $table = $this->table_name();
-
-        error_log('T-Work Rewards: create_luckybox_transaction called for user ' . $user_id . ', table: ' . $table);
-
-        // OPTIMIZED: Migrations are handled in init() with version caching, no need to run here
-        // Always create a new transaction (multiple clicks allowed)
-        // Removed the check for existing pending transactions to allow multiple entries in dashboard
-        $table_columns = $wpdb->get_col("DESCRIBE $table");
-        if ($table_columns === false) {
-            error_log('T-Work Rewards: Failed to get table columns for ' . $table . '. Error: ' . $wpdb->last_error);
-            return false;
-        }
-        $table_columns_lower = array_map('strtolower', $table_columns);
-        $has_points_value = in_array('points_value', $table_columns_lower);
-
-        // FIXED: Use unique order_id with timestamp to allow multiple lucky box transactions per user
-        // Format: luckybox:{user_id}_{timestamp} to ensure uniqueness and allow multiple opens
-        $timestamp = time();
-        $unique_order_id = 'luckybox:' . $user_id . '_' . $timestamp;
-
-        error_log('T-Work Rewards: Creating transaction with order_id: ' . $unique_order_id);
-
-        $insert_data = array(
-            'user_id' => $user_id,
-            'order_id' => $unique_order_id,  // Unique identifier for each lucky box transaction
-            'status' => 'pending',
-            'reward_value' => '',  // Use empty string instead of null for compatibility
-            'created_at' => current_time('mysql'),
-            'updated_at' => current_time('mysql'),
-        );
-
-        $insert_format = array('%d', '%s', '%s', '%s', '%s', '%s');
-
-        if ($has_points_value) {
-            $insert_data['points_value'] = $points_value ? $points_value : '';
-            $insert_format[] = '%s';
-        }
-
-        error_log('T-Work Rewards: Insert data: ' . print_r($insert_data, true));
-        error_log('T-Work Rewards: Insert format: ' . print_r($insert_format, true));
-
-        $result = $wpdb->insert($table, $insert_data, $insert_format);
-
-        if ($result === false) {
-            $error_message = $wpdb->last_error ? $wpdb->last_error : 'Unknown database error';
-            error_log('T-Work Rewards: Failed to create lucky box transaction for user ' . $user_id . '. Error: ' . $error_message);
-            error_log('T-Work Rewards: Last query: ' . $wpdb->last_query);
-            error_log('T-Work Rewards: Insert data: ' . print_r($insert_data, true));
-            error_log('T-Work Rewards: Insert format: ' . print_r($insert_format, true));
-            error_log('T-Work Rewards: Table: ' . $table);
-            return false;
-        }
-
-        $insert_id = (int) $wpdb->insert_id;
-        error_log('T-Work Rewards: Transaction created successfully. Insert ID: ' . $insert_id);
-
-        return $insert_id;
-    }
 
     /**
-     * User profile UI (per-user Lucky Box enable/disable)
+     * User profile UI (My Points save hook)
      */
     public function save_user_profile_rewards($user_id)
     {
         if (!current_user_can('edit_user', $user_id)) {
             return;
         }
-
-        // Get old value before updating
-        $old_enabled_raw = get_user_meta($user_id, self::USER_META_LUCKYBOX_ENABLED, true);
-        $old_enabled = ($old_enabled_raw === '' || $old_enabled_raw === null)
-            ? ((int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)) === 1
-            : ((int) $old_enabled_raw) === 1;
-
-        // Explicitly store 1/0 so REST can reliably pick up override.
-        $enabled = isset($_POST['twork_luckybox_user_enabled']) ? 1 : 0;
-        update_user_meta($user_id, self::USER_META_LUCKYBOX_ENABLED, $enabled);
 
         // PROFESSIONAL FIX: Save My Points with proper synchronization
         // Uses sync_user_points() helper to ensure consistency
@@ -13280,16 +13186,6 @@ class TWork_Rewards_System
                 update_user_meta($user_id, 'my_point', $my_points);
                 update_user_meta($user_id, 'my_points_updated_at', time());
             }
-        }
-
-        // Send notification if user's Lucky Box setting changed
-        $new_enabled = (bool) $enabled;
-        if ($old_enabled !== $new_enabled) {
-            $this->send_luckybox_settings_notification(array(
-                'type' => 'user',
-                'enabled' => $new_enabled,
-                'user_id' => $user_id,
-            ));
         }
     }
 
@@ -13724,6 +13620,7 @@ class TWork_Rewards_System
                      */
                     $row_balance_map = $this->build_point_transactions_admin_row_balance_map($transactions, $table_name);
                     ?>
+                    <?php $poll_result_label_cache = array(); ?>
                     <?php foreach ($transactions as $txn): ?>
                         <?php
                         // OLD CODE (kept for rollback safety):
@@ -13924,18 +13821,66 @@ class TWork_Rewards_System
                         if ($resolved_win_amount_int > 0) {
                             $display_win_amount = number_format_i18n($resolved_win_amount_int);
                         }
+                        $txn_order_id = isset($txn->order_id) ? (string) $txn->order_id : '';
+                        $is_poll_cost_row = (strpos($txn_order_id, 'engagement:poll_cost:') === 0);
+                        $is_poll_win_credit_row = (strpos($txn_order_id, 'engagement:poll:') === 0)
+                            && !$is_poll_cost_row;
+                        $txn_session_id = isset($meta_payload['session_id'])
+                            ? trim((string) $meta_payload['session_id'])
+                            : '';
+                        $txn_poll_id = 0;
+                        if (preg_match('/^engagement:poll(?:_cost)?:(\d+):/', $txn_order_id, $poll_id_match)) {
+                            $txn_poll_id = isset($poll_id_match[1]) ? (int) $poll_id_match[1] : 0;
+                        }
+                        $user_won_this_poll = ($meta_result_status === 'won' && $resolved_win_amount_int > 0)
+                            || ($is_poll_win_credit_row && (int) ($txn->points ?? 0) > 0);
+                        if ($is_poll_cost_row && !$user_won_this_poll) {
+                            $user_won_this_poll = $this->admin_user_has_poll_win_transaction(
+                                $row_user_id,
+                                $txn_poll_id,
+                                $txn_session_id
+                            );
+                        }
+
+                        // Bet (poll_cost) rows: show Actual Result only for true losers — not when user won.
+                        $is_poll_cost_loser_row = $is_poll_cost_row
+                            && !$user_won_this_poll
+                            && $meta_result_status === 'lost';
+                        if ($is_poll_cost_loser_row) {
+                            $scoped_context = $this->resolve_poll_actual_result_label_from_order_id(
+                                $txn_order_id,
+                                $poll_result_label_cache,
+                                $txn_session_id
+                            );
+                            if (is_array($scoped_context) && !empty($scoped_context['label'])) {
+                                $display_win_option = (string) $scoped_context['label'];
+                            }
+                            if (defined('WP_DEBUG') && WP_DEBUG) {
+                                $txn_id_for_log = isset($txn->id) ? (int) $txn->id : 0;
+                                if ($display_win_option === '-') {
+                                    $fail_reason = is_array($scoped_context) && isset($scoped_context['reason'])
+                                        ? (string) $scoped_context['reason']
+                                        : 'missing_fallback_context';
+                                    error_log('[twork admin poll] ⚠️ Actual Result missing | txn_id=' . $txn_id_for_log . ' | order_id=' . $txn_order_id . ' | reason=' . $fail_reason);
+                                }
+                            }
+                        } elseif ($is_poll_cost_row && $user_won_this_poll) {
+                            // Win is shown on the earn (poll credit) row — keep bet row Win Details empty.
+                            $display_win_option = '-';
+                            $display_win_amount = '-';
+                        }
 
                         // OLD CODE (kept for rollback safety):
                         // Win Option and Win Amount were rendered as separate columns.
                         //
                         // New code: strict render matrix.
                         if (
-                            $meta_result_status === 'won' &&
+                            $user_won_this_poll &&
                             $display_win_option !== '-' &&
                             $resolved_win_amount_int > 0
                         ) {
                             $display_win_details_html = '<strong>🏆 ' . esc_html($display_win_option) . '</strong><br><span style="color: #28a745;">✨ ' . esc_html($display_win_amount) . ' PNP</span>';
-                        } elseif ($display_win_option !== '-' && $meta_result_status !== 'won') {
+                        } elseif ($is_poll_cost_loser_row && $display_win_option !== '-') {
                             $display_win_details_html = '<strong>Actual Result:</strong><br><span style="color: #dc3232;">' . esc_html($display_win_option) . '</span>';
                         } else {
                             $display_win_details_html = '-';
@@ -14626,7 +14571,7 @@ class TWork_Rewards_System
                             }
                             // Check for lucky box (format: luckybox:{user_id}_{timestamp} or old format: luckybox)
                             elseif (strpos($order_id_str, 'luckybox:') === 0 || $order_id_str === 'luckybox') {
-                                $order_link = '<span style="color: #667eea; font-weight: 500;">' . esc_html__('Lucky Box', 'twork-rewards') . '</span>';
+                                $order_link = '<span style="color: #667eea; font-weight: 500;">' . esc_html__('Reward Request', 'twork-rewards') . '</span>';
                             }
                             // Check for regular order ID (numeric)
                             else {
@@ -15189,7 +15134,7 @@ class TWork_Rewards_System
                 // Determine transaction type from order_id.
                 $transaction_type = 'Unknown';
                 if (strpos($order_id, 'luckybox:') === 0) {
-                    $transaction_type = 'Lucky Box';
+                    $transaction_type = __('Reward Request', 'twork-rewards');
                 } elseif (strpos($order_id, 'manual:') === 0) {
                     $transaction_type = 'Manual Adjustment';
                 } elseif (strpos($order_id, 'order:') === 0) {
@@ -15240,15 +15185,6 @@ class TWork_Rewards_System
                         )
                     );
                 }
-            }
-
-            // FIXED: Clear lucky box pending flag when transaction is approved
-            // This allows mobile app to show "🎉 ကံကောင်းပါတယ်!" subtitle
-            if (!empty($txn->order_id) && strpos($txn->order_id, 'luckybox:') === 0) {
-                // This is a lucky box transaction - clear pending flag so app can show approved state
-                update_user_meta($user_id, 'twork_luckybox_pending', 0);
-                delete_user_meta($user_id, 'twork_luckybox_pending_at');
-                delete_user_meta($user_id, 'twork_luckybox_transaction_id');
             }
         } elseif ($status !== 'approved' && !empty($txn->user_id)) {
             // If status is changed from approved to something else, optionally clear user meta
@@ -17122,115 +17058,6 @@ class TWork_Rewards_System
         return true;
     }
 
-    /**
-     * Send Lucky Box settings change notification via webhook.
-     *
-     * Notifies the app when Lucky Box is enabled/disabled (globally or per-user).
-     *
-     * @param array $data Settings change data
-     *   - type: 'global' or 'user'
-     *   - enabled: bool - whether Lucky Box is enabled
-     *   - user_id: int|null - user ID (null for global, int for per-user)
-     * @return bool Success status
-     */
-    private function send_luckybox_settings_notification($data)
-    {
-        if ($this->are_backend_notifications_disabled()) {
-            // Disabled notification for backend-wide suppression.
-            // Old Lucky Box webhook notification logic is intentionally kept below.
-            return false;
-        }
-
-        // Only use explicitly configured webhook URL
-        $webhook_url = get_option('twork_rewards_webhook_url', '');
-
-        // If no webhook URL is configured, silently skip
-        if (empty($webhook_url) || !is_string($webhook_url)) {
-            return false;
-        }
-
-        // Validate URL format
-        if (!filter_var($webhook_url, FILTER_VALIDATE_URL)) {
-            return false;
-        }
-
-        // CRITICAL: Prevent self-referencing URLs to avoid infinite loops
-        $site_url = site_url();
-        $parsed_webhook = parse_url($webhook_url);
-        $parsed_site = parse_url($site_url);
-
-        if ($parsed_webhook && $parsed_site) {
-            $webhook_host = strtolower(trim($parsed_webhook['host'], '/'));
-            $site_host = strtolower(trim($parsed_site['host'], '/'));
-
-            // Block if webhook points to same domain (prevents loops)
-            if ($webhook_host === $site_host ||
-                    $webhook_host === 'localhost' ||
-                    $webhook_host === '127.0.0.1' ||
-                    strpos($webhook_host, '.local') !== false) {
-                error_log('T-Work Rewards: Blocked self-referencing webhook URL: ' . $webhook_url);
-                return false;
-            }
-        }
-
-        // Validate required data
-        $type = isset($data['type']) ? $data['type'] : '';
-        $enabled = isset($data['enabled']) ? (bool) $data['enabled'] : false;
-        $user_id = isset($data['user_id']) ? absint($data['user_id']) : null;
-
-        if (!in_array($type, array('global', 'user'), true)) {
-            return false;
-        }
-
-        // Rate limiting: Prevent duplicate calls within 10 seconds
-        $rate_limit_key = 'twork_luckybox_settings_' . $type . '_' . ($user_id ?: 'global');
-        $last_sent = get_transient($rate_limit_key);
-
-        if ($last_sent !== false) {
-            // Already sent recently, skip to prevent duplicate calls
-            return true;
-        }
-
-        // Prepare payload
-        $payload = array(
-            'event' => 'luckybox_settings_changed',
-            'type' => $type,
-            'enabled' => $enabled,
-            'timestamp' => current_time('mysql'),
-        );
-
-        if ($type === 'user' && $user_id) {
-            $payload['userId'] = (string) $user_id;
-        } elseif ($type === 'global') {
-            $payload['userId'] = null;  // Global setting affects all users
-        }
-
-        // Make non-blocking request
-        $response = wp_remote_post($webhook_url, array(
-            'method' => 'POST',
-            'timeout' => 5,
-            'redirection' => 0,
-            'httpversion' => '1.1',
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'User-Agent' => 'T-Work-Rewards-Plugin/1.0',
-            ),
-            'body' => wp_json_encode($payload),
-            'blocking' => false,  // Non-blocking to not slow admin UI
-            'sslverify' => true,
-        ));
-
-        // Set rate limit transient (10 seconds) to prevent duplicate calls
-        set_transient($rate_limit_key, time(), 10);
-
-        // Log errors for debugging
-        if (is_wp_error($response)) {
-            error_log('T-Work Rewards Lucky Box Settings Webhook Error: ' . $response->get_error_message());
-            return false;
-        }
-
-        return true;
-    }
 
     /**
      * Users page (show my_rewards) - Optimized for memory efficiency
@@ -18065,10 +17892,6 @@ class TWork_Rewards_System
         }
 
         $points = get_user_meta($user_id, 'my_points', true);
-        $luckybox_enabled = get_user_meta($user_id, self::USER_META_LUCKYBOX_ENABLED, true);
-        $luckybox_enabled = ($luckybox_enabled === '' || $luckybox_enabled === null)
-            ? (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)
-            : (int) $luckybox_enabled;
 
         // OLD CODE (kept for rollback safety):
         // global $wpdb;
@@ -18700,23 +18523,9 @@ class TWork_Rewards_System
             <div class="twork-form-card">
                 <h2><?php esc_html_e('User Settings', 'twork-rewards'); ?></h2>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                    <?php wp_nonce_field('twork_rewards_update_user_luckybox', 'twork_rewards_user_nonce'); ?>
-                    <input type="hidden" name="action" value="twork_rewards_update_user_luckybox" />
+                    <?php wp_nonce_field('twork_rewards_update_user_rewards', 'twork_rewards_user_nonce'); ?>
+                    <input type="hidden" name="action" value="twork_rewards_update_user_rewards" />
                     <input type="hidden" name="user_id" value="<?php echo esc_attr($user_id); ?>" />
-
-                    <div class="twork-form-section">
-                        <label for="twork_luckybox_user_enabled"><?php esc_html_e('Lucky Box Feature', 'twork-rewards'); ?></label>
-                        <div class="twork-checkbox-wrapper">
-                            <input type="checkbox"
-                                   name="twork_luckybox_user_enabled"
-                                   id="twork_luckybox_user_enabled"
-                                   value="1" <?php checked($luckybox_enabled, 1); ?> />
-                            <label for="twork_luckybox_user_enabled"><?php esc_html_e('Enable Lucky Box for this user', 'twork-rewards'); ?></label>
-                        </div>
-                        <p class="description">
-                            <?php esc_html_e('When enabled, the mobile app will show the Lucky Box button for this user. When disabled, the button will be hidden.', 'twork-rewards'); ?>
-                        </p>
-                    </div>
 
                     <div class="twork-form-section">
                         <label for="twork_my_points"><?php esc_html_e('My Points', 'twork-rewards'); ?></label>
@@ -18799,7 +18608,7 @@ class TWork_Rewards_System
                                 }
                                 // Check for lucky box (format: luckybox:{user_id}_{timestamp} or old format: luckybox)
                                 elseif (strpos($order_id_str, 'luckybox:') === 0 || $order_id_str === 'luckybox') {
-                                    $order_link = '<span style="color: #667eea; font-weight: 500;">' . esc_html__('Lucky Box', 'twork-rewards') . '</span>';
+                                    $order_link = '<span style="color: #667eea; font-weight: 500;">' . esc_html__('Reward Request', 'twork-rewards') . '</span>';
                                 }
                                 // Check for regular order ID (numeric)
                                 else {
@@ -18879,28 +18688,19 @@ class TWork_Rewards_System
     }
 
     /**
-     * Handle user Lucky Box toggle update
+     * Handle user rewards update (My Points adjustment)
      */
-    public function handle_user_luckybox_update()
+    public function handle_user_rewards_update()
     {
         if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
             wp_die(__('Insufficient permissions.', 'twork-rewards'));
         }
-        check_admin_referer('twork_rewards_update_user_luckybox', 'twork_rewards_user_nonce');
+        check_admin_referer('twork_rewards_update_user_rewards', 'twork_rewards_user_nonce');
 
         $user_id = isset($_POST['user_id']) ? absint($_POST['user_id']) : 0;
         if ($user_id <= 0) {
             wp_die(__('Missing user_id.', 'twork-rewards'));
         }
-
-        // Get old value before updating
-        $old_enabled_raw = get_user_meta($user_id, self::USER_META_LUCKYBOX_ENABLED, true);
-        $old_enabled = ($old_enabled_raw === '' || $old_enabled_raw === null)
-            ? ((int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)) === 1
-            : ((int) $old_enabled_raw) === 1;
-
-        $enabled = isset($_POST['twork_luckybox_user_enabled']) ? 1 : 0;
-        update_user_meta($user_id, self::USER_META_LUCKYBOX_ENABLED, $enabled);
 
         // PROFESSIONAL FIX: Save My Points with proper synchronization
         // Uses sync_user_points() helper to ensure consistency
@@ -18926,16 +18726,6 @@ class TWork_Rewards_System
             }
         }
 
-        // Send notification if user's Lucky Box setting changed
-        $new_enabled = (bool) $enabled;
-        if ($old_enabled !== $new_enabled) {
-            $this->send_luckybox_settings_notification(array(
-                'type' => 'user',
-                'enabled' => $new_enabled,
-                'user_id' => $user_id,
-            ));
-        }
-
         wp_safe_redirect(add_query_arg(array(
             'page' => 'twork-rewards-user-detail',
             'user_id' => $user_id,
@@ -18950,26 +18740,9 @@ class TWork_Rewards_System
     public function render_user_profile_rewards($user)
     {
         $points = get_user_meta($user->ID, 'my_points', true);
-        $luckybox_enabled = get_user_meta($user->ID, self::USER_META_LUCKYBOX_ENABLED, true);
-        $luckybox_enabled = ($luckybox_enabled === '' || $luckybox_enabled === null)
-            ? (int) get_option(self::OPTION_LUCKYBOX_ENABLED, 1)
-            : (int) $luckybox_enabled;
         ?>
         <h2><?php esc_html_e('My Points', 'twork-rewards'); ?></h2>
         <table class="form-table">
-            <tr>
-                <th><label for="twork_luckybox_user_enabled"><?php esc_html_e('Lucky Box', 'twork-rewards'); ?></label></th>
-                <td>
-                    <label>
-                        <input type="checkbox"
-                               name="twork_luckybox_user_enabled"
-                               id="twork_luckybox_user_enabled"
-                               value="1" <?php checked($luckybox_enabled, 1); ?> />
-                        <?php esc_html_e('Enable Lucky Box for this user (per-user on/off)', 'twork-rewards'); ?>
-                    </label>
-                    <p class="description"><?php esc_html_e('This controls whether the mobile app shows Lucky Box for this user.', 'twork-rewards'); ?></p>
-                </td>
-            </tr>
             <tr>
                 <th><label for="twork_my_points_profile"><?php esc_html_e('My Points', 'twork-rewards'); ?></label></th>
                 <td>
@@ -23008,7 +22781,7 @@ class TWork_Rewards_System
             </div>
 
             <p class="description">
-                <?php esc_html_e('Requests submitted from the mobile app when customers want to exchange their rewards or points. Approve a request to complete the exchange, or reject it to refund the deducted points back to the customer.', 'twork-rewards'); ?>
+                <?php esc_html_e('Requests submitted from the mobile app when customers want to exchange points. Balance is not deducted until you approve. Rejecting a pending request leaves the customer balance unchanged.', 'twork-rewards'); ?>
             </p>
 
             <!-- Advanced Filter Form - Compact Professional Design -->
@@ -23684,203 +23457,70 @@ class TWork_Rewards_System
             );
         }
 
-        // PROFESSIONAL FIX: Points are already deducted when request was created
-        // When rejected: Points ARE refunded (fair to users - they should get their points back)
-        // When approved: Points remain deducted (already deducted on creation, which is correct)
+        // Points are deducted on approve only; reject voids any legacy redeem (no separate refund txn).
         if ($new_status === 'rejected') {
-            // PROFESSIONAL FIX: Refund points when admin rejects exchange request
-            // This is fair to users - if their request is rejected, they should get their points back
             if ($request->type === 'points' && !empty($request->points_value)) {
-                // CRITICAL PROFESSIONAL FIX: Get request amount DIRECTLY from database
-                // Don't trust the object - read from database as single source of truth
-                $db_request = $wpdb->get_row($wpdb->prepare(
-                    "SELECT points_value FROM $exchange_table WHERE id = %d",
-                    $request_id
-                ), ARRAY_A);
-
-                if ($db_request && !empty($db_request['points_value'])) {
-                    $request_points = (float) $db_request['points_value'];
-                    error_log(sprintf(
-                        'T-Work Rewards: Reject - Using request points from database. User ID: %d, Request ID: %d, Database Points: %s, Object Points: %s',
-                        $user_id,
-                        $request_id,
-                        $request_points,
-                        $request->points_value
-                    ));
-                } else {
-                    // Fallback to object value if database read fails
-                    $request_points = (float) $request->points_value;
-                    error_log(sprintf(
-                        'T-Work Rewards: WARNING - Could not read request from database, using object value. User ID: %d, Request ID: %d, Points: %s',
-                        $user_id,
-                        $request_id,
-                        $request_points
-                    ));
-                }
-
-                // Calculate actual deducted for logging and validation.
-                // IMPORTANT: Only refund if we can confirm that points were actually deducted for this request.
-                $actual_deducted = $this->calculate_actual_deducted_points($user_id, $request_id);
-
-                // Default to no refund until we positively detect a deduction.
-                $points_to_refund = 0.0;
-
-                if ($actual_deducted !== false && $actual_deducted > 0) {
-                    // Never refund more than the request amount even if transactions show a higher deduction.
-                    $points_to_refund = min((float) $actual_deducted, (float) $request_points);
-
-                    if (abs($actual_deducted - $request_points) > ($request_points * 0.05)) {
-                        // Log warning if there's a significant discrepancy (for debugging)
-                        error_log(sprintf(
-                            'T-Work Rewards: WARNING - Calculated deducted amount (%s) differs from request amount (%s) by more than 5%%. Using min(deducted,request)=%s for refund. User ID: %d, Request ID: %d',
-                            $actual_deducted,
-                            $request_points,
-                            $points_to_refund,
-                            $user_id,
-                            $request_id
-                        ));
-                    } else {
-                        error_log(sprintf(
-                            'T-Work Rewards: Refund calculation - Request Points: %s, Calculated Deducted: %s, Refunding: %s. User ID: %d, Request ID: %d',
-                            $request_points,
-                            $actual_deducted,
-                            $points_to_refund,
-                            $user_id,
-                            $request_id
-                        ));
-                    }
-                } else {
-                    // No matching deduction transaction found – do NOT refund to avoid free / double PNP.
-                    error_log(sprintf(
-                        'T-Work Rewards: No deducted points found for exchange reject. Skipping refund to prevent double PNP. User ID: %d, Request ID: %d, Request Points: %s',
-                        $user_id,
-                        $request_id,
-                        $request_points
-                    ));
-                }
-
-                // CRITICAL: Get balance before refund for verification
-                $balance_before = get_user_meta($user_id, 'my_points', true);
-                $balance_before = ($balance_before === '' || $balance_before === false || $balance_before === null)
-                    ? 0.0
-                    : (is_numeric($balance_before) ? (float) $balance_before : 0.0);
-
-                // ABSOLUTE SAFETY: Final validation - ensure refund never exceeds request
-                // This is a redundant check but critical for preventing any edge cases
-                if ($points_to_refund > $request_points) {
-                    error_log(sprintf(
-                        'T-Work Rewards: CRITICAL SAFETY TRIGGERED - Refund amount (%s) exceeds request amount (%s). Capping at request amount. User ID: %d, Request ID: %d',
-                        $points_to_refund,
-                        $request_points,
-                        $user_id,
-                        $request_id
-                    ));
-                    $points_to_refund = $request_points;
-                }
-
-                if ($points_to_refund > 0) {
-                    // Refund points (this method handles everything: balance updates, transaction creation, status update)
-                    $refund_success = $this->refund_exchange_points(
-                        $user_id,
-                        $points_to_refund,
-                        $request_id,
-                        'Exchange request rejected via admin action'
-                    );
-
-                    // Note: refund_exchange_points already calls update_exchange_point_transaction_status internally
-
-                    // CRITICAL: Verify refund was successful by checking balance
-                    $balance_after = get_user_meta($user_id, 'my_points', true);
-                    $balance_after = ($balance_after === '' || $balance_after === false || $balance_after === null)
-                        ? 0.0
-                        : (is_numeric($balance_after) ? (float) $balance_after : 0.0);
-
-                    $expected_balance = $balance_before + $points_to_refund;
-                    $refund_verified = ($refund_success && abs($balance_after - $expected_balance) < 0.01);  // Allow small floating point differences
-
-                    if ($refund_success && $refund_verified) {
-                        error_log(sprintf(
-                            'T-Work Rewards: Exchange request rejected successfully. User %d refunded %s points (actual deducted: %s, request: %s). Balance: %s -> %s',
-                            $user_id,
-                            $points_to_refund,
-                            $actual_deducted !== false ? $actual_deducted : 'N/A',
-                            $request->points_value,
-                            $balance_before,
-                            $balance_after
-                        ));
-                    } else {
-                        // CRITICAL ERROR: Refund failed or balance not updated correctly
-                        error_log(sprintf(
-                            'T-Work Rewards: CRITICAL ERROR - Exchange request rejected but refund failed or balance not updated correctly. User %d, Refund Amount: %s, Request Points: %s, Actual Deducted: %s, Balance Before: %s, Balance After: %s, Expected: %s, Refund Success: %s',
-                            $user_id,
-                            $points_to_refund,
-                            $request->points_value,
-                            $actual_deducted !== false ? $actual_deducted : 'N/A',
-                            $balance_before,
-                            $balance_after,
-                            $expected_balance,
-                            $refund_success ? 'true' : 'false'
-                        ));
-
-                        // Add error flag to redirect so admin knows there was an issue
-                        wp_safe_redirect(add_query_arg(array(
-                            'page' => 'twork-rewards-exchange-requests',
-                            'updated' => 1,
-                            'refund_error' => 1,
-                            'request_id' => $request_id,
-                        ), admin_url('admin.php')));
-                        exit;
-                    }
-                } else {
-                    // No safe refund amount determined – status is still updated to rejected, but points stay unchanged.
-                    error_log(sprintf(
-                        'T-Work Rewards: Exchange request rejected with no refund applied because no prior deduction was detected. User %d, Request ID: %d, Request Points: %s',
-                        $user_id,
-                        $request_id,
-                        $request->points_value
-                    ));
+                $void_ok = $this->refund_exchange_points(
+                    $user_id,
+                    0,
+                    $request_id,
+                    'Exchange request rejected via admin action'
+                );
+                if (!$void_ok) {
+                    wp_safe_redirect(add_query_arg(array(
+                        'page' => 'twork-rewards-exchange-requests',
+                        'updated' => 1,
+                        'refund_error' => 1,
+                        'request_id' => $request_id,
+                    ), admin_url('admin.php')));
+                    exit;
                 }
             }
         } elseif ($new_status === 'approved') {
-            // PROFESSIONAL FIX: Handle different approval scenarios
             if ($request->type === 'points' && !empty($request->points_value)) {
-                $points_to_deduct = (float) $request->points_value;
+                $points_to_deduct = (int) round((float) $request->points_value);
+                $balance = $this->calculate_points_balance_from_transactions($user_id);
+                $pending_others = $this->get_user_pending_exchange_points_sum($user_id, $request_id);
 
-                // If request was previously rejected, points were refunded.
-                // So we need to deduct them again when approving.
-                if ('rejected' === $request->status) {
-                    // Rejected -> Approved: Create new deduction transaction.
-                    $this->create_exchange_point_transaction(
-                        $user_id,
-                        (int) $points_to_deduct,
-                        $request_id,
-                        ''
+                if ($balance < $points_to_deduct + $pending_others) {
+                    $wpdb->update(
+                        $exchange_table,
+                        array('status' => $request->status, 'updated_at' => current_time('mysql')),
+                        array('id' => $request_id),
+                        array('%s', '%s'),
+                        array('%d')
                     );
-
-                    // Refresh cache from transactions.
-                    $updated_balance = $this->refresh_user_points_cache($user_id);
-
-                    error_log(
-                        sprintf(
-                            'T-Work Rewards: Exchange request approved (was rejected). User %d deducted %s points again. New balance: %d',
-                            $user_id,
-                            $request->points_value,
-                            $updated_balance
-                        )
-                    );
-                } else {
-                    // Pending -> Approved: Points were already deducted on creation.
-                    // Just update transaction status, no balance change needed.
-                    $current_balance = $this->calculate_points_balance_from_transactions($user_id);
-                    error_log(
-                        sprintf(
-                            'T-Work Rewards: Exchange request approved. User %d exchanged %s points. Current balance: %d (points already deducted on creation)',
-                            $user_id,
-                            $request->points_value,
-                            $current_balance
-                        )
-                    );
+                    wp_safe_redirect(add_query_arg(array(
+                        'page' => 'twork-rewards-exchange-requests',
+                        'error' => 3,
+                        'request_id' => $request_id,
+                    ), admin_url('admin.php')));
+                    exit;
                 }
+
+                $deduct_ok = $this->deduct_exchange_points_on_approve($user_id, $request_id, $points_to_deduct, '');
+                if (!$deduct_ok) {
+                    $wpdb->update(
+                        $exchange_table,
+                        array('status' => $request->status, 'updated_at' => current_time('mysql')),
+                        array('id' => $request_id),
+                        array('%s', '%s'),
+                        array('%d')
+                    );
+                    wp_safe_redirect(add_query_arg(array(
+                        'page' => 'twork-rewards-exchange-requests',
+                        'error' => 3,
+                        'request_id' => $request_id,
+                    ), admin_url('admin.php')));
+                    exit;
+                }
+
+                error_log(sprintf(
+                    'T-Work Rewards: Exchange request approved. User %d deducted %d points. New balance: %d',
+                    $user_id,
+                    $points_to_deduct,
+                    $this->calculate_points_balance_from_transactions($user_id)
+                ));
             }
         }
 
@@ -24056,139 +23696,39 @@ class TWork_Rewards_System
 
             // Handle points based on action
             if ($new_status === 'rejected') {
-                // Refund points
                 if ($request->type === 'points' && !empty($request->points_value)) {
-                    // CRITICAL PROFESSIONAL FIX: Get request amount DIRECTLY from database
-                    // Don't trust the object - read from database as single source of truth
-                    $db_request = $wpdb->get_row($wpdb->prepare(
-                        "SELECT points_value FROM $exchange_table WHERE id = %d",
-                        $request_id
-                    ), ARRAY_A);
-
-                    if ($db_request && !empty($db_request['points_value'])) {
-                        $request_points = (float) $db_request['points_value'];
-                        error_log(sprintf(
-                            'T-Work Rewards: Bulk Reject - Using request points from database. User ID: %d, Request ID: %d, Database Points: %s, Object Points: %s',
-                            $user_id,
-                            $request_id,
-                            $request_points,
-                            $request->points_value
-                        ));
-                    } else {
-                        // Fallback to object value if database read fails
-                        $request_points = (float) $request->points_value;
-                        error_log(sprintf(
-                            'T-Work Rewards: WARNING - Bulk reject: Could not read request from database, using object value. User ID: %d, Request ID: %d, Points: %s',
-                            $user_id,
-                            $request_id,
-                            $request_points
-                        ));
-                    }
-
-                    // Calculate actual deducted for logging and validation.
-                    // IMPORTANT: Only refund if we can confirm that points were actually deducted for this request.
-                    $actual_deducted = $this->calculate_actual_deducted_points($user_id, $request_id);
-
-                    // Default to no refund until we positively detect a deduction.
-                    $points_to_refund = 0.0;
-
-                    if ($actual_deducted !== false && $actual_deducted > 0) {
-                        // Refund at most the original requested amount.
-                        $points_to_refund = min((float) $actual_deducted, (float) $request_points);
-
-                        if (abs($actual_deducted - $request_points) > ($request_points * 0.05)) {
-                            error_log(sprintf(
-                                'T-Work Rewards: WARNING - Bulk reject: Calculated deducted amount (%s) differs from request amount (%s) by more than 5%%. Using min(deducted,request)=%s for refund. User ID: %d, Request ID: %d',
-                                $actual_deducted,
-                                $request_points,
-                                $points_to_refund,
-                                $user_id,
-                                $request_id
-                            ));
-                        }
-                    } else {
-                        // No matching deduction transaction found – do NOT refund to avoid free / double PNP.
-                        error_log(sprintf(
-                            'T-Work Rewards: Bulk reject - No deducted points found for this request. Skipping refund to prevent double PNP. User ID: %d, Request ID: %d, Request Points: %s',
-                            $user_id,
-                            $request_id,
-                            $request_points
-                        ));
-                    }
-
-                    // ABSOLUTE SAFETY: Final validation - ensure refund never exceeds request
-                    if ($points_to_refund > $request_points) {
-                        error_log(sprintf(
-                            'T-Work Rewards: CRITICAL SAFETY TRIGGERED - Bulk reject: Refund amount (%s) exceeds request amount (%s). Capping at request amount. User ID: %d, Request ID: %d',
-                            $points_to_refund,
-                            $request_points,
-                            $user_id,
-                            $request_id
-                        ));
-                        $points_to_refund = $request_points;
-                    }
-
-                    // CRITICAL: Get balance before refund for verification
-                    $balance_before = get_user_meta($user_id, 'my_points', true);
-                    $balance_before = ($balance_before === '' || $balance_before === false || $balance_before === null)
-                        ? 0.0
-                        : (is_numeric($balance_before) ? (float) $balance_before : 0.0);
-
-                    if ($points_to_refund > 0) {
-                        $refund_success = $this->refund_exchange_points(
-                            $user_id,
-                            $points_to_refund,
-                            $request_id,
-                            'Exchange request rejected via bulk action'
-                        );
-
-                        // CRITICAL: Verify refund was successful
-                        $balance_after = get_user_meta($user_id, 'my_points', true);
-                        $balance_after = ($balance_after === '' || $balance_after === false || $balance_after === null)
-                            ? 0.0
-                            : (is_numeric($balance_after) ? (float) $balance_after : 0.0);
-
-                        $expected_balance = $balance_before + $points_to_refund;
-                        $refund_verified = ($refund_success && abs($balance_after - $expected_balance) < 0.01);
-
-                        if (!$refund_success || !$refund_verified) {
-                            $errors++;
-                            error_log(sprintf(
-                                'T-Work Rewards: CRITICAL ERROR - Bulk reject: Exchange request #%d rejected but refund failed. User %d, Refund Amount: %s, Request Points: %s, Actual Deducted: %s, Balance Before: %s, Balance After: %s, Expected: %s',
-                                $request_id,
-                                $user_id,
-                                $points_to_refund,
-                                $request->points_value,
-                                $actual_deducted !== false ? $actual_deducted : 'N/A',
-                                $balance_before,
-                                $balance_after,
-                                $expected_balance
-                            ));
-                        }
-                    } else {
-                        // No safe refund amount determined – status is still updated to rejected, but points stay unchanged.
-                        error_log(sprintf(
-                            'T-Work Rewards: Bulk reject - Exchange request #%d rejected with no refund applied because no prior deduction was detected. User %d, Request Points: %s',
-                            $request_id,
-                            $user_id,
-                            $request->points_value
-                        ));
+                    if (!$this->refund_exchange_points($user_id, 0, $request_id, 'Exchange request rejected via bulk action')) {
+                        $errors++;
                     }
                 }
             } elseif ($new_status === 'approved') {
-                // If was rejected, deduct points again
-                if ($request->status === 'rejected' && $request->type === 'points' && !empty($request->points_value)) {
-                    $points_to_deduct = (float) $request->points_value;
-                    $this->create_exchange_point_transaction(
-                        $user_id,
-                        (int) $points_to_deduct,
-                        $request_id,
-                        ''
-                    );
-                    $this->refresh_user_points_cache($user_id);
+                if ($request->type === 'points' && !empty($request->points_value)) {
+                    $points_to_deduct = (int) round((float) $request->points_value);
+                    $balance = $this->calculate_points_balance_from_transactions($user_id);
+                    $pending_others = $this->get_user_pending_exchange_points_sum($user_id, $request_id);
+
+                    if ($balance < $points_to_deduct + $pending_others) {
+                        $errors++;
+                        $wpdb->update(
+                            $exchange_table,
+                            array('status' => $request->status, 'updated_at' => current_time('mysql')),
+                            array('id' => $request_id),
+                            array('%s', '%s'),
+                            array('%d')
+                        );
+                    } elseif (!$this->deduct_exchange_points_on_approve($user_id, $request_id, $points_to_deduct, '')) {
+                        $errors++;
+                        $wpdb->update(
+                            $exchange_table,
+                            array('status' => $request->status, 'updated_at' => current_time('mysql')),
+                            array('id' => $request_id),
+                            array('%s', '%s'),
+                            array('%d')
+                        );
+                    } else {
+                        $this->update_exchange_point_transaction_status($user_id, $request_id, 'approved');
+                    }
                 }
-                // Update transaction status
-                $this->update_exchange_point_transaction_status($user_id, $request_id, 'approved');
             }
 
             $processed++;
@@ -25173,98 +24713,23 @@ class TWork_Rewards_System
             }
         }
 
-        // PROFESSIONAL FIX: Points are deducted immediately when exchange request is created
-        // So we need to handle status changes differently:
-        // - pending -> approved: Don't deduct again (already deducted)
-        // - pending -> rejected: Points ARE refunded (fair to users)
-        // - approved -> rejected: Points ARE refunded (fair to users)
-
-        // Handle status change to rejected (points ARE refunded)
+        // Points deduct on approve only; reject voids legacy redeem rows (no separate refund txn).
         if ($final_status === 'rejected' && $old_status !== 'rejected') {
-            // PROFESSIONAL FIX: Refund points when admin rejects exchange request
-            // This is fair to users - if their request is rejected, they should get their points back
             $points_for_notification = 0;
 
             if ($type === 'points') {
-                // CRITICAL FIX: Calculate ACTUAL deducted amount from transactions, not from request.
-                // Only refund when we can prove a deduction actually happened for this request.
                 $actual_deducted = $this->calculate_actual_deducted_points($user_id, $request_id);
-
-                $points_to_refund = 0.0;
-                $original_points_value = !empty($old_points_value) && is_numeric($old_points_value) ? (float) $old_points_value : 0.0;
-
                 if ($actual_deducted !== false && $actual_deducted > 0) {
-                    // Refund at most the original requested amount.
-                    $points_to_refund = $actual_deducted;
-                    if ($original_points_value > 0 && $points_to_refund > $original_points_value) {
-                        error_log(sprintf(
-                            'T-Work Rewards: CRITICAL SAFETY TRIGGERED - Admin edit reject: Refund amount (%s) exceeds original amount (%s). Using original amount to prevent double refund. User ID: %d, Request ID: %d, Actual Deducted: %s',
-                            $points_to_refund,
-                            $original_points_value,
-                            $user_id,
-                            $request_id,
-                            $actual_deducted
-                        ));
-                        $points_to_refund = $original_points_value;
-                    }
-
-                    // Final double-check
-                    if ($original_points_value > 0 && $points_to_refund > $original_points_value) {
-                        $points_to_refund = $original_points_value;
-                    }
-
-                    $points_for_notification = (int) $points_to_refund;
-
-                    if ($points_to_refund > 0) {
-                        // PROFESSIONAL FIX: Refund points (updates both my_points and points_balance)
-                        // Note: refund_exchange_points() handles:
-                        // - Refunding to my_points and points_balance
-                        // - Creating refund transaction in points system
-                        // - Updating original redeem transaction status to rejected
-                        $refund_success = $this->refund_exchange_points(
-                            $user_id,
-                            $points_to_refund,
-                            $request_id,
-                            'Exchange request rejected via admin edit'
-                        );
-
-                        $current_points = get_user_meta($user_id, 'my_points', true);
-                        $current_balance = get_user_meta($user_id, 'points_balance', true);
-                        if ($refund_success) {
-                            error_log(sprintf(
-                                'T-Work Rewards: Exchange request rejected via admin edit. User %d refunded %s points (actual deducted: %s, original: %s). New my_points: %s, New points_balance: %s',
-                                $user_id,
-                                $points_to_refund,
-                                $actual_deducted,
-                                $original_points_value,
-                                $current_points ?: '0',
-                                $current_balance ?: '0'
-                            ));
-                        } else {
-                            error_log(sprintf(
-                                'T-Work Rewards: Exchange request rejected via admin edit but refund failed. User %d, Refund Amount: %s, Original Points: %s, Actual Deducted: %s, Current my_points: %s, Current points_balance: %s',
-                                $user_id,
-                                $points_to_refund,
-                                $original_points_value,
-                                $actual_deducted,
-                                $current_points ?: '0',
-                                $current_balance ?: '0'
-                            ));
-                        }
-                    }
-                } else {
-                    // No matching deduction transaction found – do NOT refund to avoid free/double PNP.
-                    error_log(sprintf(
-                        'T-Work Rewards: Admin edit reject - No deducted points found, skipping refund to prevent double PNP. User ID: %d, Request ID: %d, Original Points: %s',
-                        $user_id,
-                        $request_id,
-                        $original_points_value
-                    ));
+                    $points_for_notification = (int) $actual_deducted;
                 }
+                $this->refund_exchange_points(
+                    $user_id,
+                    0,
+                    $request_id,
+                    'Exchange request rejected via admin edit'
+                );
             }
 
-            // PROFESSIONAL FCM NOTIFICATION: Send notification for exchange rejected.
-            // If $points_for_notification is 0, the mobile app text will show "balance unchanged".
             $this->send_points_fcm_notification(
                 $user_id,
                 'exchange_rejected',
@@ -25274,24 +24739,17 @@ class TWork_Rewards_System
                     'points_value' => $points_for_notification,
                     'reason' => $note ?: 'Exchange request rejected',
                     'description' => $note ?: ($points_for_notification > 0
-                        ? 'Your exchange request has been rejected. Points have been refunded.'
+                        ? 'Your exchange request has been rejected. Points have been restored.'
                         : 'Your exchange request has been rejected. Your PNP balance remains unchanged.'),
                 )
             );
         }
 
-        // PROFESSIONAL FIX: Update points system transaction status when status changes
-        // This ensures transaction history reflects the correct status
         if ($type === 'points' && !empty($points_value)) {
             $this->update_exchange_point_transaction_status($user_id, $request_id, $final_status);
         }
 
-        // Handle status change to approved
-        // PROFESSIONAL FIX: Handle different approval scenarios
-        // - pending -> approved: Points already deducted on creation, may need to refund difference if approved amount < requested
-        // - rejected -> approved: Points were refunded when rejected, need to deduct again
         if ($old_status !== 'approved' && $final_status === 'approved') {
-            // PROFESSIONAL FCM NOTIFICATION: Send notification for exchange approved
             $this->send_points_fcm_notification(
                 $user_id,
                 'exchange_approved',
@@ -25304,107 +24762,20 @@ class TWork_Rewards_System
             );
 
             if ($type === 'points' && !empty($points_value) && is_numeric($points_value)) {
-                $approved_amount = (float) $points_value;  // What admin approved (may be edited)
+                $approved_amount = (int) round((float) $points_value);
+                $balance = $this->calculate_points_balance_from_transactions($user_id);
+                $pending_others = $this->get_user_pending_exchange_points_sum($user_id, $request_id);
 
-                // PROFESSIONAL FIX: Handle rejected -> approved transition
-                // If request was rejected, points were refunded, so we need to deduct again
-                if ($old_status === 'rejected') {
-                    // Rejected -> Approved: Deduct points again (they were refunded when rejected)
-                    $existing_points_raw = get_user_meta($user_id, 'my_points', true);
-                    $existing_points = ($existing_points_raw === '' || $existing_points_raw === false || $existing_points_raw === null)
-                        ? 0.0
-                        : (is_numeric($existing_points_raw) ? (float) $existing_points_raw : 0.0);
-
-                    $new_my_points = max(0.0, $existing_points - $approved_amount);
-                    $stored_my_points = (floor($new_my_points) == $new_my_points)
-                        ? (string) (int) $new_my_points
-                        : (string) $new_my_points;
-
-                    update_user_meta($user_id, 'my_points', $stored_my_points);
-                    update_user_meta($user_id, 'my_point', $stored_my_points);
-                    update_user_meta($user_id, 'my_points_updated_at', time());
-
-                    // Also update points_balance
-                    $current_balance = (int) get_user_meta($user_id, 'points_balance', true);
-                    if ($current_balance === false || $current_balance === '') {
-                        $current_balance = 0;
-                    }
-                    $new_balance = max(0, $current_balance - (int) $approved_amount);
-                    update_user_meta($user_id, 'points_balance', $new_balance);
-
-                    error_log(sprintf(
-                        'T-Work Rewards: Exchange request approved via admin edit (was rejected). User %d deducted %s points again. New my_points: %s, New points_balance: %d',
-                        $user_id,
-                        $approved_amount,
-                        $stored_my_points,
-                        $new_balance
-                    ));
+                if ($balance >= $approved_amount + $pending_others) {
+                    $this->deduct_exchange_points_on_approve($user_id, $request_id, $approved_amount, $phone);
                 } else {
-                    // Pending -> Approved: Points already deducted on creation
-                    // Get original requested amount (what user originally requested)
-                    $original_requested = !empty($old_points_value) && is_numeric($old_points_value) ? (float) $old_points_value : 0;
-                    $requested_amount = $original_requested;  // What user originally requested
-
-                    // If approved amount is less than requested amount, refund the difference
-                    // Example: User requested 12, admin approves 10 → Refund 2 points
-                    if ($approved_amount < $requested_amount) {
-                        $refund_amount = $requested_amount - $approved_amount;
-
-                        $existing_points = get_user_meta($user_id, 'my_points', true);
-                        if (empty($existing_points) || !is_numeric($existing_points)) {
-                            $existing_points = 0;
-                        }
-
-                        // PROFESSIONAL FIX: Refund the difference to both my_points and points_balance
-                        $new_total = (float) $existing_points + $refund_amount;
-                        $stored = (floor($new_total) == $new_total)
-                            ? (string) (int) $new_total
-                            : (string) $new_total;
-
-                        update_user_meta($user_id, 'my_points', $stored);
-                        update_user_meta($user_id, 'my_points_updated_at', time());
-                        update_user_meta($user_id, 'my_point', $stored);
-
-                        // Also update points_balance
-                        $current_balance = (int) get_user_meta($user_id, 'points_balance', true);
-                        if ($current_balance === false || $current_balance === '') {
-                            $current_balance = 0;
-                        }
-                        $new_balance = $current_balance + (int) $refund_amount;
-                        update_user_meta($user_id, 'points_balance', $new_balance);
-
-                        error_log(sprintf(
-                            'T-Work Rewards: Exchange request approved with reduced amount. User %d, Requested: %s, Approved: %s, Refunded: %s, New balance: %s',
-                            $user_id,
-                            $requested_amount,
-                            $approved_amount,
-                            $refund_amount,
-                            $stored
-                        ));
-                    } else if ($approved_amount == $requested_amount) {
-                        // Approved amount equals requested amount - no refund needed
-                        // Points were already deducted on creation, so nothing to do
-                        $current_points = get_user_meta($user_id, 'my_points', true);
-                        error_log(sprintf(
-                            'T-Work Rewards: Exchange request approved with full amount. User %d, Requested: %s, Approved: %s, Current balance: %s (points already deducted on creation, no refund needed)',
-                            $user_id,
-                            $requested_amount,
-                            $approved_amount,
-                            $current_points ?: '0'
-                        ));
-                    } else {
-                        // Approved amount exceeds requested (shouldn't normally happen, but handle gracefully)
-                        // This would mean admin increased the amount, which would require additional deduction
-                        // But since we're in approval flow, we'll just log it
-                        $current_points = get_user_meta($user_id, 'my_points', true);
-                        error_log(sprintf(
-                            'T-Work Rewards: Exchange request approved with increased amount. User %d, Requested: %s, Approved: %s, Current balance: %s (Note: Additional deduction may be needed)',
-                            $user_id,
-                            $requested_amount,
-                            $approved_amount,
-                            $current_points ?: '0'
-                        ));
-                    }
+                    error_log(sprintf(
+                        'T-Work Rewards: Exchange approve via edit failed — insufficient balance. User %d, Request %d, Balance: %d, Needed: %d',
+                        $user_id,
+                        $request_id,
+                        $balance,
+                        $approved_amount + $pending_others
+                    ));
                 }
             }
         }
