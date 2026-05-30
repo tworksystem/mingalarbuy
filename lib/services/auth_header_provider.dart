@@ -1,4 +1,4 @@
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'secure_storage_config.dart';
 
 /// Builds [Authorization] headers for REST calls without depending on [AuthService]
 /// (avoids circular imports with [ApiService]).
@@ -6,7 +6,7 @@ class AuthHeaderProvider {
   AuthHeaderProvider._();
 
   static const String _tokenKey = 'auth_token';
-  static final FlutterSecureStorage _storage = FlutterSecureStorage();
+  static final _storage = SecureStorageConfig.instance;
 
   /// Same semantics as [AuthService.getAuthorizationHeaders].
   static Future<Map<String, String>> buildHeaders() async {

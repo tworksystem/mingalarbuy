@@ -3,7 +3,7 @@ import 'dart:math';
 
 import 'package:encrypt/encrypt.dart' as encrypt_lib;
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'secure_storage_config.dart';
 
 /// Lightweight helper for encrypting values stored in SharedPreferences.
 ///
@@ -15,7 +15,7 @@ class SecurePrefs {
   static final SecurePrefs instance = SecurePrefs._internal();
 
   static const _encryptionKeyStorageKey = 'secure_prefs_encryption_key';
-  static const _storage = FlutterSecureStorage();
+  static final _storage = SecureStorageConfig.instance;
 
   encrypt_lib.Key? _key;
   Future<void>? _initializing;
