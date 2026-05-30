@@ -13,6 +13,7 @@ import 'services/auth_header_provider.dart';
 import 'services/global_keys.dart';
 import 'utils/app_config.dart';
 import 'utils/logger.dart';
+import 'utils/waf_response_utils.dart';
 
 /// Enterprise HTTP client for the WooCommerce / T-Work backend.
 ///
@@ -46,8 +47,7 @@ class ApiService {
       //   'User-Agent': AppConfig.defaultUserAgent,
       // },
       headers: <String, dynamic>{
-        ...AppConfig.defaultBrowserHeaders,
-        'Accept-Encoding': 'identity', // ဤလိုင်းကို ထည့်ပါ
+        ...AppConfig.defaultApiHeaders,
         Headers.contentTypeHeader: Headers.jsonContentType,
       },
       validateStatus: (status) =>
@@ -121,6 +121,13 @@ class ApiService {
                   ),
                 );
                 return;
+              }
+              if (WafResponseUtils.isWafBlockedBody(response.data)) {
+                response.extra['wafBlocked'] = true;
+                Logger.warning(
+                  'ApiService: WAF/bot-protection block detected for ${response.requestOptions.uri}',
+                  tag: 'ApiService',
+                );
               }
               final int? code = response.statusCode;
               if (code == 401 || code == 403) {
@@ -756,6 +763,10 @@ class ApiService {
     );
   }
 
+  /// True when Imunify/WAF returned a bot-protection JSON body (often HTTP 200).
+  static bool isWafBlockedResponse(Response<dynamic>? response) =>
+      WafResponseUtils.isWafBlockedResponse(response);
+
   static Options _options({
     required bool skipAuth,
     Map<String, dynamic>? headers,
@@ -767,11 +778,11 @@ class ApiService {
     }
 
     final Map<String, dynamic> mergedHeaders = <String, dynamic>{
-      ...AppConfig.defaultBrowserHeaders,
+      ...AppConfig.defaultApiHeaders,
     };
 
-    // GZip Compression ကို ပိတ်ရန် (Server မှ compressed data ပို့ခြင်းကို တားဆီးရန်)
-    mergedHeaders['Accept-Encoding'] = 'identity';
+    // OLD CODE: forced Accept-Encoding: identity — mismatched fake Chrome UA, WAF bot signal.
+    // mergedHeaders['Accept-Encoding'] = 'identity';
 
     if (merge?.headers != null) {
       mergedHeaders.addAll(merge!.headers!);

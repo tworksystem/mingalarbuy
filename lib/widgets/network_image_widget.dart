@@ -55,7 +55,7 @@ class NetworkImageWidget extends StatelessWidget {
         height: height,
         width: width,
         fit: fit,
-        headers: const <String, String>{
+        headers: <String, String>{
           'User-Agent': AppConfig.defaultUserAgent,
           'Accept': 'image/*',
         },
@@ -81,7 +81,7 @@ class NetworkImageWidget extends StatelessWidget {
         errorWidget: (context, url, error) => _buildFallbackImage(),
         fadeInDuration: const Duration(milliseconds: 300),
         fadeOutDuration: const Duration(milliseconds: 100),
-        httpHeaders: const <String, String>{
+        httpHeaders: <String, String>{
           'User-Agent': AppConfig.defaultUserAgent,
           'Accept': 'image/*',
         },
@@ -92,7 +92,7 @@ class NetworkImageWidget extends StatelessWidget {
         height: height,
         width: width,
         fit: fit,
-        headers: const <String, String>{
+        headers: <String, String>{
           'User-Agent': AppConfig.defaultUserAgent,
           'Accept': 'image/*',
         },

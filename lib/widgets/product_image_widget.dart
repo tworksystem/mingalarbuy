@@ -92,7 +92,7 @@ class ProductImageWidget extends StatelessWidget {
       //   'Accept-Encoding': 'gzip, deflate',
       //   'Connection': 'keep-alive',
       // },
-      httpHeaders: const <String, String>{
+      httpHeaders: <String, String>{
         'User-Agent': AppConfig.defaultUserAgent,
         'Accept': 'image/*',
         'Accept-Encoding': 'gzip, deflate',

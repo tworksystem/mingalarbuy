@@ -8,35 +8,35 @@ class AppConfig {
   static const String appVersion = '1.0.0';
   static const String buildNumber = '1';
 
-  /// Single [User-Agent] for all app HTTP clients (Dio, background tasks, etc.)
-  /// so WAFs (e.g. Imunify360) see a consistent, browser-like client identity.
-  static const String defaultUserAgent =
-      'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36';
+  /// Honest native client id (do not spoof Chrome — TLS fingerprint mismatch triggers WAF bots).
+  static String get defaultUserAgent {
+    final platform = kIsWeb ? 'Web' : defaultTargetPlatform.name;
+    return '$appName/$appVersion ($platform; build $buildNumber; Flutter)';
+  }
 
-  // OLD CODE: browser-only Sec-Fetch-* / X-Requested-With on a non-browser client
-  // triggered WAF / bot heuristics.
-  // static const Map<String, String> defaultBrowserHeaders = {
-  //   'User-Agent':
-  //       'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
-  //   'Accept': 'application/json, text/plain, ...',
-  //   'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
-  //   'Accept-Encoding': 'gzip, deflate, br',
-  //   'Connection': 'keep-alive',
-  //   'Sec-Fetch-Dest': 'empty',
-  //   'Sec-Fetch-Mode': 'cors',
-  //   'Sec-Fetch-Site': 'same-origin',
-  //   'X-Requested-With': 'XMLHttpRequest',
-  // };
-  /// Sensible client defaults for APIs (no Sec-Fetch-* / X-Requested-With on mobile).
-  /// Merge into [Dio] [BaseOptions.headers] with `...AppConfig.defaultBrowserHeaders`.
-  static const Map<String, String> defaultBrowserHeaders = {
-    'User-Agent':
-        'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
+  /// Stable headers for Imunify ignore rules (pair with hosting `X-PlanetMM-Client`).
+  static const Map<String, String> clientIdentificationHeaders = {
+    'X-PlanetMM-Client': '1',
+    'X-PlanetMM-Version': appVersion,
+    'X-PlanetMM-Build': buildNumber,
+    'X-PlanetMM-Platform': 'flutter',
   };
+
+  // OLD CODE: fake Chrome UA + Sec-Fetch-* caused Imunify bot-protection false positives.
+  // static const String defaultUserAgent =
+  //     'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 ...';
+
+  /// Default REST headers for [ApiService] / Dio / background tasks.
+  static Map<String, String> get defaultApiHeaders => {
+        'User-Agent': defaultUserAgent,
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
+        'Accept-Encoding': 'gzip, deflate',
+        ...clientIdentificationHeaders,
+      };
+
+  /// Back-compat alias for existing `...AppConfig.defaultBrowserHeaders` spreads.
+  static Map<String, String> get defaultBrowserHeaders => defaultApiHeaders;
 
   // API Configuration (WooCommerce - mingalarbuy.com)
   static const String baseUrl = 'https://mingalarbuy.com/wp-json/wc/v3';
