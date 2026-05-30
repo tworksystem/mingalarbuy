@@ -8,14 +8,15 @@
 [![Dart](https://img.shields.io/badge/Dart-3.0+-0175C2?logo=dart)](https://dart.dev)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Desktop-blue)](https://flutter.dev)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](https://github.com/tworksystem/mingalarbuy)
-[![GitHub](https://img.shields.io/badge/GitHub-mingalarbuy-181717?logo=github)](https://github.com/tworksystem/mingalarbuy)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](https://github.com/mawkunnmyat/mingalarbuy)
+[![GitHub](https://img.shields.io/badge/GitHub-mingalarbuy-181717?logo=github)](https://github.com/mawkunnmyat/mingalarbuy)
+[![Version](https://img.shields.io/badge/Version-1.0.1%20(build%202)-blueviolet)](https://github.com/mawkunnmyat/mingalarbuy)
 
 A production-ready, enterprise-grade e-commerce application built with Flutter, seamlessly integrated with WooCommerce and WordPress. Features comprehensive loyalty rewards system, engagement hub, offline-first architecture, real-time notifications, and advanced payment solutions.
 
 **Live Demo**: [mingalarbuy.com](https://mingalarbuy.com)
 
-**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repository**: [@tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repository**: [@mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy) · Org mirror: [@tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 **Poll System (Auto-Run Poll, Engagement Hub)**  
 Auto-run poll lifecycle and engagement components are maintained within this repository and documented under `docs/`.
@@ -67,8 +68,8 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - **Backend**: WordPress + WooCommerce
 - **Author**: Maw Kunn Myat
 - **Maintained by**: T-Work System
-- **Primary Repository**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Author Mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Author Repository**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Organization Mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 - **License**: MIT License
 - **Status**: Production Ready ✅
 
@@ -82,6 +83,9 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 🔄 **Auto-Run Poll Cadence** - Engagement provider pauses polling during result/countdown phases
 - 🛡️ **WAF-Safe HTTP Client** - Honest native User-Agent, PlanetMM client headers, and Imunify360 block detection
 - 🔐 **Hardened Auth & Secure Storage** - WAF-aware sign-in fallback, sparse `users/me` recovery, encrypted Android prefs
+- ⚡ **SyncCoordinator** - Deduped resume / periodic sync with in-flight locks (prevents API storms)
+- 🌿 **Green Performance** - Image cache RAM caps, offline queue limits, in-memory point history trim
+- 🧼 **CMS HTML Sanitizer** - XSS-safe rendering for legal/about pages via whitelist stripping
 - 💰 **Digital Wallet** - P2P money transfers, payment processing, and transaction history
 - 📱 **Offline-First** - Full functionality without internet connection
 - 🔔 **Real-Time Notifications** - Firebase Cloud Messaging with in-app notifications
@@ -216,10 +220,12 @@ See [docs/POLL_AUTO_RUN_INTEGRATION.md](docs/POLL_AUTO_RUN_INTEGRATION.md) for i
 #### Background Services
 - **WorkManager Integration** - Background order polling and sync
 - **Active Sync Service** - Continuous data synchronization
+- **SyncCoordinator** - Foreground dedupe + in-flight locks for resume, FCM, and fallback sync
 - **Background Tasks** - Scheduled tasks for maintenance
-- **Battery Optimization** - Efficient background processing
+- **Battery Optimization** - Efficient background processing, debounced app-resume work
 - **App Update Service** - Dynamic app update notifications and version checking
 - **App Download Service** - Seamless app update downloads and installation
+- **Image Cache Management** - Global `imageCache` byte limits with memory-pressure trimming
 
 ### 🛠️ Developer Experience
 
@@ -419,7 +425,7 @@ Ensure all checks pass before proceeding.
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/tworksystem/mingalarbuy.git
+git clone https://github.com/mawkunnmyat/mingalarbuy.git
 cd mingalarbuy
 ```
 
@@ -605,8 +611,10 @@ mingalarbuy/
 │   │   ├── payment_service.dart       # Payment processing
 │   │   ├── wallet_service.dart       # Wallet operations
 │   │   ├── engagement_service.dart   # Engagement hub
+│   │   ├── sync_coordinator.dart     # Foreground sync dedupe & in-flight locks
+│   │   ├── secure_storage_config.dart # Centralized encrypted storage
 │   │   ├── reward_exchange_service.dart # Reward exchange
-│   │   ├── offline_queue_service.dart # Offline sync queue
+│   │   ├── offline_queue_service.dart # Offline sync queue (owner-scoped, capped)
 │   │   ├── notification_service.dart  # Push/local notifications
 │   │   ├── push_notification_service.dart # Firebase FCM
 │   │   ├── point_notification_manager.dart # Point notification management
@@ -656,6 +664,8 @@ mingalarbuy/
 │   │   ├── app_config.dart           # App configuration
 │   │   ├── poll_display_helpers.dart # Poll totals, labels, and timer strip formatters
 │   │   ├── waf_response_utils.dart   # Imunify360 / WAF bot-protection detection
+│   │   ├── cms_html_sanitizer.dart   # CMS HTML XSS stripping for legal/about pages
+│   │   ├── image_cache_config.dart   # Global imageCache RAM limits
 │   │   ├── logger.dart               # Logging utilities
 │   │   └── monitoring.dart           # Performance monitoring
 │   │
@@ -815,7 +825,7 @@ flutter doctor       # Verify development environment
 
 ```bash
 # Clone the repository
-git clone https://github.com/tworksystem/mingalarbuy.git
+git clone https://github.com/mawkunnmyat/mingalarbuy.git
 cd mingalarbuy
 
 # Install dependencies
@@ -1044,13 +1054,18 @@ flutter build ios --release --flavor production
    - Detect WAF block payloads via `WafResponseUtils` (HTTP 200 + JSON `message`)
    - Auth sign-in falls back to `POST /wp-json/twork/v1/auth/sign-in` when `/users/me` is blocked
 
-4. **API Security**
+4. **CMS Content Safety**
+   - Sanitize WordPress HTML via `CmsHtmlSanitizer` before `flutter_html` render
+   - Strip `<script>`, event handlers, `javascript:` URLs, and dangerous embeds
+   - Preserve allowed markup for legal, privacy, and about pages
+
+5. **API Security**
    - Validate all user inputs
    - Use HTTPS only
    - Implement proper authentication and authorization
    - Rate limiting on backend
 
-4. **Code Obfuscation** (Optional)
+6. **Code Obfuscation** (Optional)
    ```bash
    flutter build apk --release --obfuscate --split-debug-info=./debug-info
    ```
@@ -1131,7 +1146,14 @@ cd ..
 - Ensure app uses honest native User-Agent (not spoofed Chrome)
 - Review `auth_service.dart` logs for `waf_blocked` error flag
 
-#### 7. Engagement Hub Not Loading
+#### 8. App Feels Slow After Long Poll Sessions
+
+- Home balance polling runs every 12s (not 2s) — expected during active polls
+- Check `SyncCoordinator` logs for dedupe skips (normal, not errors)
+- Image cache trims automatically on memory pressure
+- Point history shows max 300 rows in RAM — use date filter for older entries
+
+#### 9. Engagement Hub Not Loading
 
 - Verify WordPress plugin is activated
 - Check API endpoints are accessible
@@ -1141,7 +1163,7 @@ cd ..
 
 ### Getting Help
 
-1. Check existing [Issues](https://github.com/tworksystem/mingalarbuy/issues)
+1. Check existing [Issues (Author)](https://github.com/mawkunnmyat/mingalarbuy/issues) or [Issues (Org)](https://github.com/tworksystem/mingalarbuy/issues)
 2. Review documentation in `docs/` folder
 3. Check [Flutter documentation](https://flutter.dev/docs)
 4. Contact support: support@tworksystem.com
@@ -1159,7 +1181,7 @@ We welcome contributions from the community! This project is maintained by T-Wor
 1. **Fork the repository**
    ```bash
    # Click the "Fork" button on GitHub, or use:
-   gh repo fork tworksystem/mingalarbuy
+   gh repo fork mawkunnmyat/mingalarbuy
    ```
 
 2. **Create a feature branch**
@@ -1226,7 +1248,7 @@ All pull requests require review before merging. Our maintainers will review:
 ### Getting Help
 
 If you need help with contributing:
-- Check existing [Issues](https://github.com/tworksystem/mingalarbuy/issues)
+- Check existing [Issues (Author)](https://github.com/mawkunnmyat/mingalarbuy/issues)
 - Review the [Documentation](#-documentation) section
 - Contact: support@tworksystem.com
 
@@ -1283,8 +1305,9 @@ We're here to help! Here are the best ways to get support:
   - [WooCommerce Integration](README_WOOCOMMERCE.md)
 
 #### Community Support
-- **GitHub Issues**: [Report bugs or request features](https://github.com/tworksystem/mingalarbuy/issues)
-- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/tworksystem/mingalarbuy/discussions)
+- **GitHub Issues (Author)**: [Report bugs or request features](https://github.com/mawkunnmyat/mingalarbuy/issues)
+- **GitHub Issues (Org)**: [tworksystem/mingalarbuy/issues](https://github.com/tworksystem/mingalarbuy/issues)
+- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/mawkunnmyat/mingalarbuy/discussions)
 
 #### Direct Contact
 - **Email**: support@tworksystem.com
@@ -1294,7 +1317,8 @@ We're here to help! Here are the best ways to get support:
 #### Project Information
 - **Author**: Maw Kunn Myat
 - **Maintained by**: T-Work System
-- **Repository**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+- **Author Repository**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Organization Mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 ---
 
@@ -1311,7 +1335,9 @@ We would like to express our gratitude to the following technologies, platforms,
 - [Provider](https://pub.dev/packages/provider) - State management solution
 
 ### Team & Contributors
-- **T-Work System** - Development team and maintainers
+- **Maw Kunn Myat** — Original author and platform architect
+- **T-Work System** — Development team and maintainers
+- **Mapoee Phyu** — Performance, sync, and release engineering (mapoeeiphyu2017.miitinternship@gmail.com)
 - All contributors who have helped improve this project
 - The open-source community for their invaluable tools and libraries
 
@@ -1319,7 +1345,7 @@ We would like to express our gratitude to the following technologies, platforms,
 
 ## 📊 Project Status
 
-**Current Version**: 1.0.1
+**Current Version**: 1.0.1 (build 2)
 
 **Status**: ✅ Production Ready
 
@@ -1331,7 +1357,32 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Contributors**: Mapoee Phyu (mapoeeiphyu2017.miitinternship@gmail.com)
 
-### Recent Updates (30 May 2026)
+### Recent Updates (30 May 2026 — Performance & Reliability)
+
+#### ⚡ SyncCoordinator & App Lifecycle
+- ✅ **SyncCoordinator** — Dedupe intervals + in-flight locks prevent overlapping resume, FCM, and fallback sync storms
+- ✅ **Resume debounce** — 3-second guard skips duplicate heavy work when app resumes rapidly
+- ✅ **Session reset** — Coordinator keys cleared on login/logout/account switch
+- ✅ **Engagement poll guard** — Periodic feed poll respects coordinator before hitting the network
+
+#### 🌿 Green Performance & Memory
+- ✅ **Image cache caps** — 50 images / ~80MB decoded RAM budget via `AppImageCacheConfig`
+- ✅ **Memory pressure trim** — Clears `imageCache` on `didHaveMemoryPressure` to keep app alive
+- ✅ **Offline queue cap** — Max 100 persisted items; oldest dropped on overflow
+- ✅ **Owner-scoped queue** — `owner_user_id` stamped on queue items; stale rows dropped on account switch
+- ✅ **Point history RAM cap** — 300 newest transactions in memory with Burmese snackbar notice
+- ✅ **Home balance polling** — Interval relaxed from 2s → 12s to cut rebuild churn during poll sessions
+
+#### 🎯 Poll UX & Accessibility
+- ✅ **Auto-run rollover shell** — "Next round starting…" transition when stale `hasInteracted` persists across sessions
+- ✅ **No voting UI flash** — Suppress vote receipt after result window ends until feed refreshes
+- ✅ **Semantics labels** — Screen reader support on poll options, submit, and countdown UI
+
+#### 🧼 CMS & Backend Admin
+- ✅ **CmsHtmlSanitizer** — Whitelist-style stripping before `flutter_html` (scripts, handlers, `javascript:` URLs)
+- ✅ **Point ledger trash workflow** — Soft-delete, restore, bulk actions, and archive purge in rewards admin (balance SUM unchanged)
+
+### Recent Updates (30 May 2026 — Security Hardening)
 
 #### 🛡️ WAF Hardening & HTTP Client Identity
 - ✅ **Honest native User-Agent** — Replaced fake Chrome UA with `PlanetMM/{version} (Platform; build; Flutter)` to avoid TLS fingerprint mismatches
@@ -1449,9 +1500,9 @@ We would like to express our gratitude to the following technologies, platforms,
 - **GitHub**: [@tworksystem](https://github.com/tworksystem)
 
 ### Project Repository
-- **Primary**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Author Mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
-- **Issues**: [GitHub Issues](https://github.com/tworksystem/mingalarbuy/issues)
+- **Author (this repo)**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Organization mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+- **Issues**: [GitHub Issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
 - **Documentation**: See `docs/` folder for detailed guides
 
 ---
@@ -1460,7 +1511,7 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Made with ❤️ by the T-Work Team**
 
-**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repo**: [tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repo**: [mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
 
 [⬆ Back to Top](#mingalarbuy---planetmm-e-commerce-platform)
 
