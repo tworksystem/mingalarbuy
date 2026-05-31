@@ -2094,6 +2094,213 @@ class PointService {
   ///
   /// New Code: also match by [orderId]; if local has meaningful bet data and
   /// incoming does not (or lacks per-option bets), preserve local pollDetails.
+  /// When incoming carries [winningOption] (Actual Result) and cache does not,
+  /// prefer incoming result while preserving richer bet rows from cache.
+  static bool pollDetailsHasActualResult(PollTransactionDetails? p) {
+    if (p == null) return false;
+    final label = p.winningOption?.label.trim() ?? '';
+    return label.isNotEmpty;
+  }
+
+  static PollTransactionDetails mergePollDetailsPreferActualResult({
+    required PollTransactionDetails incoming,
+    PollTransactionDetails? cached,
+  }) {
+    if (cached == null) return incoming;
+    if (pollDetailsHasActualResult(incoming) &&
+        !pollDetailsHasActualResult(cached)) {
+      return PollTransactionDetails(
+        pollId: incoming.pollId ?? cached.pollId,
+        pollTitle: (incoming.pollTitle ?? '').isNotEmpty
+            ? incoming.pollTitle
+            : cached.pollTitle,
+        sessionId: (incoming.sessionId ?? '').isNotEmpty
+            ? incoming.sessionId
+            : cached.sessionId,
+        resultStatus: (incoming.resultStatus ?? '').isNotEmpty
+            ? incoming.resultStatus
+            : cached.resultStatus,
+        totalBetPnp: cached.totalBetPnp > 0 ? cached.totalBetPnp : incoming.totalBetPnp,
+        wonAmountPnp: incoming.wonAmountPnp > 0
+            ? incoming.wonAmountPnp
+            : cached.wonAmountPnp,
+        netAmountPnp: incoming.netAmountPnp != 0
+            ? incoming.netAmountPnp
+            : cached.netAmountPnp,
+        winningOption: incoming.winningOption,
+        selectedOptions: _pollDetailsHasPerOptionBetPnp(cached)
+            ? cached.selectedOptions
+            : incoming.selectedOptions,
+      );
+    }
+    if (!pollDetailsHasActualResult(incoming) &&
+        pollDetailsHasActualResult(cached)) {
+      return cached;
+    }
+    return incoming;
+  }
+
+  /// Background / FCM: merge API page-1 rows into encrypted disk cache.
+  static Future<bool> mergeAndPersistTransactionsFromApiMaps(
+    String userId,
+    List<dynamic> apiItems,
+  ) async {
+    if (userId.isEmpty || apiItems.isEmpty) return false;
+    try {
+      final incoming = <PointTransaction>[];
+      for (final item in apiItems) {
+        if (item is! Map<String, dynamic>) continue;
+        try {
+          incoming.add(PointTransaction.fromJson(item));
+        } catch (_) {
+          // Skip malformed rows — keep cache intact.
+        }
+      }
+      if (incoming.isEmpty) return false;
+
+      final cached = await getCachedTransactions(userId);
+      final merged = mergeTransactionsPreservingPollDetails(
+        existing: cached,
+        incoming: incoming,
+      );
+      await persistTransactionsCache(userId, merged);
+      Logger.info(
+        'Background merge persisted ${merged.length} transactions for user $userId',
+        tag: 'PointService',
+      );
+      return true;
+    } catch (e, st) {
+      Logger.error(
+        'mergeAndPersistTransactionsFromApiMaps failed: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: st,
+      );
+      return false;
+    }
+  }
+
+  /// Patch poll_cost rows in disk cache with Actual Result (loss path).
+  static Future<int> patchCachedPollCostActualResult({
+    required String userId,
+    required int pollId,
+    String? sessionId,
+    required String winningLabel,
+    int winningIndex = -1,
+  }) async {
+    if (userId.isEmpty || pollId <= 0) return 0;
+    final label = winningLabel.trim();
+    if (label.isEmpty) return 0;
+
+    try {
+      final cached = await getCachedTransactions(userId);
+      if (cached.isEmpty) return 0;
+
+      final prefix = 'engagement:poll_cost:$pollId:';
+      final normalizedSession = sessionId?.trim() ?? '';
+      var patched = 0;
+
+      final updated = cached.map((tx) {
+        final oid = tx.orderId?.trim() ?? '';
+        if (!oid.startsWith(prefix)) return tx;
+
+        if (normalizedSession.isNotEmpty) {
+          final txSession = tx.pollDetails?.sessionId?.trim() ?? '';
+          if (txSession.isNotEmpty && txSession != normalizedSession) {
+            return tx;
+          }
+        }
+
+        if (pollDetailsHasActualResult(tx.pollDetails)) return tx;
+
+        final base = tx.pollDetails ??
+            PollTransactionDetails(
+              pollId: pollId,
+              sessionId: normalizedSession.isEmpty ? null : normalizedSession,
+            );
+        final winning = PollOptionSnapshot(
+          index: winningIndex >= 0 ? winningIndex : 0,
+          label: label,
+        );
+        patched++;
+        return tx.copyWith(
+          pollDetails: mergePollDetailsPreferActualResult(
+            incoming: PollTransactionDetails(
+              pollId: base.pollId ?? pollId,
+              pollTitle: base.pollTitle,
+              sessionId: base.sessionId ?? normalizedSession,
+              resultStatus: 'lost',
+              totalBetPnp: base.totalBetPnp,
+              wonAmountPnp: base.wonAmountPnp,
+              netAmountPnp: base.netAmountPnp,
+              winningOption: winning,
+              selectedOptions: base.selectedOptions,
+            ),
+            cached: base,
+          ),
+        );
+      }).toList();
+
+      if (patched > 0) {
+        await persistTransactionsCache(userId, updated);
+        Logger.info(
+          'Patched $patched poll_cost cache row(s) with Actual Result pollId=$pollId userId=$userId',
+          tag: 'PointService',
+        );
+      }
+      return patched;
+    } catch (e, st) {
+      Logger.error(
+        'patchCachedPollCostActualResult failed: $e',
+        tag: 'PointService',
+        error: e,
+        stackTrace: st,
+      );
+      return 0;
+    }
+  }
+
+  /// FCM background isolate: apply poll loss Actual Result into disk cache.
+  static Future<void> applyPollBetResultFromFcmBackground(
+    Map<String, dynamic> data,
+  ) async {
+    final userId = data['userId']?.toString() ?? data['user_id']?.toString() ?? '';
+    final pollIdRaw = data['pollId'] ?? data['poll_id'];
+    final pollId = pollIdRaw is int
+        ? pollIdRaw
+        : int.tryParse(pollIdRaw?.toString() ?? '') ?? 0;
+    final sessionId =
+        (data['sessionId'] ?? data['session_id'] ?? '').toString().trim();
+    final actualResult = (data['actualResult'] ??
+            data['actual_result'] ??
+            data['actualResultLabel'] ??
+            '')
+        .toString()
+        .trim();
+    final winningIndexRaw = data['winningIndex'] ?? data['winning_index'];
+    final winningIndex = winningIndexRaw is num
+        ? winningIndexRaw.toInt()
+        : int.tryParse(winningIndexRaw?.toString() ?? '') ?? -1;
+
+    if (userId.isEmpty || pollId <= 0 || actualResult.isEmpty) return;
+
+    await patchCachedPollCostActualResult(
+      userId: userId,
+      pollId: pollId,
+      sessionId: sessionId.isEmpty ? null : sessionId,
+      winningLabel: actualResult,
+      winningIndex: winningIndex,
+    );
+  }
+
+  /// Public cache writer (background isolate + foreground reconcile).
+  static Future<void> persistTransactionsCache(
+    String userId,
+    List<PointTransaction> transactions,
+  ) async {
+    await _cacheTransactions(userId, transactions);
+  }
+
   static List<PointTransaction> mergeTransactionsPreservingPollDetails({
     required List<PointTransaction> existing,
     required List<PointTransaction> incoming,
@@ -2138,6 +2345,19 @@ class PointService {
       if (_pollDetailsHasMeaningfulBetData(old.pollDetails) &&
           !_pollDetailsHasMeaningfulBetData(tx.pollDetails)) {
         return tx.copyWith(pollDetails: old.pollDetails);
+      }
+      if (tx.pollDetails != null && old.pollDetails != null) {
+        final mergedDetails = mergePollDetailsPreferActualResult(
+          incoming: tx.pollDetails!,
+          cached: old.pollDetails,
+        );
+        if (mergedDetails != tx.pollDetails) {
+          return tx.copyWith(pollDetails: mergedDetails);
+        }
+      }
+      if (pollDetailsHasActualResult(tx.pollDetails) &&
+          !pollDetailsHasActualResult(old.pollDetails)) {
+        return tx;
       }
       if (tx.pollDetails != null) return tx;
       if (old.pollDetails == null) return tx;
