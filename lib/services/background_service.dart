@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:ecommerce_int2/providers/order_provider.dart';
 import 'package:ecommerce_int2/services/auth_service.dart';
+import 'package:ecommerce_int2/services/point_service.dart';
 import 'package:ecommerce_int2/utils/app_config.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -505,7 +506,8 @@ Future<bool> _runAutoRunPollTickTask() async {
       return true;
     }
 
-    final Set<int> autoRunPollIds = <int>{};
+    final List<_BackgroundAutoRunPollTarget> pollTargets =
+        <_BackgroundAutoRunPollTarget>[];
     for (final item in rawItems) {
       if (item is! Map) continue;
       final itemType = (item['type'] ?? '').toString().toLowerCase();
@@ -515,13 +517,33 @@ Future<bool> _runAutoRunPollTickTask() async {
       final mode = (scheduleRaw['poll_mode'] ?? '').toString().toUpperCase();
       if (mode != 'AUTO_RUN') continue;
       final idVal = item['id'];
-      final id = idVal is int ? idVal : int.tryParse(idVal.toString());
-      if (id != null && id > 0) {
-        autoRunPollIds.add(id);
-      }
+      final pollId = idVal is int ? idVal : int.tryParse(idVal.toString());
+      if (pollId == null || pollId <= 0) continue;
+
+      final hasInteracted = item['has_interacted'] == true ||
+          item['has_interacted'] == 1 ||
+          item['hasInteracted'] == true;
+      final sessionId =
+          (scheduleRaw['current_session_id'] ?? '').toString().trim();
+      final votingStatus =
+          (scheduleRaw['voting_status'] ?? '').toString().trim();
+      final pollResultRaw = item['poll_result'];
+      final Map<String, dynamic>? pollResult = pollResultRaw is Map
+          ? Map<String, dynamic>.from(pollResultRaw)
+          : null;
+
+      pollTargets.add(
+        _BackgroundAutoRunPollTarget(
+          pollId: pollId,
+          sessionId: sessionId,
+          votingStatus: votingStatus,
+          pollResult: pollResult,
+          hasInteracted: hasInteracted,
+        ),
+      );
     }
 
-    if (autoRunPollIds.isEmpty) {
+    if (pollTargets.isEmpty) {
       Logger.info(
         'Background poll tick: no AUTO_RUN polls in feed',
         tag: 'BackgroundService',
@@ -529,14 +551,16 @@ Future<bool> _runAutoRunPollTickTask() async {
       return true;
     }
 
+    /*
+    Old Code: only GET /poll/state (server process trigger, no /poll/results).
+    */
     var successCount = 0;
-    for (final pollId in autoRunPollIds) {
-      /*
-      Old Code:
-      final stateUri = Uri.parse(
-        '${AppConfig.backendUrl}/wp-json/twork/v1/poll/state/$pollId',
-      ).replace(queryParameters: _wooQueryParams());
-      */
+    var resultsFetchCount = 0;
+    const int maxResultFetchesPerTick = 3;
+    final int parsedUserId = int.tryParse(userId) ?? 0;
+
+    for (final target in pollTargets) {
+      final pollId = target.pollId;
       final stateUri = _buildSignedUri(
         '${AppConfig.tworkPollStatePath}/$pollId',
       );
@@ -561,6 +585,59 @@ Future<bool> _runAutoRunPollTickTask() async {
         if (stateData is Map && stateData['success'] == true) {
           successCount++;
         }
+
+        // Best-effort: when user voted and result phase is visible on feed,
+        // hit /poll/results so server-side winner resolution stays warm;
+        // foreground resume reconciles local transaction cache.
+        if (!target.hasInteracted || resultsFetchCount >= maxResultFetchesPerTick) {
+          continue;
+        }
+        if (!_backgroundPollTargetInResultPhase(target)) {
+          continue;
+        }
+
+        var sessionId = target.sessionId;
+        if (sessionId.isEmpty) {
+          sessionId = (target.pollResult?['session_id'] ?? '').toString().trim();
+        }
+        if (sessionId.isEmpty && stateData is Map) {
+          final statePayload = stateData['data'];
+          if (statePayload is Map) {
+            sessionId =
+                (statePayload['current_session_id'] ?? '').toString().trim();
+          }
+        }
+        if (sessionId.isEmpty) {
+          continue;
+        }
+
+        final resultsUri = _buildSignedUri(
+          '${AppConfig.tworkApiBasePath}/poll/results/$pollId/${Uri.encodeComponent(sessionId)}',
+          parsedUserId > 0 ? <String, dynamic>{'user_id': parsedUserId} : null,
+        );
+        _logRequestDiagnostics(
+          scope: 'results:$pollId',
+          uri: resultsUri,
+          hasAuthHeader: hasAuthHeader,
+          wcBasicAuthInHeaders: false,
+        );
+        final resultsRes = await dio.getUri(resultsUri);
+        if (resultsRes.statusCode == 401 || resultsRes.statusCode == 403) {
+          continue;
+        }
+        if (resultsRes.data is Map &&
+            (resultsRes.data as Map)['success'] == true) {
+          resultsFetchCount++;
+          await _backgroundPersistPollLossActualResult(
+            userId: userId,
+            parsedUserId: parsedUserId,
+            pollId: pollId,
+            sessionId: sessionId,
+            resultsPayload: resultsRes.data,
+            dio: dio,
+            hasAuthHeader: hasAuthHeader,
+          );
+        }
       } catch (e) {
         Logger.warning(
           'Background poll tick failed for pollId=$pollId: $e',
@@ -570,7 +647,8 @@ Future<bool> _runAutoRunPollTickTask() async {
     }
 
     Logger.info(
-      'Background poll tick complete: polled=$successCount/${autoRunPollIds.length}',
+      'Background poll tick complete: statePolled=$successCount/${pollTargets.length} '
+      'resultsFetched=$resultsFetchCount',
       tag: 'BackgroundService',
     );
     return successCount > 0;
@@ -731,5 +809,163 @@ Future<bool> _isWpTokenValid(String token) async {
     return false;
   } finally {
     dio.close(force: true);
+  }
+}
+
+class _BackgroundAutoRunPollTarget {
+  const _BackgroundAutoRunPollTarget({
+    required this.pollId,
+    required this.sessionId,
+    required this.votingStatus,
+    required this.hasInteracted,
+    this.pollResult,
+  });
+
+  final int pollId;
+  final String sessionId;
+  final String votingStatus;
+  final bool hasInteracted;
+  final Map<String, dynamic>? pollResult;
+}
+
+bool _backgroundPollTargetInResultPhase(_BackgroundAutoRunPollTarget target) {
+  final status = target.votingStatus.toLowerCase();
+  switch (status) {
+    case 'showing_result':
+    case 'showing_results':
+    case 'ended':
+    case 'result':
+    case 'results':
+      return true;
+    default:
+      break;
+  }
+  final pr = target.pollResult;
+  if (pr == null || pr.isEmpty) return false;
+  final wi = pr['winning_index'];
+  if (wi is num && wi.toInt() >= 0) return true;
+  if (pr['winning_option'] is Map) return true;
+  return false;
+}
+
+bool _backgroundPollResultsWinningIndexResolved(Map<String, dynamic> rd) {
+  final wi = rd['winning_index'];
+  if (wi is num && wi.toInt() >= 0) return true;
+  final winningOption = rd['winning_option'];
+  if (winningOption is Map && winningOption.isNotEmpty) return true;
+  return false;
+}
+
+bool _backgroundPollResultsIsWin(Map<String, dynamic> rd) {
+  if (rd['user_won'] == true || rd['user_won'] == 1) return true;
+  final pointsEarned = (rd['points_earned'] as num?)?.toInt() ?? 0;
+  return pointsEarned > 0;
+}
+
+Future<void> _backgroundPersistPollLossActualResult({
+  required String userId,
+  required int parsedUserId,
+  required int pollId,
+  required String sessionId,
+  required dynamic resultsPayload,
+  required Dio dio,
+  required bool hasAuthHeader,
+}) async {
+  if (resultsPayload is! Map) return;
+  final data = resultsPayload['data'];
+  if (data is! Map) return;
+  final rd = Map<String, dynamic>.from(data);
+
+  if (_backgroundPollResultsIsWin(rd)) return;
+  if (!_backgroundPollResultsWinningIndexResolved(rd)) return;
+
+  var winningLabel = '';
+  var winningIndex = -1;
+  final winningOption = rd['winning_option'];
+  if (winningOption is Map) {
+    winningLabel = (winningOption['label'] ?? winningOption['text'] ?? '')
+        .toString()
+        .trim();
+    final idxRaw = winningOption['index'];
+    if (idxRaw is num) winningIndex = idxRaw.toInt();
+  }
+  if (winningLabel.isEmpty) {
+    final wi = rd['winning_index'];
+    if (wi is num && wi.toInt() >= 0) {
+      winningIndex = wi.toInt();
+      winningLabel = 'Option ${winningIndex + 1}';
+    }
+  }
+  if (winningLabel.isEmpty) return;
+
+  final stableSession =
+      (rd['session_id'] ?? sessionId).toString().trim().isEmpty
+          ? sessionId
+          : (rd['session_id'] ?? sessionId).toString().trim();
+
+  final patched = await PointService.patchCachedPollCostActualResult(
+    userId: userId,
+    pollId: pollId,
+    sessionId: stableSession,
+    winningLabel: winningLabel,
+    winningIndex: winningIndex,
+  );
+
+  if (patched <= 0) {
+    await _backgroundRefreshTransactionsCachePage(
+      dio: dio,
+      userId: userId,
+      hasAuthHeader: hasAuthHeader,
+    );
+  } else {
+    Logger.info(
+      'Background poll loss cache patched pollId=$pollId session=$stableSession '
+      'actualResult=$winningLabel rows=$patched',
+      tag: 'BackgroundService',
+    );
+  }
+}
+
+Future<void> _backgroundRefreshTransactionsCachePage({
+  required Dio dio,
+  required String userId,
+  required bool hasAuthHeader,
+}) async {
+  final txnUri = _buildSignedUri(
+    '${AppConfig.tworkPointsTransactionsPath}/$userId',
+    <String, dynamic>{
+      'page': '1',
+      'per_page': '25',
+      'range_days': '90',
+      'orderby': 'created_at',
+      'order': 'DESC',
+    },
+  );
+  _logRequestDiagnostics(
+    scope: 'transactions:$userId',
+    uri: txnUri,
+    hasAuthHeader: hasAuthHeader,
+    wcBasicAuthInHeaders: false,
+  );
+  try {
+    final txnRes = await dio.getUri(txnUri);
+    if (txnRes.statusCode != 200 || txnRes.data is! Map) return;
+    final body = txnRes.data as Map;
+    final data = body['data'];
+    List<dynamic> rows = const [];
+    if (data is List) {
+      rows = data;
+    } else if (data is Map && data['transactions'] is List) {
+      rows = data['transactions'] as List;
+    } else if (body['transactions'] is List) {
+      rows = body['transactions'] as List;
+    }
+    if (rows.isEmpty) return;
+    await PointService.mergeAndPersistTransactionsFromApiMaps(userId, rows);
+  } catch (e) {
+    Logger.warning(
+      'Background transactions cache refresh failed userId=$userId: $e',
+      tag: 'BackgroundService',
+    );
   }
 }
