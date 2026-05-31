@@ -48,6 +48,10 @@ class SyncCoordinator {
 
   static String engagementFcmKey(String userId) => 'engagement:fcm:$userId';
 
+  /// App resume poll result / loss reconcile (feed + silent /poll/results sync).
+  static String engagementResumePollKey(String userId) =>
+      'engagement:resume_poll:$userId';
+
   /// Periodic engagement feed poll only — not used for [forceRefresh] paths.
   static String engagementPollKey(String userId) => 'engagement:poll:$userId';
 

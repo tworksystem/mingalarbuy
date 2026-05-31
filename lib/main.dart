@@ -853,6 +853,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       final userId = authProvider.user!.id.toString();
       SyncCoordinator.instance.resetForSessionChange(userId: userId);
 
+      // Background poll loss patches land on disk first — show Actual Result before API round-trip.
+      await PointProvider.instance.hydrateTransactionsFromDiskCache(userId);
+
       final syncKey = SyncCoordinator.pointsResumeKey(userId);
       final ran = await runGuarded(
         key: syncKey,
@@ -877,9 +880,73 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           tag: 'Main',
         );
       }
+
+      // Old Code: engagement poll loss/result reconcile only when carousel visible.
+      // New Code: after points refresh, nudge feed + silent poll result reconcile
+      // so transaction history gets winning_option when app was closed during results.
+      unawaited(_reconcileEngagementPollResultsOnGlobalResume(userId: userId));
     } catch (e, stackTrace) {
       Logger.warning(
         'Global resume point reconcile failed: $e',
+        tag: 'Main',
+        error: e,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  /// Best-effort poll result reconcile when app returns from background.
+  Future<void> _reconcileEngagementPollResultsOnGlobalResume({
+    required String userId,
+  }) async {
+    try {
+      final int parsedUserId = int.tryParse(userId) ?? 0;
+      if (parsedUserId <= 0) return;
+
+      BuildContext? providerCtx = _navigatorProviderContext;
+      for (var attempt = 0;
+          providerCtx == null && attempt < 12;
+          attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        providerCtx = _navigatorProviderContext;
+      }
+      if (providerCtx == null) {
+        Logger.warning(
+          'Engagement poll resume reconcile skipped: no navigator context',
+          tag: 'Main',
+        );
+        return;
+      }
+
+      final authProvider = Provider.of<AuthProvider>(
+        providerCtx,
+        listen: false,
+      );
+      if (!authProvider.isAuthenticated || authProvider.user == null) {
+        return;
+      }
+
+      final engagementProvider = Provider.of<EngagementProvider>(
+        providerCtx,
+        listen: false,
+      );
+
+      final syncKey = SyncCoordinator.engagementResumePollKey(userId);
+      await runGuarded(
+        key: syncKey,
+        minInterval: const Duration(seconds: 20),
+        priority: SyncCoordinatorPriority.high,
+        action: () => engagementProvider.reconcileMissedPollResultsOnResume(
+          userId: parsedUserId,
+        ),
+      );
+      Logger.info(
+        'Engagement poll resume reconcile dispatched (userId=$userId)',
+        tag: 'Main',
+      );
+    } catch (e, stackTrace) {
+      Logger.warning(
+        'Engagement poll resume reconcile failed: $e',
         tag: 'Main',
         error: e,
         stackTrace: stackTrace,

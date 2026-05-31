@@ -2726,6 +2726,74 @@ class EngagementProvider with ChangeNotifier {
     );
   }
 
+  /// After app resume / background: refresh feed and silently reconcile poll rounds
+  /// the user already voted on (including loss + transaction meta refresh).
+  Future<void> reconcileMissedPollResultsOnResume({
+    required int userId,
+    String? token,
+  }) async {
+    if (userId <= 0) return;
+
+    final before = List<EngagementItem>.from(_items);
+    try {
+      await loadFeed(userId: userId, token: token, forceRefresh: true);
+    } catch (e, st) {
+      app_logger.Logger.warning(
+        'reconcileMissedPollResultsOnResume loadFeed failed userId=$userId: $e',
+        tag: 'EngagementProvider',
+        error: e,
+        stackTrace: st,
+      );
+      return;
+    }
+
+    _maybeTriggerPollResultPnpSync(
+      userId: userId,
+      before: before,
+      after: _items,
+    );
+    _triggerPollResultPnpSyncForSettledInteractedPolls(userId: userId);
+  }
+
+  /// Covers polls already in result phase when [before] feed had no transition signal
+  /// (e.g. app was killed during SHOWING_RESULTS).
+  void _triggerPollResultPnpSyncForSettledInteractedPolls({required int userId}) {
+    if (userId <= 0) return;
+    for (final item in _items) {
+      if (item.type != EngagementType.poll) continue;
+      if (!item.hasInteracted) continue;
+
+      final status = item.pollVotingSchedule?['voting_status']?.toString();
+      final inResultStatus = _isPollResultLikeVotingStatus(status);
+      final Map<String, dynamic>? pollResult = item.pollResult;
+      final bool resultPayloadReady = pollResult != null &&
+          pollResultMapReadyForFeedCard(pollResult);
+      if (!inResultStatus && !resultPayloadReady) continue;
+
+      final sessionRaw =
+          (item.pollVotingSchedule?['current_session_id'] ?? '').toString().trim();
+      final sessionFromResult =
+          (pollResult?['session_id'] ?? '').toString().trim();
+      final resolvedSession =
+          sessionRaw.isNotEmpty ? sessionRaw : sessionFromResult;
+      if (resolvedSession.isEmpty) continue;
+
+      final schedule = item.pollVotingSchedule;
+      unawaited(
+        PollWinnerPopupService.syncBalanceWhenShowingResult(
+          pollId: item.id,
+          userId: userId,
+          feedSessionId: resolvedSession,
+          feedPollResult: pollResult,
+          feedVotingStatus: status,
+          feedPollVotingSchedule: schedule != null
+              ? Map<String, dynamic>.from(schedule)
+              : null,
+        ),
+      );
+    }
+  }
+
   /// Public control: resume auto-polling and immediately refresh the feed.
   Future<void> resumeAndFetchFeed() async {
     _isAutoPollPaused = false;

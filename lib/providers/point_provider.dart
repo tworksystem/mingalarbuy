@@ -1868,6 +1868,34 @@ class PointProvider with ChangeNotifier, WidgetsBindingObserver {
     return true;
   }
 
+  /// Merge encrypted disk cache into memory (background poll loss patches).
+  /// Call on app resume before API refresh so Transaction History shows Actual Result immediately.
+  Future<void> hydrateTransactionsFromDiskCache(String userId) async {
+    if (userId.isEmpty) return;
+    if (_currentUserId != null && _currentUserId != userId) return;
+    try {
+      final disk = await PointService.getCachedTransactions(userId);
+      if (disk.isEmpty) return;
+      _currentUserId ??= userId;
+      _transactions = PointService.mergeTransactionsPreservingPollDetails(
+        existing: _transactions,
+        incoming: disk,
+      );
+      notifyListeners();
+      Logger.info(
+        'Hydrated ${_transactions.length} transactions from disk cache userId=$userId',
+        tag: 'PointProvider',
+      );
+    } catch (e, st) {
+      Logger.warning(
+        'hydrateTransactionsFromDiskCache failed: $e',
+        tag: 'PointProvider',
+        error: e,
+        stackTrace: st,
+      );
+    }
+  }
+
   /// Load point transactions for user
   /// IMPORTANT: Pending transactions SHOULD be shown in history (transparency),
   /// but they do NOT affect balance until approved.
