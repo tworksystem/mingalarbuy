@@ -20,6 +20,7 @@ import '../providers/point_provider.dart';
 import '../providers/auth_provider.dart';
 import 'canonical_point_balance_sync.dart';
 import 'point_notification_manager.dart';
+import 'point_service.dart';
 import 'missed_notification_recovery_service.dart';
 import '../utils/large_int_codec.dart';
 
@@ -696,6 +697,13 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     await persistFcmPointSnapshotForMainIsolate(
       Map<String, dynamic>.from(message.data),
     );
+
+    final notificationType = (message.data['type'] ?? '').toString();
+    if (notificationType == 'poll_bet_result') {
+      await PointService.applyPollBetResultFromFcmBackground(
+        Map<String, dynamic>.from(message.data),
+      );
+    }
   } catch (e, stackTrace) {
     Logger.error(
       'Error handling background message: $e',
@@ -1396,6 +1404,7 @@ class PushNotificationService {
     'exchange_approved',
     'exchange_rejected',
     'engagement_points',
+    'poll_bet_result',
     'points_adjusted', // Manual adjustment from dashboard
   ];
 
@@ -1554,6 +1563,15 @@ class PushNotificationService {
             snapshotObservedAt: _fcmSnapshotObservedAt(snap),
           );
 
+          if (notificationType == 'poll_bet_result') {
+            await PointService.applyPollBetResultFromFcmBackground(data);
+            await PointProvider.instance.loadTransactions(
+              effectiveUserId,
+              forceRefresh: true,
+              notifyLoading: false,
+            );
+          }
+
           // Reconcile from server in background using the centralized refresh flow.
           _schedulePointsHardSync(effectiveUserId);
         } else {
@@ -1586,6 +1604,14 @@ class PushNotificationService {
               tag: 'PushNotification',
             );
             // Could show celebration animation or navigate to engagement hub
+            break;
+          case 'poll_bet_result':
+            final actualResult =
+                data['actualResult'] ?? data['actual_result'] ?? '';
+            Logger.info(
+              'Poll bet result announced (loss): actualResult=$actualResult',
+              tag: 'PushNotification',
+            );
             break;
         }
 
@@ -1632,6 +1658,10 @@ class PushNotificationService {
                       .toString()
                       .toLowerCase();
               shouldShowModal = engagementItemType != 'poll';
+              break;
+            case 'poll_bet_result':
+              modalType = null;
+              shouldShowModal = false;
               break;
             case 'exchange_approved':
               modalType = PointNotificationType.exchangeApproved;
@@ -2602,6 +2632,8 @@ class PushNotificationService {
         return pointsNum > 0
             ? '🎯 $pointsNum PNP from Activity'
             : 'Activity Points Earned';
+      case 'poll_bet_result':
+        return '📊 Poll Result Announced';
       case 'points_adjusted':
         return '📊 Points Balance Adjusted';
       default:
@@ -2658,6 +2690,16 @@ class PushNotificationService {
         return pointsNum > 0
             ? 'Thank you for your participation! You earned $pointsNum PNP from $activityName. Your balance is now $formattedBalance PNP.'
             : 'You earned points from an engagement activity. Check your balance for details.';
+      case 'poll_bet_result':
+        final actualResult =
+            (data['actualResult'] ?? data['actual_result'] ?? '').toString().trim();
+        final pollTitle = (data['itemTitle'] ?? data['item_title'] ?? 'Poll')
+            .toString()
+            .trim();
+        if (actualResult.isNotEmpty) {
+          return 'Your bet on $pollTitle is settled. Actual Result: $actualResult. Open My PNP to view details.';
+        }
+        return 'Your poll bet is settled. Open My PNP to view the Actual Result.';
       case 'points_adjusted':
         final isPositive =
             _parseBool(data['isPositive']) ??

@@ -1987,14 +1987,38 @@ class _PointHistoryPageState extends State<PointHistoryPage> {
               ),
             ),
           ],
-          if (details.winningOption != null) ...[
-            const SizedBox(height: 2),
-            Text(
-              'Winning Option: ${details.winningOption!.label}',
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.grey.shade700,
-                fontWeight: FontWeight.w600,
+          // Old Code:
+          // 'Winning Option: ${details.winningOption!.label}' (grey, easy to miss).
+          //
+          // New Code: Actual Result row — status chip stays "Bet Placed" per product policy.
+          if (details.winningOption != null &&
+              details.winningOption!.label.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Semantics(
+              label:
+                  'Actual poll result ${details.winningOption!.label.trim()}',
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Actual Result: ',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade800,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      details.winningOption!.label.trim(),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.red.shade700,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
