@@ -6453,10 +6453,73 @@ class TWork_Rewards_System
                     array('%s'),
                     array('%d')
                 );
+
+                // Old Code: no FCM for poll losers (win FCM also disabled above).
+                // New Code: silent tray nudge + mobile cache refresh for Actual Result on loss.
+                $this->maybe_send_poll_bet_loss_result_fcm(
+                    $cost_user_id,
+                    (int) $item_id,
+                    (string) $session_id,
+                    $winning_option_payload,
+                    (string) $item_title
+                );
             }
         }
 
         return array('awarded' => $awarded, 'total_points' => $total_points);
+    }
+
+    /**
+     * Notify poll bettor that the round result is announced (loss path only).
+     * Does not change balance; client refreshes transaction cache for Actual Result.
+     *
+     * @param int   $user_id
+     * @param int   $poll_id
+     * @param string $session_id
+     * @param array|null $winning_option_payload
+     * @param string $poll_title
+     * @return bool
+     */
+    private function maybe_send_poll_bet_loss_result_fcm($user_id, $poll_id, $session_id, $winning_option_payload, $poll_title = '')
+    {
+        $user_id = absint($user_id);
+        $poll_id = absint($poll_id);
+        $session_id = is_string($session_id) ? sanitize_text_field($session_id) : '';
+        if ($user_id <= 0 || $poll_id <= 0 || $session_id === '') {
+            return false;
+        }
+
+        $label = '';
+        $winning_index = -1;
+        if (is_array($winning_option_payload)) {
+            $label = isset($winning_option_payload['label'])
+                ? trim((string) $winning_option_payload['label'])
+                : '';
+            if (isset($winning_option_payload['index']) && is_numeric($winning_option_payload['index'])) {
+                $winning_index = (int) $winning_option_payload['index'];
+            }
+        }
+        if ($label === '') {
+            return false;
+        }
+
+        return $this->send_points_fcm_notification(
+            $user_id,
+            'poll_bet_result',
+            array(
+                'pollId' => (string) $poll_id,
+                'sessionId' => (string) $session_id,
+                'poll_id' => (string) $poll_id,
+                'session_id' => (string) $session_id,
+                'item_type' => 'poll',
+                'item_title' => sanitize_text_field((string) $poll_title),
+                'actual_result' => sanitize_text_field($label),
+                'winning_index' => (string) $winning_index,
+                'outcome' => 'loss',
+                'points' => '0',
+                'requestId' => 'poll_loss_' . $poll_id . '_' . $session_id,
+            )
+        );
     }
 
     /**
@@ -12723,6 +12786,47 @@ class TWork_Rewards_System
         if ($resolved_total_bet <= 0) {
             $resolved_total_bet = $sum_selected_bet_pnp($resolved_selected_options);
         }
+
+        // Old Code: returned without winning_option when loser meta_json backfill had not run yet
+        // (common when app was closed during result phase).
+        //
+        // New Code: API fallback — derive Actual Result from poll/session winner index so
+        // point-transaction history can show the announced result after refresh.
+        if ($is_cost) {
+            $needs_winning_fallback = !is_array($resolved_winning_option)
+                || trim((string) ($resolved_winning_option['label'] ?? '')) === '';
+            if ($needs_winning_fallback) {
+                $fallback_session = trim((string) $resolved_session);
+                if ($fallback_session === '' && isset($interaction) && is_array($interaction)) {
+                    $fallback_session = trim((string) ($interaction['session_id'] ?? ''));
+                }
+                if ($fallback_session === '' && is_string($transaction_meta_json) && trim($transaction_meta_json) !== '') {
+                    $decoded_session_meta = json_decode($transaction_meta_json, true);
+                    if (is_array($decoded_session_meta) && !empty($decoded_session_meta['session_id'])) {
+                        $fallback_session = trim((string) $decoded_session_meta['session_id']);
+                    }
+                }
+                if ($fallback_session !== '') {
+                    $resolved_session = $fallback_session;
+                }
+                $poll_actual_result_cache = array();
+                $scoped_context = $this->resolve_poll_actual_result_label_from_order_id(
+                    $order_id,
+                    $poll_actual_result_cache,
+                    $fallback_session
+                );
+                if (is_array($scoped_context) && !empty($scoped_context['label'])) {
+                    $resolved_winning_option = array(
+                        'index' => isset($scoped_context['correct_index']) ? (int) $scoped_context['correct_index'] : -1,
+                        'label' => (string) $scoped_context['label'],
+                    );
+                    if ($resolved_status === 'pending') {
+                        $resolved_status = 'lost';
+                    }
+                }
+            }
+        }
+
         $net_amount = (int) ($resolved_won - $resolved_total_bet);
 
         return array(
@@ -16727,6 +16831,9 @@ class TWork_Rewards_System
         if ($_rate_suffix === '' && $type === 'engagement_points' && isset($data['pollId']) && isset($data['sessionId'])) {
             $_rate_suffix = (string) $data['pollId'] . '_' . (string) $data['sessionId'];
         }
+        if ($_rate_suffix === '' && $type === 'poll_bet_result' && isset($data['pollId']) && isset($data['sessionId'])) {
+            $_rate_suffix = 'loss_' . (string) $data['pollId'] . '_' . (string) $data['sessionId'];
+        }
         $rate_limit_key = 'twork_points_fcm_' . $type . '_' . $user_id . '_' . $_rate_suffix;
         $last_sent = get_transient($rate_limit_key);
 
@@ -17116,6 +17223,39 @@ class TWork_Rewards_System
                     'title' => sprintf('🎯 %d PNP from Activity', $points),
                     'body' => $description ?: sprintf('Thank you for your participation! You earned %d PNP from %s. Your balance is now %s PNP.', $points, $activity_name, $formatted_balance),
                     'data' => array_merge($base_data, $_payload_extra),
+                );
+
+            case 'poll_bet_result':
+                $_poll_id = isset($data['pollId']) ? (string) $data['pollId'] : (isset($data['poll_id']) ? (string) $data['poll_id'] : '');
+                $_sess = isset($data['sessionId']) ? (string) $data['sessionId'] : (isset($data['session_id']) ? (string) $data['session_id'] : '');
+                $_actual = isset($data['actual_result']) ? sanitize_text_field((string) $data['actual_result']) : '';
+                $_win_idx = isset($data['winning_index']) ? (string) $data['winning_index'] : '';
+                if ($_poll_id === '' || $_sess === '' || $_actual === '') {
+                    return null;
+                }
+                $_poll_name = $item_title !== '' ? $item_title : __('Poll', 'twork-rewards');
+                return array(
+                    'title' => sprintf('📊 %s — Result Announced', $_poll_name),
+                    'body' => sprintf(
+                        /* translators: 1: poll activity name, 2: winning option label */
+                        __('Your bet on %1$s is settled. Actual Result: %2$s. Open My PNP to view details.', 'twork-rewards'),
+                        $_poll_name,
+                        $_actual
+                    ),
+                    'data' => array_merge($base_data, array(
+                        'pollId' => $_poll_id,
+                        'poll_id' => $_poll_id,
+                        'sessionId' => $_sess,
+                        'session_id' => $_sess,
+                        'actualResult' => $_actual,
+                        'actual_result' => $_actual,
+                        'winningIndex' => $_win_idx,
+                        'winning_index' => $_win_idx,
+                        'itemType' => 'poll',
+                        'itemTitle' => $item_title,
+                        'outcome' => 'loss',
+                        'points' => '0',
+                    )),
                 );
 
             case 'points_adjusted':
