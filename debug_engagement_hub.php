@@ -47,7 +47,7 @@ header('Content-Type: text/html; charset=utf-8');
 
         // 1. Check Plugin Activation
         echo '<h2>1. Plugin Activation Check</h2>';
-        $plugin_file = 'twork-rewards-system/twork-rewards-system.php';
+        $plugin_file = 'rewards-system/rewards-system.php';
         if (is_plugin_active($plugin_file)) {
             echo '<p class="success">✓ TWork Rewards System plugin is ACTIVE</p>';
         } else {

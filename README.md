@@ -1361,7 +1361,8 @@ We would like to express our gratitude to the following technologies, platforms,
 
 #### 📦 WordPress Plugin Layout
 - ✅ **`fcm-notify/`** — FCM plugin relocated from `twork-fcm-notify/` with updated README and CONTRIBUTING guide
-- ✅ **`rewards-system/`** — Rewards plugin relocated from `twork-rewards-system/` (PHP bootstrap filename unchanged for WP compatibility)
+- ✅ **`rewards-system/`** — Rewards plugin relocated from `twork-rewards-system/`; bootstrap aligned to `rewards-system.php`
+- ✅ **`fcm-notify.php` / `rewards-system.php`** — Plugin entry files renamed to match folder names for cleaner wp-admin activation paths
 - ✅ **Branding cleanup** — Plugin headers and log prefixes normalized; no functional REST route changes
 - ✅ **Security** — `serviceAccountKey.json` remains gitignored; nested plugin `.git` repos removed from monorepo tree
 
