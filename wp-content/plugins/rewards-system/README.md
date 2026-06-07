@@ -1,17 +1,17 @@
-# 🎁 T-Work Rewards System
+# 🎁 Rewards System
 
 [![WordPress](https://img.shields.io/badge/WordPress-5.0%2B-blue?logo=wordpress&logoColor=white)](https://wordpress.org/)
 [![WooCommerce](https://img.shields.io/badge/WooCommerce-5.0%2B-96588A?logo=woocommerce&logoColor=white)](https://woocommerce.com/)
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-777BB4?logo=php&logoColor=white)](https://www.php.net/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Organization](https://img.shields.io/badge/Org-T--WORK%20SYSTEM-orange)](https://github.com/tworksystem)
+[![Organization](https://img.shields.io/badge/Org-System-orange)](https://github.com/tworksystem)
 [![Maintained](https://img.shields.io/badge/Maintained-Yes-brightgreen)](#-support)
 
 > 🚀 A production-grade WordPress plugin for loyalty rewards, point ledgers, engagement hubs, and mobile-app REST APIs — built for WooCommerce-powered commerce platforms.
 
-**T-Work Rewards System** is the official backend engine behind PLANETmm / T-Work mobile commerce experiences. It manages order-linked reward transactions, point balances, exchange workflows, interactive engagement (banners, quizzes, polls), lucky box gamification, CMS content delivery, and comprehensive admin tooling — all exposed through a secure `twork/v1` REST namespace for native apps.
+**Rewards System** is the official backend engine behind PLANETmm mobile commerce experiences. It manages order-linked reward transactions, point balances, exchange workflows, interactive engagement (banners, quizzes, polls), lucky box gamification, CMS content delivery, and comprehensive admin tooling — all exposed through a secure `twork/v1` REST namespace for native apps.
 
-🏢 **Maintained by [T-WORK SYSTEM Co.,Ltd.](https://github.com/tworksystem)** — enterprise WordPress & mobile commerce solutions.
+🏢 **Maintained by [System](https://github.com/tworksystem)** — enterprise WordPress & mobile commerce solutions.
 
 ---
 
@@ -19,7 +19,7 @@
 
 - [✨ Highlights](#-highlights)
 - [🏗️ Architecture Overview](#️-architecture-overview)
-- [🔗 T-Work Ecosystem](#-t-work-ecosystem)
+- [🔗 Plugin Ecosystem](#-plugin-ecosystem)
 - [📦 Requirements](#-requirements)
 - [⚡ Quick Start](#-quick-start)
 - [⚙️ Configuration](#️-configuration)
@@ -66,7 +66,7 @@ flowchart TB
         WC[🛒 WooCommerce Checkout]
     end
 
-    subgraph Plugin["T-Work Rewards System"]
+    subgraph Plugin["Rewards System"]
         CORE[Core Plugin<br/>twork-rewards-system.php]
         POLL[Poll Auto-Run<br/>class-poll-auto-run.php]
         PNP[PNP Helpers<br/>class-poll-pnp.php]
@@ -100,15 +100,15 @@ flowchart TB
 
 ---
 
-## 🔗 T-Work Ecosystem
+## 🔗 Plugin Ecosystem
 
-This plugin is part of the **T-WORK SYSTEM** plugin suite for mobile commerce:
+This plugin is part of the **System** plugin suite for mobile commerce:
 
 | Plugin | Role |
 |--------|------|
-| 🎁 **T-Work Rewards System** *(this repo)* | Rewards, engagement hub, polls, lucky box, REST APIs |
-| 💎 **T-Work Points System** | Enhanced point balance, deductions, and ledger APIs |
-| 🔔 **T-Work FCM Notify** | Push notifications on reward and engagement events |
+| 🎁 **Rewards System** *(this repo)* | Rewards, engagement hub, polls, lucky box, REST APIs |
+| 💎 **Points System** | Enhanced point balance, deductions, and ledger APIs |
+| 🔔 **FCM Notify** | Push notifications on reward and engagement events |
 
 Browse all official plugins at **[github.com/tworksystem](https://github.com/tworksystem)**.
 
@@ -133,8 +133,8 @@ Browse all official plugins at **[github.com/tworksystem](https://github.com/two
 
 1. Download or clone this repository into `wp-content/plugins/`.
 2. Ensure the folder is named `twork-rewards-system`.
-3. Activate **T-Work Rewards System** from **Plugins** in wp-admin.
-4. Open **T-Work Rewards** in the admin sidebar and complete initial settings.
+3. Activate **Rewards System** from **Plugins** in wp-admin.
+4. Open **Rewards** in the admin sidebar and complete initial settings.
 
 ### 🔗 Clone via Git
 
@@ -158,7 +158,7 @@ Then activate the plugin in WordPress.
 
 ## ⚙️ Configuration
 
-Navigate to **T-Work Rewards** in wp-admin. Key setting groups:
+Navigate to **Rewards** in wp-admin. Key setting groups:
 
 | Section | Purpose |
 |---------|---------|
@@ -193,7 +193,7 @@ Supports item types: `banner`, `quiz`, `poll`, `announcement`.
 
 The `TWork_Poll_PNP` helper bridges poll economics with the point ledger:
 
-- Reads balance from **T-Work Points System** when available.
+- Reads balance from **Points System** when available.
 - Awards winners through `award_engagement_points_to_user()`.
 - Deducts vote stakes via `deduct_for_poll_vote()` when integrated.
 - Falls back to legacy `_user_pnp_balance` meta when no points plugin is active.
@@ -478,7 +478,7 @@ test: 24052026 - add integration tests for exchange approval flow
 - 💰 Full rewards transaction lifecycle with WooCommerce order hooks
 - 🎯 Engagement Hub: banners, quizzes, polls, announcements
 - 🗳️ Poll auto-run module with session-scoped results REST
-- 💎 PNP virtual currency integration with T-Work Points System
+- 💎 PNP virtual currency integration with Points System
 - 📱 Comprehensive `twork/v1` REST API for mobile clients
 - 🎰 Lucky box, exchange requests, usage tracking, and CMS content APIs
 - 📊 Admin dashboard with bulk actions, exports, and activity scoring
@@ -494,7 +494,7 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 ## 👤 Author & Support
 
 **Maw Kunn Myat** · Lead Developer  
-**T-WORK SYSTEM Co.,Ltd.**
+**System**
 
 | Channel | Link |
 |---------|------|
@@ -510,8 +510,8 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 <div align="center">
 
-**Version:** 1.0.0 · **Last Updated:** May 24, 2026 · **Maintained by:** T-WORK SYSTEM Co.,Ltd.
+**Version:** 1.0.0 · **Last Updated:** May 24, 2026 · **Maintained by:** System
 
-Made with ❤️ by [T-WORK SYSTEM](https://github.com/tworksystem)
+Made with ❤️ by [System](https://github.com/tworksystem)
 
 </div>

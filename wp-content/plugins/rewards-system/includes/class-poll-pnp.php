@@ -27,7 +27,7 @@ class TWork_Poll_PNP {
         if (!$user_id || $user_id <= 0) {
             return 0;
         }
-        // Use actual point balance from T-Work Points System when available
+        // Use actual point balance from Points System when available
         if (class_exists('TWork_Points_System')) {
             $instance = TWork_Points_System::get_instance();
             if (method_exists($instance, 'get_user_point_balance')) {

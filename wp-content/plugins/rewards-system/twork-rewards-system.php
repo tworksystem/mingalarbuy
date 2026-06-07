@@ -1,10 +1,10 @@
 <?php
 
 /**
- * Plugin Name: T-Work Rewards System
+ * Plugin Name: Rewards System
  * Description: Creates a pending reward transaction when an order is placed. Admin can set points. App profile shows "My Points" only.
  * Version: 1.0.0
- * Author: T-Work System
+ * Author: System
  * Text Domain: twork-rewards
  * Requires at least: 5.0
  * Requires PHP: 7.4
@@ -21,7 +21,7 @@ define('TWORK_MAX_MULTIPLIER', 999999.0);
 define('TWORK_MAX_MIN_EXCHANGE', 9999999);
 
 if (isset($_POST) && !empty($_POST)) {
-    error_log("T-Work Trace: POST Action is " . ($_POST['action'] ?? 'MISSING'));
+    error_log("Rewards Trace: POST Action is " . ($_POST['action'] ?? 'MISSING'));
 }
 
 /*
@@ -843,7 +843,7 @@ class TWork_Rewards_System
             // Log for debugging
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: FCM token cache invalidated for user %d (tokens updated)',
+                    'Rewards: FCM token cache invalidated for user %d (tokens updated)',
                     $user_id
                 ));
             }
@@ -864,7 +864,7 @@ class TWork_Rewards_System
         if (defined('WP_DEBUG') && WP_DEBUG && !$available) {
             // Check if plugin might be loaded later
             if (did_action('plugins_loaded')) {
-                error_log('T-Work Rewards: FCM plugin not available - twork_send_fcm function not found');
+                error_log('Rewards: FCM plugin not available - twork_send_fcm function not found');
             }
         }
 
@@ -1103,7 +1103,7 @@ class TWork_Rewards_System
         if ($archive_exists !== $archive_table) {
             $created = $wpdb->query("CREATE TABLE $archive_table LIKE $main_table");
             if ($created === false) {
-                error_log('T-Work Rewards: Failed to create point transactions archive table. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to create point transactions archive table. Error: ' . $wpdb->last_error);
                 return false;
             }
         }
@@ -1448,7 +1448,7 @@ class TWork_Rewards_System
             if ($result !== false) {
                 // Success - log if debug mode is on
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Successfully added rotation_duration column to engagement_items table');
+                    error_log('Rewards: Successfully added rotation_duration column to engagement_items table');
                 }
             } else {
                 // Failed - try alternative method without AFTER clause (in case MySQL version doesn't support it)
@@ -1464,14 +1464,14 @@ class TWork_Rewards_System
                 if ($result_alt !== false) {
                     // Success with alternative method
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Successfully added rotation_duration column using alternative method (without AFTER clause)');
+                        error_log('Rewards: Successfully added rotation_duration column using alternative method (without AFTER clause)');
                     }
                 } else {
                     // Both methods failed - log detailed error
                     $alt_error = $wpdb->last_error ? $wpdb->last_error : 'Unknown database error';
-                    error_log('T-Work Rewards: CRITICAL - Failed to add rotation_duration column. Original error: ' . $error_msg);
-                    error_log('T-Work Rewards: Alternative method also failed: ' . $alt_error);
-                    error_log('T-Work Rewards: SQL queries attempted:');
+                    error_log('Rewards: CRITICAL - Failed to add rotation_duration column. Original error: ' . $error_msg);
+                    error_log('Rewards: Alternative method also failed: ' . $alt_error);
+                    error_log('Rewards: SQL queries attempted:');
                     error_log('  1. ' . $sql);
                     error_log('  2. ' . $sql_alt);
                 }
@@ -1619,9 +1619,9 @@ class TWork_Rewards_System
         // PROFESSIONAL FIX: Log table creation result for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if ($wpdb->last_error) {
-                error_log('T-Work Rewards: Page content table creation error: ' . $wpdb->last_error);
+                error_log('Rewards: Page content table creation error: ' . $wpdb->last_error);
             } else {
-                error_log('T-Work Rewards: Page content table created successfully');
+                error_log('Rewards: Page content table created successfully');
             }
         }
 
@@ -1637,11 +1637,11 @@ class TWork_Rewards_System
                     // Add index for display_order
                     $wpdb->query("ALTER TABLE $table_name ADD INDEX idx_display_order (display_order)");
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Added display_order column to page content table');
+                        error_log('Rewards: Added display_order column to page content table');
                     }
                 } else {
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Failed to add display_order column. Error: ' . $wpdb->last_error);
+                        error_log('Rewards: Failed to add display_order column. Error: ' . $wpdb->last_error);
                     }
                 }
             }
@@ -1720,9 +1720,9 @@ class TWork_Rewards_System
             if ($exists == 0) {
                 $result = $wpdb->insert($table_name, $page);
                 if ($result === false && defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Failed to insert default page ' . $page['page_slug'] . ': ' . $wpdb->last_error);
+                    error_log('Rewards: Failed to insert default page ' . $page['page_slug'] . ': ' . $wpdb->last_error);
                 } elseif ($result !== false && defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Successfully inserted default page: ' . $page['page_slug']);
+                    error_log('Rewards: Successfully inserted default page: ' . $page['page_slug']);
                 }
             } else {
                 // Update existing page to ensure status is active
@@ -1773,9 +1773,9 @@ class TWork_Rewards_System
         // PROFESSIONAL FIX: Log table creation result for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if ($wpdb->last_error) {
-                error_log('T-Work Rewards: FAQ table creation error: ' . $wpdb->last_error);
+                error_log('Rewards: FAQ table creation error: ' . $wpdb->last_error);
             } else {
-                error_log('T-Work Rewards: FAQ table created successfully');
+                error_log('Rewards: FAQ table created successfully');
             }
         }
     }
@@ -1823,9 +1823,9 @@ class TWork_Rewards_System
         // PROFESSIONAL FIX: Log table creation result for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if ($wpdb->last_error) {
-                error_log('T-Work Rewards: About Us table creation error: ' . $wpdb->last_error);
+                error_log('Rewards: About Us table creation error: ' . $wpdb->last_error);
             } else {
-                error_log('T-Work Rewards: About Us table created successfully');
+                error_log('Rewards: About Us table created successfully');
             }
         }
 
@@ -1851,7 +1851,7 @@ class TWork_Rewards_System
                 );
                 $wpdb->insert($table_name, $default_data);
                 if (defined('WP_DEBUG') && WP_DEBUG && $wpdb->last_error) {
-                    error_log('T-Work Rewards: Failed to insert default About Us data: ' . $wpdb->last_error);
+                    error_log('Rewards: Failed to insert default About Us data: ' . $wpdb->last_error);
                 }
             }
         }
@@ -1900,7 +1900,7 @@ class TWork_Rewards_System
         dbDelta($sql);
 
         if (defined('WP_DEBUG') && WP_DEBUG && $wpdb->last_error) {
-            error_log('T-Work Rewards: Point transactions table creation error: ' . $wpdb->last_error);
+            error_log('Rewards: Point transactions table creation error: ' . $wpdb->last_error);
         }
     }
 
@@ -1970,9 +1970,9 @@ class TWork_Rewards_System
         if (!in_array('country_code', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $usage_table ADD COLUMN country_code varchar(2) DEFAULT NULL AFTER app_version");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added country_code column to usage tracking table');
+                error_log('Rewards: Added country_code column to usage tracking table');
             } else {
-                error_log('T-Work Rewards: Failed to add country_code column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add country_code column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -1980,9 +1980,9 @@ class TWork_Rewards_System
         if (!in_array('country_name', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $usage_table ADD COLUMN country_name varchar(100) DEFAULT NULL AFTER country_code");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added country_name column to usage tracking table');
+                error_log('Rewards: Added country_name column to usage tracking table');
             } else {
-                error_log('T-Work Rewards: Failed to add country_name column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add country_name column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -1991,7 +1991,7 @@ class TWork_Rewards_System
         if (empty($indexes)) {
             $result = $wpdb->query("ALTER TABLE $usage_table ADD INDEX idx_country_code (country_code)");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added idx_country_code index to usage tracking table');
+                error_log('Rewards: Added idx_country_code index to usage tracking table');
             }
         }
     }
@@ -2047,9 +2047,9 @@ class TWork_Rewards_System
             // Add points_value column if it doesn't exist
             $result = $wpdb->query("ALTER TABLE $table ADD COLUMN points_value varchar(255) DEFAULT NULL AFTER status");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added missing points_value column to ' . $table);
+                error_log('Rewards: Added missing points_value column to ' . $table);
             } else {
-                error_log('T-Work Rewards: Failed to add points_value column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add points_value column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2058,9 +2058,9 @@ class TWork_Rewards_System
             // Add updated_at column if it doesn't exist
             $result = $wpdb->query("ALTER TABLE $table ADD COLUMN updated_at datetime NULL DEFAULT NULL AFTER created_at");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added missing updated_at column to ' . $table);
+                error_log('Rewards: Added missing updated_at column to ' . $table);
             } else {
-                error_log('T-Work Rewards: Failed to add updated_at column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add updated_at column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2069,11 +2069,11 @@ class TWork_Rewards_System
             // Add deleted_at column if it doesn't exist
             $result = $wpdb->query("ALTER TABLE $table ADD COLUMN deleted_at datetime NULL DEFAULT NULL AFTER updated_at");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added missing deleted_at column to ' . $table);
+                error_log('Rewards: Added missing deleted_at column to ' . $table);
                 // Add index for deleted_at
                 $wpdb->query("ALTER TABLE $table ADD INDEX idx_deleted_at (deleted_at)");
             } else {
-                error_log('T-Work Rewards: Failed to add deleted_at column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add deleted_at column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2082,30 +2082,30 @@ class TWork_Rewards_System
         if (!in_array('created_by', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $table ADD COLUMN created_by bigint(20) UNSIGNED NULL DEFAULT NULL AFTER deleted_at");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added created_by column to ' . $table);
+                error_log('Rewards: Added created_by column to ' . $table);
                 $wpdb->query("ALTER TABLE $table ADD INDEX idx_created_by (created_by)");
             } else {
-                error_log('T-Work Rewards: Failed to add created_by column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add created_by column. Error: ' . $wpdb->last_error);
             }
         }
 
         if (!in_array('approved_by', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $table ADD COLUMN approved_by bigint(20) UNSIGNED NULL DEFAULT NULL AFTER created_by");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added approved_by column to ' . $table);
+                error_log('Rewards: Added approved_by column to ' . $table);
                 $wpdb->query("ALTER TABLE $table ADD INDEX idx_approved_by (approved_by)");
             } else {
-                error_log('T-Work Rewards: Failed to add approved_by column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add approved_by column. Error: ' . $wpdb->last_error);
             }
         }
 
         if (!in_array('updated_by', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $table ADD COLUMN updated_by bigint(20) UNSIGNED NULL DEFAULT NULL AFTER approved_by");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added updated_by column to ' . $table);
+                error_log('Rewards: Added updated_by column to ' . $table);
                 $wpdb->query("ALTER TABLE $table ADD INDEX idx_updated_by (updated_by)");
             } else {
-                error_log('T-Work Rewards: Failed to add updated_by column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add updated_by column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2122,9 +2122,9 @@ class TWork_Rewards_System
             if (!in_array('meta_json', $points_columns_lower)) {
                 $result = $wpdb->query("ALTER TABLE $points_table ADD COLUMN meta_json longtext DEFAULT NULL AFTER status");
                 if ($result !== false) {
-                    error_log('T-Work Rewards: Added meta_json column to ' . $points_table);
+                    error_log('Rewards: Added meta_json column to ' . $points_table);
                 } else {
-                    error_log('T-Work Rewards: Failed to add meta_json column. Error: ' . $wpdb->last_error);
+                    error_log('Rewards: Failed to add meta_json column. Error: ' . $wpdb->last_error);
                 }
             }
 
@@ -2132,10 +2132,10 @@ class TWork_Rewards_System
             if (!in_array('deleted_at', $points_columns_lower)) {
                 $result = $wpdb->query("ALTER TABLE $points_table ADD COLUMN deleted_at datetime NULL DEFAULT NULL AFTER created_at");
                 if ($result !== false) {
-                    error_log('T-Work Rewards: Added deleted_at column to ' . $points_table);
+                    error_log('Rewards: Added deleted_at column to ' . $points_table);
                     $wpdb->query("ALTER TABLE $points_table ADD INDEX idx_deleted_at (deleted_at)");
                 } else {
-                    error_log('T-Work Rewards: Failed to add deleted_at column to points table. Error: ' . $wpdb->last_error);
+                    error_log('Rewards: Failed to add deleted_at column to points table. Error: ' . $wpdb->last_error);
                 }
             }
 
@@ -2155,7 +2155,7 @@ class TWork_Rewards_System
             if (empty($selected_col)) {
                 $result = $wpdb->query("ALTER TABLE `" . esc_sql($points_table) . "` ADD COLUMN `selected_option` text DEFAULT NULL AFTER `meta_json`");
                 if ($result === false) {
-                    error_log('T-Work Rewards: Failed to add selected_option column. Error: ' . $wpdb->last_error);
+                    error_log('Rewards: Failed to add selected_option column. Error: ' . $wpdb->last_error);
                 }
             }
 
@@ -2168,7 +2168,7 @@ class TWork_Rewards_System
             if (empty($bet_amount_col)) {
                 $result = $wpdb->query("ALTER TABLE `" . esc_sql($points_table) . "` ADD COLUMN `bet_amount` decimal(10,2) DEFAULT NULL AFTER `selected_option`");
                 if ($result === false) {
-                    error_log('T-Work Rewards: Failed to add bet_amount column. Error: ' . $wpdb->last_error);
+                    error_log('Rewards: Failed to add bet_amount column. Error: ' . $wpdb->last_error);
                 }
             }
 
@@ -2226,10 +2226,10 @@ class TWork_Rewards_System
         if (!in_array('approved_by', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $exchange_table ADD COLUMN approved_by bigint(20) UNSIGNED NULL DEFAULT NULL AFTER updated_at");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added approved_by column to ' . $exchange_table);
+                error_log('Rewards: Added approved_by column to ' . $exchange_table);
                 $wpdb->query("ALTER TABLE $exchange_table ADD INDEX idx_approved_by (approved_by)");
             } else {
-                error_log('T-Work Rewards: Failed to add approved_by column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add approved_by column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2237,10 +2237,10 @@ class TWork_Rewards_System
         if (!in_array('rejected_by', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $exchange_table ADD COLUMN rejected_by bigint(20) UNSIGNED NULL DEFAULT NULL AFTER approved_by");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added rejected_by column to ' . $exchange_table);
+                error_log('Rewards: Added rejected_by column to ' . $exchange_table);
                 $wpdb->query("ALTER TABLE $exchange_table ADD INDEX idx_rejected_by (rejected_by)");
             } else {
-                error_log('T-Work Rewards: Failed to add rejected_by column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add rejected_by column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2248,10 +2248,10 @@ class TWork_Rewards_System
         if (!in_array('updated_by', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $exchange_table ADD COLUMN updated_by bigint(20) UNSIGNED NULL DEFAULT NULL AFTER rejected_by");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added updated_by column to ' . $exchange_table);
+                error_log('Rewards: Added updated_by column to ' . $exchange_table);
                 $wpdb->query("ALTER TABLE $exchange_table ADD INDEX idx_updated_by (updated_by)");
             } else {
-                error_log('T-Work Rewards: Failed to add updated_by column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add updated_by column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2259,10 +2259,10 @@ class TWork_Rewards_System
         if (!in_array('approved_at', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $exchange_table ADD COLUMN approved_at datetime NULL DEFAULT NULL AFTER approved_by");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added approved_at column to ' . $exchange_table);
+                error_log('Rewards: Added approved_at column to ' . $exchange_table);
                 $wpdb->query("ALTER TABLE $exchange_table ADD INDEX idx_approved_at (approved_at)");
             } else {
-                error_log('T-Work Rewards: Failed to add approved_at column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add approved_at column. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -2270,10 +2270,10 @@ class TWork_Rewards_System
         if (!in_array('rejected_at', $columns_lower)) {
             $result = $wpdb->query("ALTER TABLE $exchange_table ADD COLUMN rejected_at datetime NULL DEFAULT NULL AFTER rejected_by");
             if ($result !== false) {
-                error_log('T-Work Rewards: Added rejected_at column to ' . $exchange_table);
+                error_log('Rewards: Added rejected_at column to ' . $exchange_table);
                 $wpdb->query("ALTER TABLE $exchange_table ADD INDEX idx_rejected_at (rejected_at)");
             } else {
-                error_log('T-Work Rewards: Failed to add rejected_at column. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to add rejected_at column. Error: ' . $wpdb->last_error);
             }
         }
     }
@@ -2333,8 +2333,8 @@ class TWork_Rewards_System
         $parent_slug = 'twork-rewards';
 
         add_menu_page(
-            __('T-Work Rewards', 'twork-rewards'),
-            __('T-Work Rewards', 'twork-rewards'),
+            __('Rewards', 'twork-rewards'),
+            __('Rewards', 'twork-rewards'),
             $capability,
             $parent_slug,
             array($this, 'render_transactions_page'),
@@ -2534,7 +2534,7 @@ class TWork_Rewards_System
         $timezone = get_option('twork_rewards_timezone', 'Asia/Yangon');
         ?>
         <div class="wrap">
-            <h1><?php esc_html_e('T-Work Rewards Settings', 'twork-rewards'); ?></h1>
+            <h1><?php esc_html_e('Rewards Settings', 'twork-rewards'); ?></h1>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field('twork_rewards_save_settings'); ?>
                 <input type="hidden" name="action" value="twork_rewards_save_settings">
@@ -2621,7 +2621,7 @@ class TWork_Rewards_System
                                 } else {
                                     esc_html_e('⚠️ FCM Notify Plugin not detected. Notifications will be sent via webhook server.', 'twork-rewards');
                                     echo '<br>';
-                                    esc_html_e('For better performance, install and activate the "T-Work FCM Notify" plugin.', 'twork-rewards');
+                                    esc_html_e('For better performance, install and activate the "FCM Notify" plugin.', 'twork-rewards');
                                 }
                                 ?>
                             </p>
@@ -3538,7 +3538,7 @@ class TWork_Rewards_System
     {
         // Clear any other actions and focus only on saving.
         if (!isset($_POST['action']) || $_POST['action'] !== 'twork_rewards_save_settings') {
-            error_log("T-Work Trace: Blocked unwanted action: " . ($_POST['action'] ?? 'none'));
+            error_log("Rewards Trace: Blocked unwanted action: " . ($_POST['action'] ?? 'none'));
             return;
         }
 
@@ -3811,7 +3811,7 @@ class TWork_Rewards_System
         $test_data = array(
             'transaction_id' => 0,
             'points' => '100',
-            'description' => __('This is a test notification from T-Work Rewards system.', 'twork-rewards'),
+            'description' => __('This is a test notification from Rewards system.', 'twork-rewards'),
         );
 
         $sent = $this->send_points_fcm_notification($test_user_id, 'points_earned', $test_data);
@@ -4247,7 +4247,7 @@ class TWork_Rewards_System
 
         // Debug: Log route registration (only in development)
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('T-Work Rewards: All REST API routes registered');
+            error_log('Rewards: All REST API routes registered');
         }
     }
 
@@ -4356,9 +4356,9 @@ class TWork_Rewards_System
 
         // Debug: Log route registration results (only in development)
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('T-Work Rewards: Engagement feed route registered: ' . ($feed_result ? 'SUCCESS' : 'FAILED'));
-            error_log('T-Work Rewards: Engagement interact route registered: ' . ($interact_result ? 'SUCCESS' : 'FAILED'));
-            error_log('T-Work Rewards: Engagement result route registered: ' . ($result_result ? 'SUCCESS' : 'FAILED'));
+            error_log('Rewards: Engagement feed route registered: ' . ($feed_result ? 'SUCCESS' : 'FAILED'));
+            error_log('Rewards: Engagement interact route registered: ' . ($interact_result ? 'SUCCESS' : 'FAILED'));
+            error_log('Rewards: Engagement result route registered: ' . ($result_result ? 'SUCCESS' : 'FAILED'));
 
             // Also log the actual route to verify it's registered
             global $wp_rest_server;
@@ -4370,7 +4370,7 @@ class TWork_Rewards_System
                         $engagement_routes[] = $route;
                     }
                 }
-                error_log('T-Work Rewards: Registered engagement routes: ' . print_r($engagement_routes, true));
+                error_log('Rewards: Registered engagement routes: ' . print_r($engagement_routes, true));
             }
         }
     }
@@ -4468,7 +4468,7 @@ class TWork_Rewards_System
         ));
 
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('T-Work Rewards: Usage tracking routes registered');
+            error_log('Rewards: Usage tracking routes registered');
         }
     }
 
@@ -4496,7 +4496,7 @@ class TWork_Rewards_System
         ));
 
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('T-Work Rewards: User activity routes registered');
+            error_log('Rewards: User activity routes registered');
         }
     }
 
@@ -4545,7 +4545,7 @@ class TWork_Rewards_System
                 )
             ), 200);
         } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_user_activity: ' . $e->getMessage());
+            error_log('Rewards: Error in rest_user_activity: ' . $e->getMessage());
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'An error occurred while retrieving activity status',
@@ -4668,7 +4668,7 @@ class TWork_Rewards_System
 
             // Check for database errors
             if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Page content REST API query error: ' . $wpdb->last_error);
+                error_log('Rewards: Page content REST API query error: ' . $wpdb->last_error);
             }
 
             if ($page) {
@@ -4703,7 +4703,7 @@ class TWork_Rewards_System
             }
         } catch (Exception $e) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Page content error: ' . $e->getMessage());
+                error_log('Rewards: Page content error: ' . $e->getMessage());
             }
             return new WP_REST_Response(array(
                 'success' => false,
@@ -4737,7 +4737,7 @@ class TWork_Rewards_System
                 if ($result !== false) {
                     $wpdb->query("ALTER TABLE $table_name ADD INDEX idx_display_order (display_order)");
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Added display_order column to page content table via REST API');
+                        error_log('Rewards: Added display_order column to page content table via REST API');
                     }
                     $has_display_order = true;
                 }
@@ -4763,8 +4763,8 @@ class TWork_Rewards_System
             // Check for database errors
             if ($wpdb->last_error) {
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Get all pages REST API query error: ' . $wpdb->last_error);
-                    error_log('T-Work Rewards: Query was: ' . $query);
+                    error_log('Rewards: Get all pages REST API query error: ' . $wpdb->last_error);
+                    error_log('Rewards: Query was: ' . $query);
                 }
                 // Return empty array on error instead of failing
                 $pages = array();
@@ -4773,7 +4773,7 @@ class TWork_Rewards_System
             // PROFESSIONAL FIX: If no pages found, ensure default pages are initialized
             if (empty($pages)) {
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: No pages found in database, initializing default pages');
+                    error_log('Rewards: No pages found in database, initializing default pages');
                 }
                 // Initialize default pages
                 $this->initialize_default_pages();
@@ -4799,9 +4799,9 @@ class TWork_Rewards_System
                 // Retry query after initialization
                 $pages = $wpdb->get_results($query, ARRAY_A);
                 if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Error after initialization: ' . $wpdb->last_error);
+                    error_log('Rewards: Error after initialization: ' . $wpdb->last_error);
                 } elseif (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: After initialization, found ' . count($pages) . ' pages');
+                    error_log('Rewards: After initialization, found ' . count($pages) . ' pages');
                 }
             }
 
@@ -4824,7 +4824,7 @@ class TWork_Rewards_System
             // PROFESSIONAL FIX: Log result for debugging
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Get all pages REST API - Found %d pages, Returning %d formatted pages',
+                    'Rewards: Get all pages REST API - Found %d pages, Returning %d formatted pages',
                     count($pages),
                     count($formatted_pages)
                 ));
@@ -4835,7 +4835,7 @@ class TWork_Rewards_System
                 'data' => $formatted_pages
             ), 200);
         } catch (Exception $e) {
-            error_log('T-Work Rewards: Get all pages REST API error: ' . $e->getMessage());
+            error_log('Rewards: Get all pages REST API error: ' . $e->getMessage());
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'Failed to fetch pages: ' . $e->getMessage(),
@@ -4934,7 +4934,7 @@ class TWork_Rewards_System
             ), 200);
         } catch (Exception $e) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: FAQ error: ' . $e->getMessage());
+                error_log('Rewards: FAQ error: ' . $e->getMessage());
             }
             return new WP_REST_Response(array(
                 'success' => false,
@@ -4965,7 +4965,7 @@ class TWork_Rewards_System
 
             // Check for database errors
             if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: About Us REST API query error: ' . $wpdb->last_error);
+                error_log('Rewards: About Us REST API query error: ' . $wpdb->last_error);
             }
 
             if ($content) {
@@ -5010,7 +5010,7 @@ class TWork_Rewards_System
             }
         } catch (Exception $e) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: About Us error: ' . $e->getMessage());
+                error_log('Rewards: About Us error: ' . $e->getMessage());
             }
             return new WP_REST_Response(array(
                 'success' => false,
@@ -7414,7 +7414,7 @@ class TWork_Rewards_System
             if ($items === false) {
                 $error_msg = $wpdb->last_error ?: 'Database query failed';
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Engagement feed query error: ' . $error_msg);
+                    error_log('Rewards: Engagement feed query error: ' . $error_msg);
                 }
                 return new WP_REST_Response(array(
                     'success' => false,
@@ -7425,8 +7425,8 @@ class TWork_Rewards_System
 
             // Debug logging (only in development)
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Engagement Feed - User ID: ' . $user_id);
-                error_log('T-Work Rewards: Engagement Feed - Items Found: ' . count($items));
+                error_log('Rewards: Engagement Feed - User ID: ' . $user_id);
+                error_log('Rewards: Engagement Feed - Items Found: ' . count($items));
             }
 
             // Check for user interactions (e.g. if quiz already answered)
@@ -7697,7 +7697,7 @@ class TWork_Rewards_System
                 } catch (Exception $e) {
                     // Log error but continue processing other items
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Error processing engagement item ' . $item['id'] . ': ' . $e->getMessage());
+                        error_log('Rewards: Error processing engagement item ' . $item['id'] . ': ' . $e->getMessage());
                     }
                     continue;
                 }
@@ -7709,7 +7709,7 @@ class TWork_Rewards_System
             ), 200);
         } catch (Exception $e) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Engagement feed exception: ' . $e->getMessage());
+                error_log('Rewards: Engagement feed exception: ' . $e->getMessage());
             }
             return new WP_REST_Response(array(
                 'success' => false,
@@ -8311,7 +8311,7 @@ class TWork_Rewards_System
                     $use_points_system = false;
 
                     // Old Code:
-                    // Prefer T-Work Points System (actual point balance: points_balance / my_points)
+                    // Prefer Points System (actual point balance: points_balance / my_points)
                     // if (class_exists('TWork_Points_System')) {
                     //     $pts = TWork_Points_System::get_instance();
                     //     if (method_exists($pts, 'get_user_point_balance')) {
@@ -8349,7 +8349,7 @@ class TWork_Rewards_System
                     };
 
                     // Old Code:
-                    // Prefer T-Work Points System (actual point balance: points_balance / my_points)
+                    // Prefer Points System (actual point balance: points_balance / my_points)
                     // if (class_exists('TWork_Points_System')) {
                     //     $pts = TWork_Points_System::get_instance();
                     //     if (method_exists($pts, 'get_user_point_balance')) {
@@ -8467,7 +8467,7 @@ class TWork_Rewards_System
 
                     // Deduct from actual point balance
                     if ($use_points_system) {
-                        // When T-Work Points System is active, delegate deduction there.
+                        // When Points System is active, delegate deduction there.
                         // Backward compatible: call expanded signature when available, fallback to legacy 3 args.
                         $new_balance = false;
                         $used_legacy_poll_deduct_fallback = false;
@@ -8490,7 +8490,7 @@ class TWork_Rewards_System
                                 $new_balance = $pts->deduct_for_poll_vote($user_id, $safe_total_cost, $description);
                             }
                         } catch (Exception $e) {
-                            error_log('T-Work Rewards: deduct_for_poll_vote invocation failed: ' . $e->getMessage());
+                            error_log('Rewards: deduct_for_poll_vote invocation failed: ' . $e->getMessage());
                         }
                         if ($new_balance === false) {
                             return new WP_REST_Response(array(
@@ -8545,7 +8545,7 @@ class TWork_Rewards_System
                             }
                         }
                     } else {
-                        // Rewards-only (no T-Work Points System): record poll entry cost as a transaction
+                        // Rewards-only (no Points System): record poll entry cost as a transaction
                         // and let sync_user_points handle both transactions table and cache meta fields.
                         $this->sync_user_points(
                             $user_id,
@@ -8619,7 +8619,7 @@ class TWork_Rewards_System
                 if ($update_result === false) {
                     $error_msg = $wpdb->last_error ?: 'Failed to update interaction';
                     error_log(sprintf(
-                        'T-Work Rewards: Failed to update poll vote - Error: %s, User ID: %d, Item ID: %d, Answer: %s',
+                        'Rewards: Failed to update poll vote - Error: %s, User ID: %d, Item ID: %d, Answer: %s',
                         $error_msg,
                         $user_id,
                         $item_id,
@@ -8636,7 +8636,7 @@ class TWork_Rewards_System
                 // Log successful update (even if 0 rows affected - means no change)
                 if (defined('WP_DEBUG') && WP_DEBUG) {
                     error_log(sprintf(
-                        'T-Work Rewards: Poll vote updated - User ID: %d, Item ID: %d, Answer: %s, Rows affected: %d',
+                        'Rewards: Poll vote updated - User ID: %d, Item ID: %d, Answer: %s, Rows affected: %d',
                         $user_id,
                         $item_id,
                         $answer,
@@ -8681,7 +8681,7 @@ class TWork_Rewards_System
 
                 // Log detailed error for debugging
                 error_log(sprintf(
-                    'T-Work Rewards: Failed to insert interaction - Error: %s, Query: %s, User ID: %d, Item ID: %d, Answer: %s',
+                    'Rewards: Failed to insert interaction - Error: %s, Query: %s, User ID: %d, Item ID: %d, Answer: %s',
                     $error_msg,
                     $error_query,
                     $user_id,
@@ -8778,7 +8778,7 @@ class TWork_Rewards_System
                 if (defined('WP_DEBUG') && WP_DEBUG) {
                     error_log(
                         sprintf(
-                            'T-Work Rewards: Engagement points awarded. User ID: %d, Item ID: %d, Type: %s, Points: %d, Old Balance: %d, New Balance: %d',
+                            'Rewards: Engagement points awarded. User ID: %d, Item ID: %d, Type: %s, Points: %d, Old Balance: %d, New Balance: %d',
                             $user_id,
                             $item_id,
                             $item_type,
@@ -8829,7 +8829,7 @@ class TWork_Rewards_System
             // Professional logging for dashboard analytics
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Quiz Interaction Recorded - User ID: %d, Item ID: %d, Item Title: "%s", Answer: %s, Correct: %s, Points: %d, New Balance: %d',
+                    'Rewards: Quiz Interaction Recorded - User ID: %d, Item ID: %d, Item Title: "%s", Answer: %s, Correct: %s, Points: %d, New Balance: %d',
                     $user_id,
                     $item_id,
                     $item['title'] ?? 'Unknown',
@@ -8922,14 +8922,14 @@ class TWork_Rewards_System
             $error_message = $e->getMessage();
             $error_trace = $e->getTraceAsString();
             error_log(sprintf(
-                'T-Work Rewards: Engagement interact exception - Message: %s, User ID: %d, Item ID: %d, Answer: %s',
+                'Rewards: Engagement interact exception - Message: %s, User ID: %d, Item ID: %d, Answer: %s',
                 $error_message,
                 isset($user_id) ? $user_id : 0,
                 isset($item_id) ? $item_id : 0,
                 isset($answer) ? $answer : 'N/A'
             ));
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Stack trace: ' . $error_trace);
+                error_log('Rewards: Stack trace: ' . $error_trace);
             }
             return new WP_REST_Response(array(
                 'success' => false,
@@ -9087,7 +9087,7 @@ class TWork_Rewards_System
             ), 200);
         } catch (Exception $e) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Engagement result exception: ' . $e->getMessage());
+                error_log('Rewards: Engagement result exception: ' . $e->getMessage());
             }
             return new WP_REST_Response(array(
                 'success' => false,
@@ -9102,11 +9102,11 @@ class TWork_Rewards_System
 
         // DEBUG: Log incoming request
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('T-Work Rewards: rest_usage_start called');
-            error_log('T-Work Rewards: Request method: ' . $request->get_method());
-            error_log('T-Work Rewards: Request params: ' . print_r($request->get_params(), true));
-            error_log('T-Work Rewards: Request body: ' . $request->get_body());
-            error_log('T-Work Rewards: JSON params: ' . print_r($request->get_json_params(), true));
+            error_log('Rewards: rest_usage_start called');
+            error_log('Rewards: Request method: ' . $request->get_method());
+            error_log('Rewards: Request params: ' . print_r($request->get_params(), true));
+            error_log('Rewards: Request body: ' . $request->get_body());
+            error_log('Rewards: JSON params: ' . print_r($request->get_json_params(), true));
         }
 
         try {
@@ -9129,13 +9129,13 @@ class TWork_Rewards_System
 
             // DEBUG: Log parsed values
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Parsed user_id: ' . $user_id);
-                error_log('T-Work Rewards: Parsed device_info: ' . $device_info);
-                error_log('T-Work Rewards: Parsed app_version: ' . $app_version);
+                error_log('Rewards: Parsed user_id: ' . $user_id);
+                error_log('Rewards: Parsed device_info: ' . $device_info);
+                error_log('Rewards: Parsed app_version: ' . $app_version);
             }
 
             if ($user_id <= 0) {
-                error_log('T-Work Rewards: Invalid user_id (0 or negative): ' . $user_id);
+                error_log('Rewards: Invalid user_id (0 or negative): ' . $user_id);
                 return new WP_REST_Response(array(
                     'success' => false,
                     'message' => 'Invalid user_id parameter. Please provide a valid user_id in the request body.',
@@ -9190,8 +9190,8 @@ class TWork_Rewards_System
             );
 
             if ($result === false) {
-                error_log('T-Work Rewards: Failed to create usage session. Error: ' . $wpdb->last_error);
-                error_log('T-Work Rewards: SQL Query: ' . $wpdb->last_query);
+                error_log('Rewards: Failed to create usage session. Error: ' . $wpdb->last_error);
+                error_log('Rewards: SQL Query: ' . $wpdb->last_query);
                 return new WP_REST_Response(array(
                     'success' => false,
                     'message' => 'Failed to start session',
@@ -9217,7 +9217,7 @@ class TWork_Rewards_System
 
             // DEBUG: Log successful session creation
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Usage session created successfully. Session ID: ' . $session_id . ', User ID: ' . $user_id);
+                error_log('Rewards: Usage session created successfully. Session ID: ' . $session_id . ', User ID: ' . $user_id);
             }
 
             return new WP_REST_Response(array(
@@ -9229,7 +9229,7 @@ class TWork_Rewards_System
                 )
             ), 200);
         } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_usage_start: ' . $e->getMessage());
+            error_log('Rewards: Error in rest_usage_start: ' . $e->getMessage());
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'An error occurred while starting session',
@@ -9251,11 +9251,11 @@ class TWork_Rewards_System
 
         // DEBUG: Log incoming request
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('T-Work Rewards: rest_usage_end called');
-            error_log('T-Work Rewards: Request method: ' . $request->get_method());
-            error_log('T-Work Rewards: Request params: ' . print_r($request->get_params(), true));
-            error_log('T-Work Rewards: Request body: ' . $request->get_body());
-            error_log('T-Work Rewards: JSON params: ' . print_r($request->get_json_params(), true));
+            error_log('Rewards: rest_usage_end called');
+            error_log('Rewards: Request method: ' . $request->get_method());
+            error_log('Rewards: Request params: ' . print_r($request->get_params(), true));
+            error_log('Rewards: Request body: ' . $request->get_body());
+            error_log('Rewards: JSON params: ' . print_r($request->get_json_params(), true));
         }
 
         try {
@@ -9272,12 +9272,12 @@ class TWork_Rewards_System
 
             // DEBUG: Log parsed values
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Parsed user_id: ' . $user_id);
-                error_log('T-Work Rewards: Parsed session_id: ' . $session_id);
+                error_log('Rewards: Parsed user_id: ' . $user_id);
+                error_log('Rewards: Parsed session_id: ' . $session_id);
             }
 
             if ($user_id <= 0) {
-                error_log('T-Work Rewards: Invalid user_id (0 or negative): ' . $user_id);
+                error_log('Rewards: Invalid user_id (0 or negative): ' . $user_id);
                 return new WP_REST_Response(array(
                     'success' => false,
                     'message' => 'Invalid user_id parameter. Please provide a valid user_id in the request body.',
@@ -9310,7 +9310,7 @@ class TWork_Rewards_System
             if (!$active_session) {
                 // DEBUG: Log when no active session found
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: No active session found for user_id: ' . $user_id . ', session_id: ' . $session_id);
+                    error_log('Rewards: No active session found for user_id: ' . $user_id . ', session_id: ' . $session_id);
                 }
                 return new WP_REST_Response(array(
                     'success' => false,
@@ -9341,8 +9341,8 @@ class TWork_Rewards_System
             );
 
             if ($result === false) {
-                error_log('T-Work Rewards: Failed to end usage session. Error: ' . $wpdb->last_error);
-                error_log('T-Work Rewards: SQL Query: ' . $wpdb->last_query);
+                error_log('Rewards: Failed to end usage session. Error: ' . $wpdb->last_error);
+                error_log('Rewards: SQL Query: ' . $wpdb->last_query);
                 return new WP_REST_Response(array(
                     'success' => false,
                     'message' => 'Failed to end session',
@@ -9358,7 +9358,7 @@ class TWork_Rewards_System
 
             // DEBUG: Log successful session end
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Usage session ended successfully. Session ID: ' . $active_session->id . ', Duration: ' . $duration_formatted . ' (' . $duration_seconds . ' seconds)');
+                error_log('Rewards: Usage session ended successfully. Session ID: ' . $active_session->id . ', Duration: ' . $duration_formatted . ' (' . $duration_seconds . ' seconds)');
             }
 
             return new WP_REST_Response(array(
@@ -9373,7 +9373,7 @@ class TWork_Rewards_System
                 )
             ), 200);
         } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_usage_end: ' . $e->getMessage());
+            error_log('Rewards: Error in rest_usage_end: ' . $e->getMessage());
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'An error occurred while ending session',
@@ -9453,7 +9453,7 @@ class TWork_Rewards_System
                 )
             ), 200);
         } catch (Exception $e) {
-            error_log('T-Work Rewards: Error in rest_usage_stats: ' . $e->getMessage());
+            error_log('Rewards: Error in rest_usage_stats: ' . $e->getMessage());
             return new WP_REST_Response(array(
                 'success' => false,
                 'message' => 'An error occurred while retrieving statistics',
@@ -9492,7 +9492,7 @@ class TWork_Rewards_System
         $this->track_user_activity($user_id);
 
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log(sprintf('T-Work Rewards: User login tracked - User ID: %d, Login Time: %s',
+            error_log(sprintf('Rewards: User login tracked - User ID: %d, Login Time: %s',
                 $user_id,
                 date('Y-m-d H:i:s', $current_time)));
         }
@@ -9696,7 +9696,7 @@ class TWork_Rewards_System
 
                 $stats['processed']++;
             } catch (Exception $e) {
-                error_log('T-Work Rewards: Error initializing activity for user ' . $user_id . ': ' . $e->getMessage());
+                error_log('Rewards: Error initializing activity for user ' . $user_id . ': ' . $e->getMessage());
                 $stats['errors']++;
             }
         }
@@ -10148,7 +10148,7 @@ class TWork_Rewards_System
         } catch (Exception $e) {
             // Fallback to WordPress date_i18n if timezone conversion fails
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: format_myanmar_time error: ' . $e->getMessage());
+                error_log('Rewards: format_myanmar_time error: ' . $e->getMessage());
             }
             return date_i18n($format, $timestamp);
         }
@@ -10322,7 +10322,7 @@ class TWork_Rewards_System
             // Points system table doesn't exist, log warning but don't fail
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Points system table not found. Engagement points awarded but not recorded in transaction table. User ID: %d, Points: %d, Item ID: %d',
+                    'Rewards: Points system table not found. Engagement points awarded but not recorded in transaction table. User ID: %d, Points: %d, Item ID: %d',
                     $user_id,
                     $points,
                     $item_id
@@ -10353,7 +10353,7 @@ class TWork_Rewards_System
             // Duplicate transaction prevented
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Duplicate engagement transaction prevented. User ID: %d, Item ID: %d, Existing Transaction ID: %d',
+                    'Rewards: Duplicate engagement transaction prevented. User ID: %d, Item ID: %d, Existing Transaction ID: %d',
                     $user_id,
                     $item_id,
                     $existing
@@ -10389,7 +10389,7 @@ class TWork_Rewards_System
             // Log error but don't fail the entire process
             $error_msg = $wpdb->last_error ?: 'Unknown database error';
             error_log(sprintf(
-                'T-Work Rewards: Failed to create engagement point transaction. User ID: %d, Points: %s, Item ID: %d, Error: %s',
+                'Rewards: Failed to create engagement point transaction. User ID: %d, Points: %s, Item ID: %d, Error: %s',
                 $user_id,
                 $points,
                 $item_id,
@@ -10407,7 +10407,7 @@ class TWork_Rewards_System
         // Professional logging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Engagement point transaction created. Transaction ID: %d, User ID: %d, Points: %s, Item ID: %d, Type: %s',
+                'Rewards: Engagement point transaction created. Transaction ID: %d, User ID: %d, Points: %s, Item ID: %d, Type: %s',
                 $transaction_id,
                 $user_id,
                 $points,
@@ -10447,7 +10447,7 @@ class TWork_Rewards_System
             // Points system table doesn't exist, log warning but don't fail
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Points system table not found. Exchange points deducted but not recorded in transaction table. User ID: %d, Points: %d, Request ID: %d',
+                    'Rewards: Points system table not found. Exchange points deducted but not recorded in transaction table. User ID: %d, Points: %d, Request ID: %d',
                     $user_id,
                     $points,
                     $request_id
@@ -10478,7 +10478,7 @@ class TWork_Rewards_System
             // Duplicate transaction prevented
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Duplicate exchange transaction prevented. User ID: %d, Request ID: %d, Existing Transaction ID: %d',
+                    'Rewards: Duplicate exchange transaction prevented. User ID: %d, Request ID: %d, Existing Transaction ID: %d',
                     $user_id,
                     $request_id,
                     $existing
@@ -10515,7 +10515,7 @@ class TWork_Rewards_System
             // Log error but don't fail the entire process
             $error_msg = $wpdb->last_error ?: 'Unknown database error';
             error_log(sprintf(
-                'T-Work Rewards: Failed to create exchange point transaction. User ID: %d, Points: %s, Request ID: %d, Error: %s',
+                'Rewards: Failed to create exchange point transaction. User ID: %d, Points: %s, Request ID: %d, Error: %s',
                 $user_id,
                 $points,
                 $request_id,
@@ -10533,7 +10533,7 @@ class TWork_Rewards_System
         // Professional logging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Exchange point transaction created. Transaction ID: %d, User ID: %d, Points: %s, Request ID: %d',
+                'Rewards: Exchange point transaction created. Transaction ID: %d, User ID: %d, Points: %s, Request ID: %d',
                 $transaction_id,
                 $user_id,
                 $points,
@@ -10704,7 +10704,7 @@ class TWork_Rewards_System
             // No transactions found - might be using legacy system
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: No redeem transactions found for exchange request. User ID: %d, Request ID: %d',
+                    'Rewards: No redeem transactions found for exchange request. User ID: %d, Request ID: %d',
                     $user_id,
                     $request_id
                 ));
@@ -10728,7 +10728,7 @@ class TWork_Rewards_System
             // All transactions are rejected - nothing was actually deducted
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: All redeem transactions are rejected for exchange request. User ID: %d, Request ID: %d, Total Transactions: %d',
+                    'Rewards: All redeem transactions are rejected for exchange request. User ID: %d, Request ID: %d, Total Transactions: %d',
                     $user_id,
                     $request_id,
                     count($transactions)
@@ -10785,7 +10785,7 @@ class TWork_Rewards_System
             // Log if we detect discrepancies (for debugging and monitoring)
             if (count($valid_transactions) > 1) {
                 error_log(sprintf(
-                    'T-Work Rewards: CRITICAL - Multiple redeem transactions found for request. Using request points_value (%s) as absolute source of truth for refund. User ID: %d, Request ID: %d, Transaction Count: %d, Total Sum: %s, Max Amount: %s, Transactions: %s',
+                    'Rewards: CRITICAL - Multiple redeem transactions found for request. Using request points_value (%s) as absolute source of truth for refund. User ID: %d, Request ID: %d, Transaction Count: %d, Total Sum: %s, Max Amount: %s, Transactions: %s',
                     $request_points_value,
                     $user_id,
                     $request_id,
@@ -10798,7 +10798,7 @@ class TWork_Rewards_System
                 // Single transaction - validate it matches request (but still use request amount)
                 if (abs($max_points - $request_points_value) > ($request_points_value * 0.1)) {
                     error_log(sprintf(
-                        'T-Work Rewards: WARNING - Single redeem transaction amount (%s) differs from request amount (%s) by more than 10%%. Using request amount for refund to prevent errors. User ID: %d, Request ID: %d, Transaction: %s',
+                        'Rewards: WARNING - Single redeem transaction amount (%s) differs from request amount (%s) by more than 10%%. Using request amount for refund to prevent errors. User ID: %d, Request ID: %d, Transaction: %s',
                         $max_points,
                         $request_points_value,
                         $user_id,
@@ -10811,7 +10811,7 @@ class TWork_Rewards_System
             // Fallback: If request amount is not available, use max transaction amount
             // But log this as a critical issue since request amount should always be available
             error_log(sprintf(
-                'T-Work Rewards: CRITICAL ERROR - Request points_value not found. Using max transaction amount as fallback. User ID: %d, Request ID: %d, Max Amount: %s, Total Sum: %s',
+                'Rewards: CRITICAL ERROR - Request points_value not found. Using max transaction amount as fallback. User ID: %d, Request ID: %d, Max Amount: %s, Total Sum: %s',
                 $user_id,
                 $request_id,
                 $max_points,
@@ -10823,7 +10823,7 @@ class TWork_Rewards_System
             // we MUST NOT use the sum - use the max to prevent double refund
             if (count($valid_transactions) > 1 && $total_points > $max_points) {
                 error_log(sprintf(
-                    'T-Work Rewards: CRITICAL SAFETY - Multiple transactions detected but request amount unavailable. Using max amount (%s) instead of sum (%s) to prevent double refund. User ID: %d, Request ID: %d',
+                    'Rewards: CRITICAL SAFETY - Multiple transactions detected but request amount unavailable. Using max amount (%s) instead of sum (%s) to prevent double refund. User ID: %d, Request ID: %d',
                     $max_points,
                     $total_points,
                     $user_id,
@@ -10835,7 +10835,7 @@ class TWork_Rewards_System
 
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Calculated actual deducted points. User ID: %d, Request ID: %d, Total Deducted: %s, Valid Transaction Count: %d, Total Transaction Count: %d, Transactions: %s',
+                'Rewards: Calculated actual deducted points. User ID: %d, Request ID: %d, Total Deducted: %s, Valid Transaction Count: %d, Total Transaction Count: %d, Transactions: %s',
                 $user_id,
                 $request_id,
                 $total_deducted,
@@ -10890,7 +10890,7 @@ class TWork_Rewards_System
             // Transaction not found, log but don't fail
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Exchange point transaction not found for status update. User ID: %d, Request ID: %d',
+                    'Rewards: Exchange point transaction not found for status update. User ID: %d, Request ID: %d',
                     $user_id,
                     $request_id
                 ));
@@ -10919,7 +10919,7 @@ class TWork_Rewards_System
         if ($updated === false) {
             $error_msg = $wpdb->last_error ?: 'Unknown database error';
             error_log(sprintf(
-                'T-Work Rewards: Failed to update exchange point transaction status. Transaction ID: %d, New Status: %s, Error: %s',
+                'Rewards: Failed to update exchange point transaction status. Transaction ID: %d, New Status: %s, Error: %s',
                 $transaction->id,
                 $transaction_status,
                 $error_msg
@@ -10934,7 +10934,7 @@ class TWork_Rewards_System
         // Professional logging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Exchange point transaction status updated. Transaction ID: %d, User ID: %d, Request ID: %d, Old Status: %s, New Status: %s',
+                'Rewards: Exchange point transaction status updated. Transaction ID: %d, User ID: %d, Request ID: %d, Old Status: %s, New Status: %s',
                 $transaction->id,
                 $user_id,
                 $request_id,
@@ -11003,7 +11003,7 @@ class TWork_Rewards_System
 
         if ($status_update_result === false) {
             error_log(sprintf(
-                'T-Work Rewards: Failed to void exchange redeem on reject. User ID: %d, Request ID: %d, Error: %s',
+                'Rewards: Failed to void exchange redeem on reject. User ID: %d, Request ID: %d, Error: %s',
                 $user_id,
                 $request_id,
                 $wpdb->last_error ?: 'Unknown error'
@@ -11016,7 +11016,7 @@ class TWork_Rewards_System
 
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Exchange reject voided %d redeem transaction(s). User ID: %d, Request ID: %d, Reason: %s',
+                'Rewards: Exchange reject voided %d redeem transaction(s). User ID: %d, Request ID: %d, Reason: %s',
                 $voided_count,
                 $user_id,
                 $request_id,
@@ -11052,7 +11052,7 @@ class TWork_Rewards_System
         if (!$table_exists) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Points system table not found. Exchange refund not recorded in transaction table. User ID: %d, Points: %d, Request ID: %d',
+                    'Rewards: Points system table not found. Exchange refund not recorded in transaction table. User ID: %d, Points: %d, Request ID: %d',
                     $user_id,
                     $points,
                     $request_id
@@ -11078,7 +11078,7 @@ class TWork_Rewards_System
         if ($existing) {
             // CRITICAL: Refund already exists - return existing transaction ID
             error_log(sprintf(
-                'T-Work Rewards: CRITICAL - Duplicate exchange refund transaction prevented. User ID: %d, Request ID: %d, Existing Transaction ID: %d. This prevents 2x refund issue.',
+                'Rewards: CRITICAL - Duplicate exchange refund transaction prevented. User ID: %d, Request ID: %d, Existing Transaction ID: %d. This prevents 2x refund issue.',
                 $user_id,
                 $request_id,
                 $existing
@@ -11108,7 +11108,7 @@ class TWork_Rewards_System
             $request_validation_points = (float) $request_validation['points_value'];
             if ($points > $request_validation_points) {
                 error_log(sprintf(
-                    'T-Work Rewards: CRITICAL - create_exchange_refund_transaction: Points (%s) exceed request amount (%s). Capping at request amount. User ID: %d, Request ID: %d',
+                    'Rewards: CRITICAL - create_exchange_refund_transaction: Points (%s) exceed request amount (%s). Capping at request amount. User ID: %d, Request ID: %d',
                     $points,
                     $request_validation_points,
                     $user_id,
@@ -11120,7 +11120,7 @@ class TWork_Rewards_System
 
         // CRITICAL LOG: Log what we're actually inserting
         error_log(sprintf(
-            'T-Work Rewards: Inserting refund transaction. User ID: %d, Request ID: %d, Points: %d, Request Points: %s',
+            'Rewards: Inserting refund transaction. User ID: %d, Request ID: %d, Points: %d, Request Points: %s',
             $user_id,
             $request_id,
             $points,
@@ -11146,7 +11146,7 @@ class TWork_Rewards_System
         if ($result === false) {
             $error_msg = $wpdb->last_error ?: 'Unknown database error';
             error_log(sprintf(
-                'T-Work Rewards: Failed to create exchange refund transaction. User ID: %d, Points: %d, Request ID: %d, Error: %s',
+                'Rewards: Failed to create exchange refund transaction. User ID: %d, Points: %d, Request ID: %d, Error: %s',
                 $user_id,
                 $points,
                 $request_id,
@@ -11164,7 +11164,7 @@ class TWork_Rewards_System
         // Professional logging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Exchange refund transaction created. Transaction ID: %d, User ID: %d, Points: %d, Request ID: %d',
+                'Rewards: Exchange refund transaction created. Transaction ID: %d, User ID: %d, Points: %d, Request ID: %d',
                 $transaction_id,
                 $user_id,
                 $points,
@@ -11349,7 +11349,7 @@ class TWork_Rewards_System
             if (false === $result) {
                 error_log(
                     sprintf(
-                        'T-Work Rewards: FAILED to create transaction in points table. User ID: %d, Delta: %s, Error: %s',
+                        'Rewards: FAILED to create transaction in points table. User ID: %d, Delta: %s, Error: %s',
                         $user_id,
                         $delta,
                         $wpdb->last_error
@@ -11360,7 +11360,7 @@ class TWork_Rewards_System
                 $transaction_created = true;
                 error_log(
                     sprintf(
-                        'T-Work Rewards: Transaction created successfully. Transaction ID: %d, User ID: %d, Type: %s, Points: %s',
+                        'Rewards: Transaction created successfully. Transaction ID: %d, User ID: %d, Type: %s, Points: %s',
                         $transaction_id,
                         $user_id,
                         $transaction_type,
@@ -11380,7 +11380,7 @@ class TWork_Rewards_System
         if ($create_transaction && !$transaction_created && defined('WP_DEBUG') && WP_DEBUG) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Point transaction row not created; balance recomputed from DB only. User ID: %d, Delta attempted: %s',
+                    'Rewards: Point transaction row not created; balance recomputed from DB only. User ID: %d, Delta attempted: %s',
                     $user_id,
                     (string) $delta
                 )
@@ -11432,7 +11432,7 @@ class TWork_Rewards_System
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Transaction created and cache updated. User ID: %d, Delta: %s, Calculated Balance: %d, Is Manual: %s',
+                    'Rewards: Transaction created and cache updated. User ID: %d, Delta: %s, Calculated Balance: %d, Is Manual: %s',
                     $user_id,
                     $delta,
                     $calculated_balance,
@@ -13244,7 +13244,7 @@ class TWork_Rewards_System
 
         // Validate user exists.
         if ($user_id <= 0) {
-            error_log(sprintf('T-Work Rewards: Exchange request failed - Invalid user ID: %d', $user_id));
+            error_log(sprintf('Rewards: Exchange request failed - Invalid user ID: %d', $user_id));
             return new WP_REST_Response(
                 array(
                     'success' => false,
@@ -13256,7 +13256,7 @@ class TWork_Rewards_System
 
         $user = get_user_by('ID', $user_id);
         if (!$user) {
-            error_log(sprintf('T-Work Rewards: Exchange request failed - User not found: %d', $user_id));
+            error_log(sprintf('Rewards: Exchange request failed - User not found: %d', $user_id));
             return new WP_REST_Response(
                 array(
                     'success' => false,
@@ -13268,7 +13268,7 @@ class TWork_Rewards_System
 
         // RESTRICTION: Only allow Points exchange, reject Rewards exchange.
         if ('rewards' === $type || !empty($reward_value)) {
-            error_log(sprintf('T-Work Rewards: Exchange request rejected - Rewards exchange not allowed. User ID: %d', $user_id));
+            error_log(sprintf('Rewards: Exchange request rejected - Rewards exchange not allowed. User ID: %d', $user_id));
             return new WP_REST_Response(
                 array(
                     'success' => false,
@@ -13283,7 +13283,7 @@ class TWork_Rewards_System
 
         // Validate points value is provided.
         if (empty($points_value)) {
-            error_log(sprintf('T-Work Rewards: Exchange request failed - Points value missing. User ID: %d', $user_id));
+            error_log(sprintf('Rewards: Exchange request failed - Points value missing. User ID: %d', $user_id));
             return new WP_REST_Response(
                 array(
                     'success' => false,
@@ -13295,7 +13295,7 @@ class TWork_Rewards_System
 
         // Validate points value is numeric and positive.
         if (!is_numeric($points_value) || (float) $points_value <= 0) {
-            error_log(sprintf('T-Work Rewards: Exchange request failed - Invalid points value: %s. User ID: %d', $points_value, $user_id));
+            error_log(sprintf('Rewards: Exchange request failed - Invalid points value: %s. User ID: %d', $points_value, $user_id));
             return new WP_REST_Response(
                 array(
                     'success' => false,
@@ -13318,7 +13318,7 @@ class TWork_Rewards_System
         if ($current_balance < $min_exchange_points) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Exchange request failed - Insufficient balance for minimum requirement. User ID: %d, Balance: %d, Minimum Required: %d',
+                    'Rewards: Exchange request failed - Insufficient balance for minimum requirement. User ID: %d, Balance: %d, Minimum Required: %d',
                     $user_id,
                     $current_balance,
                     $min_exchange_points
@@ -13347,7 +13347,7 @@ class TWork_Rewards_System
         if ($available_after_pending < $points_to_exchange) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Exchange request failed - Insufficient balance (pending requests reserved). User ID: %d, Balance: %d, Pending: %s, Requested: %s',
+                    'Rewards: Exchange request failed - Insufficient balance (pending requests reserved). User ID: %d, Balance: %d, Pending: %s, Requested: %s',
                     $user_id,
                     $current_balance,
                     $pending_exchange_total,
@@ -13392,7 +13392,7 @@ class TWork_Rewards_System
             $error_msg = $wpdb->last_error ? $wpdb->last_error : __('Unknown database error occurred.', 'twork-rewards');
             error_log(
                 sprintf(
-                    'T-Work Rewards: Failed to insert exchange request. User ID: %d, Points: %s, Error: %s',
+                    'Rewards: Failed to insert exchange request. User ID: %d, Points: %s, Error: %s',
                     $user_id,
                     $points_value,
                     $error_msg
@@ -13437,7 +13437,7 @@ class TWork_Rewards_System
         if (false === $txn_inserted) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Failed to create legacy transaction for exchange. User ID: %d, Request ID: %d, Error: %s',
+                    'Rewards: Failed to create legacy transaction for exchange. User ID: %d, Request ID: %d, Error: %s',
                     $user_id,
                     $request_id,
                     $wpdb->last_error
@@ -13471,7 +13471,7 @@ class TWork_Rewards_System
         // Professional logging.
         error_log(
             sprintf(
-                'T-Work Rewards: Exchange request created successfully. User ID: %d, Request ID: %d, Points: %s, Old Balance: %d, New Balance: %d',
+                'Rewards: Exchange request created successfully. User ID: %d, Request ID: %d, Points: %s, Old Balance: %d, New Balance: %d',
                 $user_id,
                 $request_id,
                 $points_value,
@@ -15608,7 +15608,7 @@ class TWork_Rewards_System
         // - number of rows affected on success
         if ($update_result === false) {
             $error_message = $wpdb->last_error ? $wpdb->last_error : __('Unknown database error', 'twork-rewards');
-            error_log('T-Work Rewards Update Error: ' . $error_message);
+            error_log('Rewards Update Error: ' . $error_message);
             error_log('Update Data: ' . print_r($update_data, true));
             error_log('Format: ' . print_r($format, true));
             error_log('Table: ' . $table);
@@ -15624,7 +15624,7 @@ class TWork_Rewards_System
 
         // Log if no rows were affected (data might be identical)
         if ($update_result === 0) {
-            error_log('T-Work Rewards: Update returned 0 rows affected for transaction ID: ' . $transaction_id . ' (data may be unchanged)');
+            error_log('Rewards: Update returned 0 rows affected for transaction ID: ' . $transaction_id . ' (data may be unchanged)');
         }
 
         // PROFESSIONAL FIX: Only after APPROVED, sync points using unified system.
@@ -15661,7 +15661,7 @@ class TWork_Rewards_System
 
                 error_log(
                     sprintf(
-                        'T-Work Rewards: Transaction approved and points synced. Transaction ID: %d, User ID: %d, Type: %s, Points: %s',
+                        'Rewards: Transaction approved and points synced. Transaction ID: %d, User ID: %d, Type: %s, Points: %s',
                         $transaction_id,
                         $user_id,
                         $transaction_type,
@@ -16427,7 +16427,7 @@ class TWork_Rewards_System
         if (!$this->is_fcm_plugin_available()) {
             // Fallback to webhook if FCM plugin not available
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: FCM plugin not available for engagement notification, using webhook fallback');
+                error_log('Rewards: FCM plugin not available for engagement notification, using webhook fallback');
             }
             return $this->send_engagement_fcm_notification_via_webhook($user_id, $type, $data);
         }
@@ -16448,7 +16448,7 @@ class TWork_Rewards_System
             // Enhanced logging for missing tokens
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: No FCM tokens found for user %d (engagement notification type: %s). User may need to open the mobile app to register device.',
+                    'Rewards: No FCM tokens found for user %d (engagement notification type: %s). User may need to open the mobile app to register device.',
                     $user_id,
                     $type
                 ));
@@ -16490,13 +16490,13 @@ class TWork_Rewards_System
                     $error_count++;
                     $errors[] = 'Exception: ' . $e->getMessage();
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Engagement FCM notification exception: ' . $e->getMessage());
+                        error_log('Rewards: Engagement FCM notification exception: ' . $e->getMessage());
                     }
                 } catch (Error $e) {
                     $error_count++;
                     $errors[] = 'Error: ' . $e->getMessage();
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: Engagement FCM notification error: ' . $e->getMessage());
+                        error_log('Rewards: Engagement FCM notification error: ' . $e->getMessage());
                     }
                 }
             }
@@ -16509,7 +16509,7 @@ class TWork_Rewards_System
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if ($success_count > 0) {
                 error_log(sprintf(
-                    'T-Work Rewards: Engagement FCM notification sent. Type: %s, User: %d, Success: %d, Errors: %d',
+                    'Rewards: Engagement FCM notification sent. Type: %s, User: %d, Success: %d, Errors: %d',
                     $type,
                     $user_id,
                     $success_count,
@@ -16517,7 +16517,7 @@ class TWork_Rewards_System
                 ));
             }
             if ($error_count > 0 && !empty($errors)) {
-                error_log('T-Work Rewards: Engagement FCM notification errors: ' . implode(', ', array_slice($errors, 0, 3)));
+                error_log('Rewards: Engagement FCM notification errors: ' . implode(', ', array_slice($errors, 0, 3)));
             }
         }
 
@@ -16525,7 +16525,7 @@ class TWork_Rewards_System
         if (empty($tokens)) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: No FCM tokens found for user %d (engagement notification type: %s)',
+                    'Rewards: No FCM tokens found for user %d (engagement notification type: %s)',
                     $user_id,
                     $type
                 ));
@@ -16578,7 +16578,7 @@ class TWork_Rewards_System
             'httpversion' => '1.1',
             'headers' => array(
                 'Content-Type' => 'application/json',
-                'User-Agent' => 'T-Work-Rewards-Plugin/1.0',
+                'User-Agent' => 'Rewards-Plugin/1.0',
             ),
             'body' => wp_json_encode($payload),
             'blocking' => false,
@@ -16595,7 +16595,7 @@ class TWork_Rewards_System
 
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Engagement webhook notification error. Type: %s, User: %d, Error: %s (Code: %s), URL: %s',
+                    'Rewards: Engagement webhook notification error. Type: %s, User: %d, Error: %s (Code: %s), URL: %s',
                     $type,
                     $user_id,
                     $error_message,
@@ -16611,7 +16611,7 @@ class TWork_Rewards_System
         if ($response_code && ($response_code < 200 || $response_code >= 300)) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Engagement webhook notification returned error code. Type: %s, User: %d, HTTP Code: %d, URL: %s',
+                    'Rewards: Engagement webhook notification returned error code. Type: %s, User: %d, HTTP Code: %d, URL: %s',
                     $type,
                     $user_id,
                     $response_code,
@@ -16624,7 +16624,7 @@ class TWork_Rewards_System
         // Log success for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Engagement webhook notification sent successfully. Type: %s, User: %d, URL: %s',
+                'Rewards: Engagement webhook notification sent successfully. Type: %s, User: %d, URL: %s',
                 $type,
                 $user_id,
                 $webhook_url
@@ -16667,7 +16667,7 @@ class TWork_Rewards_System
 
         if (empty($users_with_tokens)) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: No users with FCM tokens found for new engagement item notification');
+                error_log('Rewards: No users with FCM tokens found for new engagement item notification');
             }
             return;
         }
@@ -16703,7 +16703,7 @@ class TWork_Rewards_System
         // Log for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: New engagement item notification sent. Item ID: %d, Type: %s, Notified: %d users',
+                'Rewards: New engagement item notification sent. Item ID: %d, Type: %s, Notified: %d users',
                 $item_id,
                 $item_type,
                 $notified_count
@@ -16742,7 +16742,7 @@ class TWork_Rewards_System
 
         if (empty($users_with_tokens)) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: No users with FCM tokens found for updated engagement item notification');
+                error_log('Rewards: No users with FCM tokens found for updated engagement item notification');
             }
             return;
         }
@@ -16778,7 +16778,7 @@ class TWork_Rewards_System
         // Log for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Updated engagement item notification sent. Item ID: %d, Type: %s, Notified: %d users',
+                'Rewards: Updated engagement item notification sent. Item ID: %d, Type: %s, Notified: %d users',
                 $item_id,
                 $item_type,
                 $notified_count
@@ -16815,7 +16815,7 @@ class TWork_Rewards_System
         if (!$this->is_fcm_plugin_available()) {
             // Fallback to webhook if FCM plugin not available
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: FCM plugin not available, using webhook fallback');
+                error_log('Rewards: FCM plugin not available, using webhook fallback');
             }
             return $this->send_points_fcm_notification_via_webhook($user_id, $type, $data);
         }
@@ -16848,7 +16848,7 @@ class TWork_Rewards_System
             // Enhanced logging for missing tokens
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: No FCM tokens found for user %d (notification type: %s). User may need to open the mobile app to register device.',
+                    'Rewards: No FCM tokens found for user %d (notification type: %s). User may need to open the mobile app to register device.',
                     $user_id,
                     $type
                 ));
@@ -16890,13 +16890,13 @@ class TWork_Rewards_System
                     $error_count++;
                     $errors[] = 'Exception: ' . $e->getMessage();
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: FCM notification exception: ' . $e->getMessage());
+                        error_log('Rewards: FCM notification exception: ' . $e->getMessage());
                     }
                 } catch (Error $e) {
                     $error_count++;
                     $errors[] = 'Error: ' . $e->getMessage();
                     if (defined('WP_DEBUG') && WP_DEBUG) {
-                        error_log('T-Work Rewards: FCM notification error: ' . $e->getMessage());
+                        error_log('Rewards: FCM notification error: ' . $e->getMessage());
                     }
                 }
             }
@@ -16909,7 +16909,7 @@ class TWork_Rewards_System
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if ($success_count > 0) {
                 error_log(sprintf(
-                    'T-Work Rewards: FCM notification sent via FCM plugin. Type: %s, User: %d, Success: %d, Errors: %d',
+                    'Rewards: FCM notification sent via FCM plugin. Type: %s, User: %d, Success: %d, Errors: %d',
                     $type,
                     $user_id,
                     $success_count,
@@ -16917,7 +16917,7 @@ class TWork_Rewards_System
                 ));
             }
             if ($error_count > 0 && !empty($errors)) {
-                error_log('T-Work Rewards: FCM notification errors: ' . implode(', ', array_slice($errors, 0, 3)));
+                error_log('Rewards: FCM notification errors: ' . implode(', ', array_slice($errors, 0, 3)));
             }
         }
 
@@ -16925,7 +16925,7 @@ class TWork_Rewards_System
         if (empty($tokens)) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: No FCM tokens found for user %d (notification type: %s)',
+                    'Rewards: No FCM tokens found for user %d (notification type: %s)',
                     $user_id,
                     $type
                 ));
@@ -16999,7 +16999,7 @@ class TWork_Rewards_System
             'httpversion' => '1.1',
             'headers' => array(
                 'Content-Type' => 'application/json',
-                'User-Agent' => 'T-Work-Rewards-Plugin/1.0',
+                'User-Agent' => 'Rewards-Plugin/1.0',
             ),
             'body' => wp_json_encode($payload),
             'blocking' => false,
@@ -17016,7 +17016,7 @@ class TWork_Rewards_System
 
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Webhook notification error. Type: %s, User: %d, Error: %s (Code: %s), URL: %s',
+                    'Rewards: Webhook notification error. Type: %s, User: %d, Error: %s (Code: %s), URL: %s',
                     $type,
                     $user_id,
                     $error_message,
@@ -17032,7 +17032,7 @@ class TWork_Rewards_System
         if ($response_code && ($response_code < 200 || $response_code >= 300)) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
                 error_log(sprintf(
-                    'T-Work Rewards: Webhook notification returned error code. Type: %s, User: %d, HTTP Code: %d, URL: %s',
+                    'Rewards: Webhook notification returned error code. Type: %s, User: %d, HTTP Code: %d, URL: %s',
                     $type,
                     $user_id,
                     $response_code,
@@ -17045,7 +17045,7 @@ class TWork_Rewards_System
         // Log success for debugging
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(sprintf(
-                'T-Work Rewards: Webhook notification sent successfully. Type: %s, User: %d, URL: %s',
+                'Rewards: Webhook notification sent successfully. Type: %s, User: %d, URL: %s',
                 $type,
                 $user_id,
                 $webhook_url
@@ -17766,7 +17766,7 @@ class TWork_Rewards_System
                     $webhook_host === '127.0.0.1' ||
                     strpos($webhook_host, '.local') !== false) {
                 // Log for debugging but don't make the request
-                error_log('T-Work Rewards: Blocked self-referencing webhook URL: ' . $webhook_url);
+                error_log('Rewards: Blocked self-referencing webhook URL: ' . $webhook_url);
                 return false;
             }
         }
@@ -17805,7 +17805,7 @@ class TWork_Rewards_System
             'httpversion' => '1.1',
             'headers' => array(
                 'Content-Type' => 'application/json',
-                'User-Agent' => 'T-Work-Rewards-Plugin/1.0',
+                'User-Agent' => 'Rewards-Plugin/1.0',
             ),
             'body' => wp_json_encode($payload),
             'blocking' => false,  // Non-blocking to not slow admin UI
@@ -17817,7 +17817,7 @@ class TWork_Rewards_System
 
         // Log errors for debugging (but don't fail silently)
         if (is_wp_error($response)) {
-            error_log('T-Work Rewards Webhook Error: ' . $response->get_error_message());
+            error_log('Rewards Webhook Error: ' . $response->get_error_message());
             return false;
         }
 
@@ -17969,8 +17969,8 @@ class TWork_Rewards_System
 
             // Professional: Log errors if query fails (only in debug mode)
             if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: User meta query error: ' . $wpdb->last_error);
-                error_log('T-Work Rewards: Query: ' . $meta_query);
+                error_log('Rewards: User meta query error: ' . $wpdb->last_error);
+                error_log('Rewards: Query: ' . $meta_query);
             }
 
             // Organize meta by user_id
@@ -17986,8 +17986,8 @@ class TWork_Rewards_System
             // Professional: Fallback - if cache is empty, try individual queries for debugging
             // This should rarely happen, but helps identify issues
             if (empty($user_meta_cache) && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: User meta cache is empty. User IDs: ' . implode(', ', $user_ids));
-                error_log('T-Work Rewards: Meta keys requested: ' . implode(', ', $meta_keys));
+                error_log('Rewards: User meta cache is empty. User IDs: ' . implode(', ', $user_ids));
+                error_log('Rewards: Meta keys requested: ' . implode(', ', $meta_keys));
             }
 
             // Get activity status for all users (using enhanced method)
@@ -19566,7 +19566,7 @@ class TWork_Rewards_System
         if (defined('WP_DEBUG') && WP_DEBUG) {
             error_log(
                 sprintf(
-                    'T-Work Rewards: Point cache refreshed. User ID: %d, Balance: %d (was: %d)',
+                    'Rewards: Point cache refreshed. User ID: %d, Balance: %d (was: %d)',
                     $user_id,
                     $calculated_balance,
                     $previous_balance
@@ -22244,7 +22244,7 @@ class TWork_Rewards_System
                 }
             } catch (Exception $e) {
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Failed to send engagement settings FCM: ' . $e->getMessage());
+                    error_log('Rewards: Failed to send engagement settings FCM: ' . $e->getMessage());
                 }
             }
         }
@@ -22301,8 +22301,8 @@ class TWork_Rewards_System
         } catch (Exception $e) {
             // PROFESSIONAL FIX: Display user-friendly error instead of critical error
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Page Content page error: ' . $e->getMessage());
-                error_log('T-Work Rewards: Page Content page stack trace: ' . $e->getTraceAsString());
+                error_log('Rewards: Page Content page error: ' . $e->getMessage());
+                error_log('Rewards: Page Content page stack trace: ' . $e->getTraceAsString());
             }
 
             echo '<div class="wrap">';
@@ -22345,8 +22345,8 @@ class TWork_Rewards_System
         // Check for database errors
         if ($wpdb->last_error) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Page content query error: ' . $wpdb->last_error);
-                error_log('T-Work Rewards: Page content query: ' . $wpdb->last_query);
+                error_log('Rewards: Page content query error: ' . $wpdb->last_error);
+                error_log('Rewards: Page content query: ' . $wpdb->last_query);
             }
             // Set empty array on error
             $pages = array();
@@ -22441,7 +22441,7 @@ class TWork_Rewards_System
         if ($id > 0) {
             $page = $wpdb->get_row($wpdb->prepare("SELECT * FROM `$table_name` WHERE id = %d", $id), ARRAY_A);
             if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Page content get_row error: ' . $wpdb->last_error);
+                error_log('Rewards: Page content get_row error: ' . $wpdb->last_error);
             }
         }
 
@@ -22567,8 +22567,8 @@ class TWork_Rewards_System
             $result = $wpdb->update($table_name, $data, array('id' => $id));
             if ($result === false) {
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Page content update error: ' . $wpdb->last_error);
-                    error_log('T-Work Rewards: Page content update query: ' . $wpdb->last_query);
+                    error_log('Rewards: Page content update error: ' . $wpdb->last_error);
+                    error_log('Rewards: Page content update query: ' . $wpdb->last_query);
                 }
                 wp_die(__('Error updating page content. Database error: ', 'twork-rewards') . $wpdb->last_error);
             }
@@ -22587,8 +22587,8 @@ class TWork_Rewards_System
             $result = $wpdb->insert($table_name, $data);
             if ($result === false) {
                 if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log('T-Work Rewards: Page content insert error: ' . $wpdb->last_error);
-                    error_log('T-Work Rewards: Page content insert query: ' . $wpdb->last_query);
+                    error_log('Rewards: Page content insert error: ' . $wpdb->last_error);
+                    error_log('Rewards: Page content insert query: ' . $wpdb->last_query);
                 }
                 wp_die(__('Error creating page content. Database error: ', 'twork-rewards') . $wpdb->last_error);
             }
@@ -22646,8 +22646,8 @@ class TWork_Rewards_System
         } catch (Exception $e) {
             // PROFESSIONAL FIX: Display user-friendly error instead of critical error
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: FAQ page error: ' . $e->getMessage());
-                error_log('T-Work Rewards: FAQ page stack trace: ' . $e->getTraceAsString());
+                error_log('Rewards: FAQ page error: ' . $e->getMessage());
+                error_log('Rewards: FAQ page stack trace: ' . $e->getTraceAsString());
             }
 
             echo '<div class="wrap">';
@@ -22693,8 +22693,8 @@ class TWork_Rewards_System
         // Check for database errors
         if ($wpdb->last_error) {
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: FAQ query error: ' . $wpdb->last_error);
-                error_log('T-Work Rewards: FAQ query: ' . $wpdb->last_query);
+                error_log('Rewards: FAQ query error: ' . $wpdb->last_error);
+                error_log('Rewards: FAQ query: ' . $wpdb->last_query);
             }
             // Set empty array on error
             $faq_items = array();
@@ -22785,7 +22785,7 @@ class TWork_Rewards_System
         if ($id > 0) {
             $item = $wpdb->get_row($wpdb->prepare("SELECT * FROM `$table_name` WHERE id = %d", $id), ARRAY_A);
             if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: FAQ get_row error: ' . $wpdb->last_error);
+                error_log('Rewards: FAQ get_row error: ' . $wpdb->last_error);
             }
         }
 
@@ -22948,7 +22948,7 @@ class TWork_Rewards_System
         if ($id > 0) {
             $result = $wpdb->delete($table_name, array('id' => $id), array('%d'));
             if ($result === false && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: Failed to delete FAQ item. Error: ' . $wpdb->last_error);
+                error_log('Rewards: Failed to delete FAQ item. Error: ' . $wpdb->last_error);
             }
         }
 
@@ -22996,7 +22996,7 @@ class TWork_Rewards_System
 
             // Check for database errors
             if ($wpdb->last_error && defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: About Us query error: ' . $wpdb->last_error);
+                error_log('Rewards: About Us query error: ' . $wpdb->last_error);
             }
 
             // Set default values if no content exists
@@ -23198,8 +23198,8 @@ class TWork_Rewards_System
         } catch (Exception $e) {
             // PROFESSIONAL FIX: Display user-friendly error instead of critical error
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                error_log('T-Work Rewards: About Us page error: ' . $e->getMessage());
-                error_log('T-Work Rewards: About Us page stack trace: ' . $e->getTraceAsString());
+                error_log('Rewards: About Us page error: ' . $e->getMessage());
+                error_log('Rewards: About Us page stack trace: ' . $e->getTraceAsString());
             }
 
             echo '<div class="wrap">';
@@ -24272,7 +24272,7 @@ class TWork_Rewards_System
                 }
 
                 error_log(sprintf(
-                    'T-Work Rewards: Exchange request approved. User %d deducted %d points. New balance: %d',
+                    'Rewards: Exchange request approved. User %d deducted %d points. New balance: %d',
                     $user_id,
                     $points_to_deduct,
                     $this->calculate_points_balance_from_transactions($user_id)
@@ -25161,8 +25161,8 @@ class TWork_Rewards_System
 
         if ($updated === false) {
             $error_msg = $wpdb->last_error ? $wpdb->last_error : __('Unknown database error occurred.', 'twork-rewards');
-            error_log('T-Work Rewards: Failed to update exchange request. Error: ' . $error_msg);
-            error_log('T-Work Rewards: Update data - ' . print_r($update_data, true));
+            error_log('Rewards: Failed to update exchange request. Error: ' . $error_msg);
+            error_log('Rewards: Update data - ' . print_r($update_data, true));
             wp_die(sprintf(__('Failed to update exchange request. Error: %s. Please check the error logs for more details.', 'twork-rewards'), esc_html($error_msg)));
         }
 
@@ -25192,7 +25192,7 @@ class TWork_Rewards_System
                 $new_total = (float) $existing_points - $difference;
                 if ($new_total < 0) {
                     error_log(sprintf(
-                        'T-Work Rewards: Warning - Points adjustment would result in negative balance. User ID: %d, Existing: %s, Difference: %s, Setting to 0',
+                        'Rewards: Warning - Points adjustment would result in negative balance. User ID: %d, Existing: %s, Difference: %s, Setting to 0',
                         $user_id,
                         $existing_points,
                         $difference
@@ -25218,7 +25218,7 @@ class TWork_Rewards_System
                 update_user_meta($user_id, 'points_balance', $new_balance);
 
                 error_log(sprintf(
-                    'T-Work Rewards: Updated point balance after exchange request point value change. User ID: %d, Old Value: %s, New Value: %s, Difference: %s, Old Balance: %s, New Balance: %s, New points_balance: %d',
+                    'Rewards: Updated point balance after exchange request point value change. User ID: %d, Old Value: %s, New Value: %s, Difference: %s, Old Balance: %s, New Balance: %s, New points_balance: %d',
                     $user_id,
                     $old_points_value,
                     $points_value,
@@ -25320,7 +25320,7 @@ class TWork_Rewards_System
                         update_user_meta($user_id, 'my_point', $stored);
 
                         error_log(sprintf(
-                            'T-Work Rewards: Exchange request approved amount reduced. User %d, Old Approved: %s, New Approved: %s, Refunded: %s, New balance: %s',
+                            'Rewards: Exchange request approved amount reduced. User %d, Old Approved: %s, New Approved: %s, Refunded: %s, New balance: %s',
                             $user_id,
                             $old_approved,
                             $new_approved,
@@ -25361,7 +25361,7 @@ class TWork_Rewards_System
                         update_user_meta($user_id, 'points_balance', $new_balance);
 
                         error_log(sprintf(
-                            'T-Work Rewards: Exchange request approved amount increased. User %d, Old Approved: %s, New Approved: %s, Additional Deducted: %s, New balance: %s',
+                            'Rewards: Exchange request approved amount increased. User %d, Old Approved: %s, New Approved: %s, Additional Deducted: %s, New balance: %s',
                             $user_id,
                             $old_approved,
                             $new_approved,
@@ -25387,7 +25387,7 @@ class TWork_Rewards_System
                     // Validate new values before processing
                     if ($type === 'points' && !empty($points_value) && !is_numeric($points_value)) {
                         error_log(sprintf(
-                            'T-Work Rewards: Invalid points value for exchange edit. Request ID: %d, Value: %s',
+                            'Rewards: Invalid points value for exchange edit. Request ID: %d, Value: %s',
                             $request_id,
                             $points_value
                         ));
@@ -25426,7 +25426,7 @@ class TWork_Rewards_System
                         $new_balance = $current_balance + (int) $old_points_value;
                         update_user_meta($user_id, 'points_balance', $new_balance);
                         error_log(sprintf(
-                            'T-Work Rewards: Reverted old points deduction for exchange edit. User ID: %d, Added back: %s, New Total: %s',
+                            'Rewards: Reverted old points deduction for exchange edit. User ID: %d, Added back: %s, New Total: %s',
                             $user_id,
                             $old_points_value,
                             $stored
@@ -25445,7 +25445,7 @@ class TWork_Rewards_System
                         $new_total = (float) $existing_points - (float) $points_value;
                         if ($new_total < 0) {
                             error_log(sprintf(
-                                'T-Work Rewards: Warning - Points deduction would result in negative balance. User ID: %d, Existing: %s, Deducted: %s, Setting to 0',
+                                'Rewards: Warning - Points deduction would result in negative balance. User ID: %d, Existing: %s, Deducted: %s, Setting to 0',
                                 $user_id,
                                 $existing_points,
                                 $points_value
@@ -25459,7 +25459,7 @@ class TWork_Rewards_System
                         update_user_meta($user_id, 'my_points_updated_at', time());
                         update_user_meta($user_id, 'my_point', $stored);
                         error_log(sprintf(
-                            'T-Work Rewards: Applied new points deduction for exchange edit. User ID: %d, Deducted: %s, New Total: %s',
+                            'Rewards: Applied new points deduction for exchange edit. User ID: %d, Deducted: %s, New Total: %s',
                             $user_id,
                             $points_value,
                             $stored
@@ -25526,7 +25526,7 @@ class TWork_Rewards_System
                     $this->deduct_exchange_points_on_approve($user_id, $request_id, $approved_amount, $phone);
                 } else {
                     error_log(sprintf(
-                        'T-Work Rewards: Exchange approve via edit failed — insufficient balance. User %d, Request %d, Balance: %d, Needed: %d',
+                        'Rewards: Exchange approve via edit failed — insufficient balance. User %d, Request %d, Balance: %d, Needed: %d',
                         $user_id,
                         $request_id,
                         $balance,
@@ -26790,7 +26790,7 @@ class TWork_Rewards_System
         fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
 
         // Summary Section
-        fputcsv($output, array('T-Work Analytics Export'));
+        fputcsv($output, array('Analytics Export'));
         // Professional: Display generated timestamp in Myanmar timezone
         $generated_timestamp = time();
         $generated_time = $this->format_myanmar_time($generated_timestamp, 'Y-m-d H:i:s');
