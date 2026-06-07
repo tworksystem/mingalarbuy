@@ -90,8 +90,8 @@ flowchart LR
 ### 📂 Plugin Structure
 
 ```
-twork-fcm-notify/
-├── twork-fcm-notify.php      # Main plugin bootstrap & logic
+fcm-notify/
+├── fcm-notify.php      # Main plugin bootstrap & logic
 ├── serviceAccountKey.json.example
 ├── .gitignore
 ├── LICENSE
@@ -120,7 +120,7 @@ twork-fcm-notify/
 ```bash
 cd wp-content/plugins
 git clone https://github.com/tworksystem/twork-fcm-notify.git
-cd twork-fcm-notify
+cd fcm-notify
 ```
 
 ### 2️⃣ Configure Firebase Credentials
@@ -139,7 +139,7 @@ chmod 600 serviceAccountKey.json
 
 ### 3️⃣ Set Firebase Project ID
 
-Edit `twork-fcm-notify.php`:
+Edit `fcm-notify.php`:
 
 ```php
 define('TWORK_FCM_PROJECT_ID', 'your-firebase-project-id');
