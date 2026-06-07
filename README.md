@@ -268,8 +268,8 @@ See [docs/POLL_AUTO_RUN_INTEGRATION.md](docs/POLL_AUTO_RUN_INTEGRATION.md) for i
 - **WordPress REST API** - Content management
 - **Custom WordPress Plugins**:
   - `twork-points-system` - Points and loyalty management
-  - `twork-rewards-system` - Rewards and engagement hub
-  - `twork-fcm-notify` - Firebase Cloud Messaging integration
+  - `rewards-system` - Rewards and engagement hub
+  - `fcm-notify` - Firebase Cloud Messaging integration
 
 ### Services & APIs
 - **Firebase Core** - Backend services foundation
@@ -370,11 +370,11 @@ See [docs/POLL_AUTO_RUN_INTEGRATION.md](docs/POLL_AUTO_RUN_INTEGRATION.md) for i
 │  │  ├─ Points balance & transactions                         │
 │  │  ├─ Points earning & redemption                          │
 │  │  └─ Transaction history                                   │
-│  ├─ twork-rewards-system/                                    │
+│  ├─ rewards-system/                                          │
 │  │  ├─ Engagement hub management                            │
 │  │  ├─ Rewards & exchange                                   │
 │  │  └─ Content management                                   │
-│  └─ twork-fcm-notify/                                        │
+│  └─ fcm-notify/                                              │
 │     └─ Firebase Cloud Messaging integration                 │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -527,13 +527,13 @@ static const String backendRegisterTokenEndpoint =
    - The plugin will automatically create required database tables
    - Verify API endpoints are accessible at `/wp-json/twork/v1/`
 
-2. **Install T-Work Rewards System Plugin**
-   - Copy `wp-content/plugins/twork-rewards-system/` to your WordPress installation
+2. **Install Rewards System Plugin**
+   - Copy `wp-content/plugins/rewards-system/` to your WordPress installation
    - Activate the plugin through WordPress admin panel
    - Access Engagement Hub at **T-Work Rewards** → **Engagement Hub**
 
-3. **Install T-Work FCM Notify Plugin**
-   - Copy `wp-content/plugins/twork-fcm-notify/` to your WordPress installation
+3. **Install FCM Notify Plugin**
+   - Copy `wp-content/plugins/fcm-notify/` to your WordPress installation
    - Activate the plugin through WordPress admin panel
    - Configure Firebase service account key
 
@@ -683,8 +683,8 @@ mingalarbuy/
 ├── wp-content/                      # WordPress plugins
 │   └── plugins/
 │       ├── twork-points-system/    # Points system plugin
-│       ├── twork-rewards-system/   # Rewards & engagement plugin
-│       ├── twork-fcm-notify/       # FCM notification plugin
+│       ├── rewards-system/         # Rewards & engagement plugin
+│       ├── fcm-notify/             # FCM notification plugin
 │
 ├── backend/                         # Backend services (optional)
 │   └── webhook_server.js           # Webhook server for notifications
@@ -1349,13 +1349,21 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Status**: ✅ Production Ready
 
-**Last Updated**: 30 May 2026
+**Last Updated**: 07 June 2026
 
 **Author**: Maw Kunn Myat
 
 **Maintained by**: T-Work System
 
 **Contributors**: Mapoee Phyu (mapoeeiphyu2017.miitinternship@gmail.com)
+
+### Recent Updates (07 June 2026 — Plugin Directory Migration)
+
+#### 📦 WordPress Plugin Layout
+- ✅ **`fcm-notify/`** — FCM plugin relocated from `twork-fcm-notify/` with updated README and CONTRIBUTING guide
+- ✅ **`rewards-system/`** — Rewards plugin relocated from `twork-rewards-system/` (PHP bootstrap filename unchanged for WP compatibility)
+- ✅ **Branding cleanup** — Plugin headers and log prefixes normalized; no functional REST route changes
+- ✅ **Security** — `serviceAccountKey.json` remains gitignored; nested plugin `.git` repos removed from monorepo tree
 
 ### Recent Updates (30 May 2026 — Poll Actual Result)
 

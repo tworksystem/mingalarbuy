@@ -875,7 +875,7 @@ class EngagementProvider with ChangeNotifier {
       final status = sched is Map ? sched['voting_status'] : null;
       PollOptionTotalsDebug.fail(
         '$source item=$itemId — server updates row has no poll_option_totals '
-        '(voting_status=$status). Deploy twork-rewards-system plugin or open voting window.',
+        '(voting_status=$status). Deploy rewards-system plugin or open voting window.',
       );
       return false;
     }
