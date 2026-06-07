@@ -1,4 +1,4 @@
-# 📱 T-Work FCM Notify
+# 📱 FCM Notify
 
 [![WordPress](https://img.shields.io/badge/WordPress-5.0%2B-blue?logo=wordpress&logoColor=white)](https://wordpress.org/)
 [![WooCommerce](https://img.shields.io/badge/WooCommerce-3.0%2B-purple?logo=woocommerce&logoColor=white)](https://woocommerce.com/)
@@ -33,14 +33,14 @@
 
 ## 🌟 Overview
 
-**T-Work FCM Notify** bridges your WordPress/WooCommerce backend and mobile clients through Firebase Cloud Messaging. It provides:
+**FCM Notify** bridges your WordPress/WooCommerce backend and mobile clients through Firebase Cloud Messaging. It provides:
 
 - 🔐 Secure device token registration via WordPress REST API
 - 📦 Automatic push notifications on WooCommerce order status transitions
 - 🤖 Cross-platform delivery (Android & iOS) using FCM HTTP v1
 - 🧩 Stable `data` payload keys for mobile app routing and deep linking
 
-Ideal for **T-Work Commerce**, **MingalarBuy**, and similar WooCommerce-powered mobile storefronts.
+Ideal for **MingalarBuy**, and similar WooCommerce-powered mobile storefronts.
 
 ---
 
@@ -148,7 +148,7 @@ define('TWORK_FCM_PROJECT_ID', 'your-firebase-project-id');
 ### 4️⃣ Activate in WordPress
 
 1. Go to **WordPress Admin → Plugins**
-2. Find **T-Work FCM Notify**
+2. Find **FCM Notify**
 3. Click **Activate** ✅
 
 ---
@@ -358,7 +358,7 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
 ```
 
-Logs: `wp-content/debug.log` — search for `[T-Work FCM]`.
+Logs: `wp-content/debug.log` — search for `[FCM]`.
 
 ### Common Issues
 
@@ -448,7 +448,7 @@ docs: 24052026 - expand mobile integration guide in README
 
 MIT License — see [LICENSE](LICENSE).
 
-Copyright (c) 2025–2026 [T-Work System](https://github.com/tworksystem) & contributors.
+Copyright (c) 2025–2026 System & contributors.
 
 ---
 

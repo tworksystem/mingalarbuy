@@ -1,11 +1,9 @@
 <?php
 /**
- * Plugin Name: T-Work FCM Notify
- * Plugin URI: https://github.com/tworksystem/twork-fcm-notify
+ * Plugin Name: FCM Notify
  * Description: Store FCM tokens and send push notifications on WooCommerce order status changes using Firebase Cloud Messaging v1 API.
  * Version: 1.0.0
- * Author: T-Work System
- * Author URI: https://github.com/tworksystem
+ * Author: System
  * License: MIT
  * Text Domain: twork-fcm-notify
  * Domain Path: /languages
@@ -184,34 +182,34 @@ function twork_status_message($status) {
 function twork_get_access_token_from_sa() {
     // Security: Check file exists and has proper permissions
     if (!file_exists(TWORK_FCM_SERVICE_ACCOUNT_JSON)) {
-        error_log('[T-Work FCM] Error: serviceAccountKey.json not found at ' . TWORK_FCM_SERVICE_ACCOUNT_JSON);
-        error_log('[T-Work FCM] Hint: Copy serviceAccountKey.json.example to serviceAccountKey.json and add your Firebase credentials');
+        error_log('[FCM] Error: serviceAccountKey.json not found at ' . TWORK_FCM_SERVICE_ACCOUNT_JSON);
+        error_log('[FCM] Hint: Copy serviceAccountKey.json.example to serviceAccountKey.json and add your Firebase credentials');
         return null;
     }
 
     // Security: Check file permissions (should not be world-readable)
     $file_perms = fileperms(TWORK_FCM_SERVICE_ACCOUNT_JSON);
     if ($file_perms && ($file_perms & 0044)) {
-        error_log('[T-Work FCM] Warning: serviceAccountKey.json has world-readable permissions. Consider: chmod 600 ' . TWORK_FCM_SERVICE_ACCOUNT_JSON);
+        error_log('[FCM] Warning: serviceAccountKey.json has world-readable permissions. Consider: chmod 600 ' . TWORK_FCM_SERVICE_ACCOUNT_JSON);
     }
 
     // Security: Read file safely
     $json_content = @file_get_contents(TWORK_FCM_SERVICE_ACCOUNT_JSON);
     if ($json_content === false) {
-        error_log('[T-Work FCM] Error: Cannot read serviceAccountKey.json. Check file permissions.');
+        error_log('[FCM] Error: Cannot read serviceAccountKey.json. Check file permissions.');
         return null;
     }
 
     $sa = json_decode($json_content, true);
     if (!is_array($sa) || empty($sa['client_email']) || empty($sa['private_key'])) {
-        error_log('[T-Work FCM] Error: Invalid service account JSON. Missing required fields (client_email, private_key)');
-        error_log('[T-Work FCM] Hint: Ensure serviceAccountKey.json contains valid Firebase service account credentials');
+        error_log('[FCM] Error: Invalid service account JSON. Missing required fields (client_email, private_key)');
+        error_log('[FCM] Hint: Ensure serviceAccountKey.json contains valid Firebase service account credentials');
         return null;
     }
 
     // Security: Validate email format
     if (!filter_var($sa['client_email'], FILTER_VALIDATE_EMAIL)) {
-        error_log('[T-Work FCM] Error: Invalid client_email format in serviceAccountKey.json');
+        error_log('[FCM] Error: Invalid client_email format in serviceAccountKey.json');
         return null;
     }
 
@@ -266,20 +264,20 @@ function twork_send_fcm($token, $title, $body, $data = []) {
 
     // Validate configuration
     if (!defined('TWORK_FCM_PROJECT_ID') || TWORK_FCM_PROJECT_ID === 'YOUR_FIREBASE_PROJECT_ID') {
-        error_log('[T-Work FCM] Error: TWORK_FCM_PROJECT_ID not set');
+        error_log('[FCM] Error: TWORK_FCM_PROJECT_ID not set');
         return false;
     }
 
     // Validate token
     if (empty($token) || !is_string($token)) {
-        error_log('[T-Work FCM] Error: Invalid token provided');
+        error_log('[FCM] Error: Invalid token provided');
         return false;
     }
 
     // Get access token
     $accessToken = twork_get_access_token_from_sa();
     if (!$accessToken) {
-        error_log('[T-Work FCM] Error: Failed to obtain access token');
+        error_log('[FCM] Error: Failed to obtain access token');
         return false;
     }
 
@@ -362,7 +360,7 @@ function twork_send_fcm($token, $title, $body, $data = []) {
 
     // Handle response
     if (is_wp_error($resp)) {
-        error_log('[T-Work FCM] Error: ' . $resp->get_error_message());
+        error_log('[FCM] Error: ' . $resp->get_error_message());
         return false;
     }
 
@@ -370,7 +368,7 @@ function twork_send_fcm($token, $title, $body, $data = []) {
     $response_body = wp_remote_retrieve_body($resp);
 
     if ($response_code !== 200) {
-        error_log('[T-Work FCM] Error: HTTP ' . $response_code . ' - ' . $response_body);
+        error_log('[FCM] Error: HTTP ' . $response_code . ' - ' . $response_body);
         return false;
     }
 
