@@ -67,7 +67,7 @@ flowchart TB
     end
 
     subgraph Plugin["Rewards System"]
-        CORE[Core Plugin<br/>twork-rewards-system.php]
+        CORE[Core Plugin<br/>rewards-system.php]
         POLL[Poll Auto-Run<br/>class-poll-auto-run.php]
         PNP[PNP Helpers<br/>class-poll-pnp.php]
         REST[REST API<br/>namespace: twork/v1]
@@ -132,7 +132,7 @@ Browse all official plugins at **[github.com/tworksystem](https://github.com/two
 ### 📥 Manual Installation
 
 1. Download or clone this repository into `wp-content/plugins/`.
-2. Ensure the folder is named `twork-rewards-system`.
+2. Ensure the folder is named `rewards-system`.
 3. Activate **Rewards System** from **Plugins** in wp-admin.
 4. Open **Rewards** in the admin sidebar and complete initial settings.
 
@@ -140,7 +140,7 @@ Browse all official plugins at **[github.com/tworksystem](https://github.com/two
 
 ```bash
 cd wp-content/plugins
-git clone https://github.com/tworksystem/twork-rewards-system.git twork-rewards-system
+git clone https://github.com/tworksystem/twork-rewards-system.git rewards-system
 ```
 
 Then activate the plugin in WordPress.
@@ -355,8 +355,8 @@ Repairs legacy transaction labels for consistency after schema or naming migrati
 ## 📁 Project Structure
 
 ```
-twork-rewards-system/
-├── twork-rewards-system.php      # 🧠 Main plugin bootstrap, admin UI, REST, DB
+rewards-system/
+├── rewards-system.php      # 🧠 Main plugin bootstrap, admin UI, REST, DB
 ├── includes/
 │   ├── class-poll-auto-run.php   # 🗳️ Poll lazy eval + session results REST
 │   └── class-poll-pnp.php        # 💎 PNP / point balance helpers for polls
@@ -402,7 +402,7 @@ twork-rewards-system/
 ### 📦 Staging → Production
 
 1. 🧪 Run the [Pre-Release Checklist](#pre-release-checklist) on staging.
-2. 💾 Back up the WordPress database and `wp-content/plugins/twork-rewards-system/`.
+2. 💾 Back up the WordPress database and `wp-content/plugins/rewards-system/`.
 3. 📤 Deploy plugin files via Git pull, SFTP, or CI pipeline.
 4. 🔄 Visit **Plugins** to confirm the version; re-save permalinks.
 5. 👀 Monitor `wp-content/debug.log` for REST registration errors.

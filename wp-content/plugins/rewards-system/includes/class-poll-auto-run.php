@@ -426,7 +426,7 @@ class TWork_Poll_Auto_Run {
         }
 
         // Old Code: Payout on GET (client-dependent) — [award_poll_winner_points] was called only when the app hit this REST route.
-        // Now poll resolution + [award_poll_winner_points] run from WP-Cron (see twork_rewards_auto_run_poll_cron in twork-rewards-system.php).
+        // Now poll resolution + [award_poll_winner_points] run from WP-Cron (see twork_rewards_auto_run_poll_cron in rewards-system.php).
         // Old Code:        // PROFESSIONAL FIX: Eliminate Race Conditions & Ghost Balances
         // Old Code:        if ($winning_index >= 0 && class_exists('TWork_Rewards_System')) {
         // Old Code:            TWork_Rewards_System::get_instance()->award_poll_winner_points($poll_id, $session_id);
