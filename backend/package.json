@@ -5,7 +5,8 @@
   "main": "webhook_server.js",
   "scripts": {
     "start": "node webhook_server.js",
-    "dev": "nodemon webhook_server.js"
+    "dev": "nodemon webhook_server.js",
+    "proxy": "node cors_proxy.js"
   },
   "keywords": [
     "woocommerce",
