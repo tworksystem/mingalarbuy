@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -22,7 +20,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   bool updates = true;
 
   Widget platformSwitch(bool val) {
-    if (Platform.isIOS) {
+    if (Theme.of(context).platform == TargetPlatform.iOS) {
       return CupertinoSwitch(
         onChanged: (value) {
           setState(() {

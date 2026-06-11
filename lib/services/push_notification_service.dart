@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -11,8 +10,12 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api_service.dart';
-import '../utils/logger.dart';
+import '../firebase_options.dart';
 import '../utils/app_config.dart';
+import '../utils/logger.dart';
+import '../utils/platform_helper.dart';
+import 'web_notification_impl.dart'
+    if (dart.library.io) 'web_notification_stub.dart';
 import 'in_app_notification_service.dart';
 import '../providers/in_app_notification_provider.dart';
 import '../models/in_app_notification.dart';
@@ -22,6 +25,7 @@ import 'canonical_point_balance_sync.dart';
 import 'point_notification_manager.dart';
 import 'point_service.dart';
 import 'missed_notification_recovery_service.dart';
+import 'notification_service.dart';
 import '../utils/large_int_codec.dart';
 
 /// PROFESSIONAL SECURITY: Helper function to verify notification user in background handler
@@ -200,9 +204,6 @@ DateTime? _fcmSnapshotObservedAt(Map<String, dynamic> data) {
 Future<void> persistFcmPointSnapshotForMainIsolate(
   Map<String, dynamic> data,
 ) async {
-  if (kIsWeb) {
-    return;
-  }
   try {
     final String type = _fcmDataFirstString(data, const ['type']);
     if (!_fcmPointBalanceNotificationTypes.contains(type)) {
@@ -725,7 +726,15 @@ class PushNotificationService {
   factory PushNotificationService() => _instance;
   PushNotificationService._internal();
 
-  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
+  FirebaseMessaging? _firebaseMessaging;
+
+  FirebaseMessaging _requireMessaging() {
+    final messaging = _firebaseMessaging;
+    if (messaging == null) {
+      throw StateError('Firebase Messaging is not initialized');
+    }
+    return messaging;
+  }
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
@@ -936,9 +945,6 @@ class PushNotificationService {
   /// Applies a points balance snapshot written from [firebaseMessagingBackgroundHandler]
   /// so Home "My PNP" updates immediately on cold start without manual refresh.
   Future<void> _applyPendingFcmBalanceSnapshotFromDisk() async {
-    if (kIsWeb) {
-      return;
-    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_kPendingFcmPointSnapshotKey);
@@ -1009,57 +1015,61 @@ class PushNotificationService {
 
     try {
       Logger.info(
-        'Initializing Firebase Cloud Messaging',
+        kIsWeb
+            ? 'Initializing Firebase Cloud Messaging for web'
+            : 'Initializing Firebase Cloud Messaging',
         tag: 'PushNotification',
       );
 
+      _firebaseMessaging = FirebaseMessaging.instance;
+
       // Request notification permissions
-      NotificationSettings settings = await _firebaseMessaging
+      final NotificationSettings settings = await _requireMessaging()
           .requestPermission(
             alert: true,
-            badge: true,
+            badge: !kIsWeb,
             sound: true,
             provisional: false,
             criticalAlert: false,
           );
 
-      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        Logger.info(
-          'User granted notification permission',
-          tag: 'PushNotification',
-        );
+      final bool permissionGranted =
+          settings.authorizationStatus == AuthorizationStatus.authorized ||
+              settings.authorizationStatus == AuthorizationStatus.provisional;
 
-        // Get FCM token
-        await _getFCMToken();
+      if (permissionGranted) {
+        if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+          Logger.info(
+            'User granted notification permission',
+            tag: 'PushNotification',
+          );
+        } else {
+          Logger.info(
+            'User granted provisional notification permission',
+            tag: 'PushNotification',
+          );
+        }
 
-        // Configure message handlers
-        await _configureMessageHandlers();
-
-        // Configure local notifications for foreground
-        await _configureLocalNotifications();
-
-        _isInitialized = true;
-        await _applyPendingFcmBalanceSnapshotFromDisk();
-        // New Code: ensure backend token registration is eventually consistent
-        // even when release startup races with secure-storage/session hydration.
-        _scheduleTokenRecovery(reason: 'initial release reliability check');
-        Logger.info(
-          'PushNotificationService initialized successfully',
-          tag: 'PushNotification',
-        );
-      } else if (settings.authorizationStatus ==
-          AuthorizationStatus.provisional) {
-        Logger.info(
-          'User granted provisional notification permission',
-          tag: 'PushNotification',
-        );
         await _getFCMToken();
         await _configureMessageHandlers();
-        await _configureLocalNotifications();
+
+        // Mobile tray channels — web uses Browser Notification API in foreground.
+        if (!kIsWeb) {
+          await _configureLocalNotifications();
+        } else {
+          await NotificationService().requestPermissions();
+        }
+
         _isInitialized = true;
         await _applyPendingFcmBalanceSnapshotFromDisk();
         _scheduleTokenRecovery(
-          reason: 'provisional permission reliability check',
+          reason: kIsWeb
+              ? 'web initial token reliability check'
+              : 'initial release reliability check',
+        );
+        Logger.info(
+          'PushNotificationService initialized successfully',
+          tag: 'PushNotification',
         );
       } else {
         Logger.warning(
@@ -1080,7 +1090,13 @@ class PushNotificationService {
   /// Get FCM token
   Future<void> _getFCMToken() async {
     try {
-      _fcmToken = await _firebaseMessaging.getToken();
+      if (kIsWeb && DefaultFirebaseOptions.webVapidKey.isNotEmpty) {
+        _fcmToken = await _requireMessaging().getToken(
+          vapidKey: DefaultFirebaseOptions.webVapidKey,
+        );
+      } else {
+        _fcmToken = await _requireMessaging().getToken();
+      }
       if (_fcmToken != null) {
         // Show full token for testing (will be in logs)
         Logger.info(
@@ -1243,7 +1259,7 @@ class PushNotificationService {
             data: <String, dynamic>{
               'userId': userId,
               'fcmToken': token,
-              'platform': Platform.isAndroid ? 'android' : 'ios',
+              'platform': PlatformHelper.pushPlatformLabel,
             },
           ),
           context: 'registerFcmToken',
@@ -1351,7 +1367,7 @@ class PushNotificationService {
     );
 
     // Handle notification tap when app was terminated
-    final initialMessage = await _firebaseMessaging.getInitialMessage();
+    final initialMessage = await _requireMessaging().getInitialMessage();
     if (initialMessage != null) {
       Logger.info(
         'Notification tapped (terminated): ${initialMessage.notification?.title}',
@@ -1372,14 +1388,14 @@ class PushNotificationService {
     // Handle FCM token refresh
     // OLD CODE:
     // _fcmTokenRefreshSubscription =
-    //     _firebaseMessaging.onTokenRefresh.listen((newToken) {
+    //     _requireMessaging().onTokenRefresh.listen((newToken) {
     //   Logger.info('FCM token refreshed', tag: 'PushNotification');
     //   _fcmToken = newToken;
     //   _sendTokenToBackend(newToken);
     // });
     //
     // New Code:
-    _fcmTokenRefreshSubscription = _firebaseMessaging.onTokenRefresh.listen((
+    _fcmTokenRefreshSubscription = _requireMessaging().onTokenRefresh.listen((
       newToken,
     ) {
       Logger.info('FCM token refreshed', tag: 'PushNotification');
@@ -2020,6 +2036,10 @@ class PushNotificationService {
 
   /// Configure local notifications for foreground
   Future<void> _configureLocalNotifications() async {
+    if (kIsWeb) {
+      return;
+    }
+
     // Configure Android notification channels for Android 8.0+
     const androidChannelOrder = AndroidNotificationChannel(
       'order_updates',
@@ -2251,6 +2271,37 @@ class PushNotificationService {
     );
   }
 
+  /// Web foreground: Browser Notification API + same refresh pipeline as mobile.
+  Future<void> _handleWebForegroundMessage(RemoteMessage message) async {
+    final Map<String, dynamic> data = message.data;
+    final Object? orderId = data['orderId'] ?? data['order_id'];
+    final String notificationType = data['type']?.toString() ?? '';
+    final bool isOrderNotification =
+        notificationType == 'order_status_update' && orderId != null;
+    final tray = TrayLocalSpec.fromRemoteMessage(message);
+
+    if (!isOrderNotification &&
+        WebNotificationImpl.isSupported() &&
+        WebNotificationImpl.getPermission() == 'granted') {
+      WebNotificationImpl.showNotification(
+        title: tray.title,
+        body: tray.body,
+        tag: notificationType.isNotEmpty ? notificationType : 'planetmm',
+      );
+    }
+
+    if ((notificationType == 'order_status_update' && orderId != null) ||
+        _pointNotificationTypes.contains(notificationType) ||
+        _engagementNotificationTypes.contains(notificationType) ||
+        notificationType == 'reward_updated') {
+      Logger.info(
+        'Web foreground FCM received, triggering immediate refresh',
+        tag: 'PushNotification',
+      );
+      await _handleOrderUpdateNotification(message);
+    }
+  }
+
   /// Handle foreground message by showing local notification
   /// This displays notification when app is in foreground and triggers order refresh
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
@@ -2268,6 +2319,11 @@ class PushNotificationService {
           tag: 'PushNotification',
         );
         return; // Reject notification if not for current user
+      }
+
+      if (kIsWeb) {
+        await _handleWebForegroundMessage(message);
+        return;
       }
 
       /*
@@ -2737,7 +2793,7 @@ class PushNotificationService {
   /// Subscribe to topics (optional)
   Future<void> subscribeToTopic(String topic) async {
     try {
-      await _firebaseMessaging.subscribeToTopic(topic);
+      await _requireMessaging().subscribeToTopic(topic);
       Logger.info('Subscribed to topic: $topic', tag: 'PushNotification');
     } catch (e) {
       Logger.error(
@@ -2751,7 +2807,7 @@ class PushNotificationService {
   /// Unsubscribe from topics
   Future<void> unsubscribeFromTopic(String topic) async {
     try {
-      await _firebaseMessaging.unsubscribeFromTopic(topic);
+      await _requireMessaging().unsubscribeFromTopic(topic);
       Logger.info('Unsubscribed from topic: $topic', tag: 'PushNotification');
     } catch (e) {
       Logger.error(

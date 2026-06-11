@@ -37,10 +37,12 @@ import 'package:ecommerce_int2/services/in_app_notification_service.dart';
 import 'package:ecommerce_int2/services/web_point_visibility_stub.dart'
     if (dart.library.html) 'package:ecommerce_int2/services/web_point_visibility_web.dart'
     as web_point_visibility;
+import 'package:ecommerce_int2/utils/app_config.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:ecommerce_int2/utils/image_cache_config.dart';
 import 'package:ecommerce_int2/services/sync_coordinator.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
+import 'package:ecommerce_int2/firebase_options.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -81,6 +83,11 @@ void main() async {
       );
       return true;
     };
+
+    Logger.info(
+      'Web API origin: ${AppConfig.backendUrl} (page: ${Uri.base.origin})',
+      tag: 'Main',
+    );
   }
 
   // Run async initialization in guarded zone, but runApp in root zone
@@ -166,11 +173,10 @@ void main() async {
       }
 
       // Firebase Cloud Messaging (FCM) for instant push notifications
-      // Skip Firebase on web if not configured
-      if (!kIsWeb || _hasFirebaseConfig()) {
+      // Skip Firebase on web when FIREBASE_* dart-defines are not set.
+      if (!kIsWeb || DefaultFirebaseOptions.isWebConfigured) {
         try {
-          // Initialize Firebase
-          await Firebase.initializeApp();
+          await DefaultFirebaseOptions.initialize();
           Logger.info('Firebase initialized successfully', tag: 'Main');
 
           // Register background message handler (mobile only)
@@ -215,13 +221,6 @@ void main() async {
     // runApp is already in root zone (same as ensureInitialized above)
     runApp(MyApp());
   }
-}
-
-/// Check if Firebase is configured for web
-bool _hasFirebaseConfig() {
-  // Check if firebase_options.dart exists or if we can initialize Firebase
-  // For now, return false for web to skip Firebase
-  return false;
 }
 
 class MyApp extends StatefulWidget {
