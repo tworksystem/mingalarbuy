@@ -1,13 +1,18 @@
 {
-    "name": "ecommerce_int2",
-    "short_name": "ecommerce_int2",
+    "name": "PlanetMM - Mingalarbuy",
+    "short_name": "PlanetMM",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#1A237E",
+    "theme_color": "#1A237E",
+    "description": "Myanmar's all-in-one commerce, rewards, and engagement platform.",
+    "orientation": "any",
     "prefer_related_applications": false,
+    "categories": [
+        "shopping",
+        "finance",
+        "lifestyle"
+    ],
     "icons": [
         {
             "src": "icons/Icon-192.png",
