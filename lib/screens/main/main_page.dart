@@ -28,7 +28,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 import 'components/custom_bottom_bar.dart';
+import '../../widgets/responsive_shell.dart';
 import '../product/all_products_page.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 class MainPage extends StatefulWidget {
   final int?
@@ -927,15 +929,14 @@ class _MainPageState extends State<MainPage>
       ),
     );
 
-    return Scaffold(
-      bottomNavigationBar: CustomBottomBar(controller: bottomTabController),
-      // Floating cart/order icon removed per design request.
-      body: CustomPaint(
-        painter: MainBackground(),
-        child: TabBarView(
-          controller: bottomTabController,
-          physics: NeverScrollableScrollPhysics(),
-          children: <Widget>[
+    final bool wideWeb = kIsWeb && ResponsiveShell.isWideLayout(context);
+
+    final Widget tabBody = CustomPaint(
+      painter: MainBackground(),
+      child: TabBarView(
+        controller: bottomTabController,
+        physics: const NeverScrollableScrollPhysics(),
+        children: <Widget>[
             SafeArea(
               child: RefreshIndicator(
                 onRefresh: () async {
@@ -989,7 +990,24 @@ class _MainPageState extends State<MainPage>
             ProfilePageNew(),
           ],
         ),
-      ),
+    );
+
+    if (wideWeb) {
+      return Scaffold(
+        body: Row(
+          children: [
+            WebSideNavigation(controller: bottomTabController),
+            Expanded(
+              child: ResponsiveShell(child: tabBody),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Scaffold(
+      bottomNavigationBar: CustomBottomBar(controller: bottomTabController),
+      body: ResponsiveShell(child: tabBody),
     );
   }
 }

@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/providers/auth_provider.dart';
@@ -13,6 +12,7 @@ import 'package:ecommerce_int2/screens/orders/order_history_page.dart';
 import 'package:ecommerce_int2/services/global_keys.dart';
 import 'package:ecommerce_int2/services/app_update_service.dart';
 import 'package:ecommerce_int2/services/app_download_service.dart';
+import 'package:ecommerce_int2/utils/platform_helper.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/material.dart';
@@ -101,7 +101,7 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
         url.toLowerCase().contains('download');
 
     // For Android, use download service for APK files
-    if (Platform.isAndroid && isApkUrl) {
+    if (!kIsWeb && isApkUrl) {
       await _downloadAndInstallUpdate(url);
     } else {
       // For other platforms or non-APK URLs, open in browser
@@ -891,7 +891,7 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
         });
 
         // Install APK on Android
-        if (Platform.isAndroid) {
+        if (PlatformHelper.isAndroid) {
           final installed = await widget.downloadService.installApk(filePath);
           if (mounted) {
             if (installed) {

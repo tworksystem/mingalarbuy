@@ -1,5 +1,8 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+
+import '../../../widgets/responsive_shell.dart';
 
 class CustomBottomBar extends StatelessWidget {
   final TabController controller;
@@ -8,8 +11,13 @@ class CustomBottomBar extends StatelessWidget {
     super.key,
     required this.controller,
   });
+
   @override
   Widget build(BuildContext context) {
+    if (kIsWeb && ResponsiveShell.isWideLayout(context)) {
+      return const SizedBox.shrink();
+    }
+
     return BottomAppBar(
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -31,6 +39,37 @@ class CustomBottomBar extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Side navigation rail for wide web/desktop layouts.
+class WebSideNavigation extends StatelessWidget {
+  const WebSideNavigation({
+    super.key,
+    required this.controller,
+  });
+
+  final TabController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return NavigationRail(
+      selectedIndex: controller.index,
+      onDestinationSelected: controller.animateTo,
+      labelType: NavigationRailLabelType.all,
+      destinations: const [
+        NavigationRailDestination(
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: Text('Home'),
+        ),
+        NavigationRailDestination(
+          icon: Icon(Icons.person_outline),
+          selectedIcon: Icon(Icons.person),
+          label: Text('Profile'),
+        ),
+      ],
     );
   }
 }
