@@ -1,9 +1,8 @@
-import 'dart:io';
-
 import 'package:dio/dio.dart';
 
 import '../api_service.dart';
 import '../utils/app_config.dart';
+import '../utils/network_error_utils.dart';
 
 /// Professional Network Image Service with retry mechanism and error handling
 class NetworkImageService {
@@ -149,9 +148,9 @@ class NetworkImageService {
       } catch (e) {
         print('   ❌ Attempt $attempt failed: $e');
 
-        if (e is SocketException) {
+        if (NetworkErrorUtils.isSocketLikeError(e)) {
           print('   🔌 Socket exception - network connectivity issue');
-        } else if (e is HttpException) {
+        } else if (NetworkErrorUtils.isHttpLikeError(e)) {
           print('   🌐 HTTP exception - server communication issue');
         } else if (e.toString().contains('statusCode: 0')) {
           print('   📡 StatusCode 0 - network request failed');

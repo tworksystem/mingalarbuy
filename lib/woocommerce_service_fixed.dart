@@ -17,7 +17,7 @@ import 'utils/data_validator.dart';
 
 /// Enterprise-grade WooCommerce service with comprehensive error handling
 class WooCommerceServiceFixed {
-  static const String baseUrl = AppConfig.baseUrl;
+  static String get baseUrl => AppConfig.baseUrl;
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
 

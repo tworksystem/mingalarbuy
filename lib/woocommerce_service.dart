@@ -17,7 +17,7 @@ import 'utils/retry_manager.dart';
 import 'utils/app_config.dart';
 
 class WooCommerceService {
-  static const String baseUrl = AppConfig.baseUrl;
+  static String get baseUrl => AppConfig.baseUrl;
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
 

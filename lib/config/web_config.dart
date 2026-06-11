@@ -5,35 +5,24 @@ class WebConfig {
   /// Check if running on web platform
   static bool get isWeb => kIsWeb;
 
-  /// CORS error message for users
+  /// CORS error message for users (Burmese-friendly).
   static const String corsErrorMessage = '''
-🚫 CORS Error - Cross-Origin Request Blocked
+🚫 CORS — Browser က API ကို တိုက်ရိုက် ခေါ်လို့ မရပါ
 
-The WooCommerce API server (tworksystem.com) does not allow requests from web browsers due to CORS (Cross-Origin Resource Sharing) restrictions.
+localhost မှာ web run လုပ်ရင် mingalarbuy.com API ကို browser security က ပိတ်ထားနိုင်ပါတယ်။
 
-🔧 Solutions:
+✅ ဖြေရှင်းနည်း (တစ်ခု ရွေးပါ):
 
-1. **Use Mobile App** (Recommended)
-   - Run the app on Android or iOS
-   - Mobile apps don't have CORS restrictions
-   - Full functionality available
+1. **Admin — Nginx CORS (အကြံပြု, plugin မလို)**:
+   `backend/nginx/twork-web-cors.conf` ကို server မှာ include လုပ်ပြီး nginx reload
 
-2. **Server Configuration** (For developers)
-   - Contact the website administrator
-   - Request CORS headers to be added:
-     - Access-Control-Allow-Origin: *
-     - Access-Control-Allow-Methods: GET, POST, OPTIONS
-     - Access-Control-Allow-Headers: Content-Type, Authorization
+2. **Developer — Local proxy** (Admin မပြင်သေးရင်):
+   `cd backend && npm run proxy`
+   `flutter run -d chrome --dart-define=WEB_DEV_PROXY=http://127.0.0.1:8787`
 
-3. **Proxy Server** (Advanced)
-   - Set up a proxy server that adds CORS headers
-   - Route API calls through the proxy
+3. **Production web** — `https://mingalarbuy.com/app/` အောက်မှာ host (same-domain, CORS မလို)
 
-4. **Browser Extension** (Development only)
-   - Use CORS browser extension for testing
-   - Not recommended for production
-
-📱 For the best experience, please use the mobile version of this app.
+📱 Mobile app မှာ CORS ပြဿနာ မရှိပါ။
 ''';
 
   /// Alternative API endpoints for web (if available)

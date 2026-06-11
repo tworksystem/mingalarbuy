@@ -1,10 +1,14 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+import '../utils/app_config.dart';
+
 /// WooCommerce API Configuration
 ///
 /// Centralized configuration for WooCommerce REST API integration
 /// with mingalarbuy.com
 class WooCommerceConfig {
   // API Credentials
-  static const String baseUrl = 'https://mingalarbuy.com';
+  static String get baseUrl => AppConfig.effectiveBackendUrl;
   static const String consumerKey =
       'ck_9838e0a0aa35fee12d90c29026441c096863f0c6';
   static const String consumerSecret =

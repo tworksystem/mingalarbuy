@@ -10,7 +10,7 @@ import 'utils/app_config.dart';
 
 /// Simplified WooCommerce service without model conflicts
 class WooCommerceServiceSimple {
-  static const String baseUrl = AppConfig.baseUrl;
+  static String get baseUrl => AppConfig.baseUrl;
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
 

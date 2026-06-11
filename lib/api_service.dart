@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
+
+import 'utils/network_error_utils.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -30,7 +31,7 @@ class ApiService {
 
   static final Dio _dio = Dio(
     BaseOptions(
-      baseUrl: AppConfig.backendUrl,
+      baseUrl: AppConfig.effectiveBackendUrl,
       connectTimeout: AppConfig.networkTimeout,
       receiveTimeout: AppConfig.networkTimeout,
       // Old Code:
@@ -63,6 +64,8 @@ class ApiService {
 
   /// Shared [Dio] instance (interceptors configured on first access).
   static Dio get dio {
+    // Uri.base is only reliable after web bootstrap — refresh on each access.
+    _dio.options.baseUrl = AppConfig.effectiveBackendUrl;
     _ensureInterceptors();
     return _dio;
   }
@@ -78,7 +81,7 @@ class ApiService {
       InterceptorsWrapper(
         onRequest:
             (RequestOptions options, RequestInterceptorHandler handler) async {
-              if (!_isHttpsUri(options.uri)) {
+              if (!_isAllowedTransport(options.uri)) {
                 handler.reject(
                   DioException(
                     requestOptions: options,
@@ -111,7 +114,7 @@ class ApiService {
               Response<dynamic> response,
               ResponseInterceptorHandler handler,
             ) async {
-              if (!_isHttpsUri(response.realUri)) {
+              if (!_isAllowedTransport(response.realUri)) {
                 handler.reject(
                   DioException(
                     requestOptions: response.requestOptions,
@@ -177,11 +180,16 @@ class ApiService {
 
   static bool _isHttpsUri(Uri uri) => uri.scheme.toLowerCase() == 'https';
 
+  static bool _isAllowedTransport(Uri uri) =>
+      _isHttpsUri(uri) || AppConfig.allowsInsecureLocalDevApi(uri);
+
   static void _enforceHttpsBaseUrl() {
-    final Uri? base = Uri.tryParse(AppConfig.backendUrl);
-    if (base == null || !_isHttpsUri(base)) {
+    final String backend = AppConfig.effectiveBackendUrl;
+    final Uri? base = Uri.tryParse(backend);
+    if (base == null || !_isAllowedTransport(base)) {
       throw StateError(
-        'AppConfig.backendUrl must use HTTPS. Received: ${AppConfig.backendUrl}',
+        'AppConfig.effectiveBackendUrl must use HTTPS (or local dev proxy in debug). '
+        'Received: $backend',
       );
     }
   }
@@ -223,8 +231,6 @@ class ApiService {
     while (attempts < maxRetries) {
       try {
         return await request().timeout(timeout);
-      } on SocketException catch (e) {
-        lastError = e;
       } on TimeoutException catch (e) {
         lastError = e;
       } on DioException catch (e) {
@@ -238,7 +244,11 @@ class ApiService {
           rethrow;
         }
       } catch (e) {
-        lastError = e;
+        if (NetworkErrorUtils.isSocketLikeError(e)) {
+          lastError = e;
+        } else {
+          rethrow;
+        }
       }
       attempts++;
       if (attempts < maxRetries) {

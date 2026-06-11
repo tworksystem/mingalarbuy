@@ -1,11 +1,12 @@
 import 'dart:async';
-import 'dart:io';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../api_service.dart';
+import 'network_error_utils.dart';
 
 /// Professional network utilities for robust API communication
 class NetworkUtils {
@@ -14,10 +15,6 @@ class NetworkUtils {
   static const Duration _retryDelay = Duration(seconds: 2);
 
   /// Execute a [Dio] request (typically via [ApiService]) with retry logic.
-  ///
-  /// Retries on socket issues, timeouts, and transient [DioException]s (same
-  /// policy as [ApiService.executeWithRetry]). Non-retryable [DioException]s
-  /// are rethrown immediately.
   static Future<Response<dynamic>?> executeRequest(
     Future<Response<dynamic>> Function() request, {
     Duration timeout = _defaultTimeout,
@@ -36,11 +33,6 @@ class NetworkUtils {
         }
 
         return response;
-      } on SocketException catch (e) {
-        lastError = e;
-        if (kDebugMode) {
-          print('🔌 Socket error (attempt ${attempts + 1}): ${e.message}');
-        }
       } on TimeoutException catch (e) {
         lastError = e;
         if (kDebugMode) {
@@ -59,15 +51,15 @@ class NetworkUtils {
         } else {
           rethrow;
         }
-      } on HttpException catch (e) {
-        lastError = e;
-        if (kDebugMode) {
-          print('🌐 HTTP error (attempt ${attempts + 1}): ${e.message}');
-        }
       } on Exception catch (e) {
-        lastError = e;
-        if (kDebugMode) {
-          print('❌ Network error (attempt ${attempts + 1}): $e');
+        if (NetworkErrorUtils.isSocketLikeError(e) ||
+            NetworkErrorUtils.isHttpLikeError(e)) {
+          lastError = e;
+          if (kDebugMode) {
+            print('🌐 Network error (attempt ${attempts + 1}): $e');
+          }
+        } else {
+          rethrow;
         }
       }
 
@@ -93,19 +85,33 @@ class NetworkUtils {
     return null;
   }
 
-  /// Check network connectivity
+  /// Check network connectivity (web-safe).
   static Future<bool> isConnected() async {
     try {
-      final result = await InternetAddress.lookup('google.com');
-      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
-    } on SocketException catch (_) {
+      if (kIsWeb) {
+        final List<ConnectivityResult> results =
+            await Connectivity().checkConnectivity();
+        return !results.contains(ConnectivityResult.none);
+      }
+
+      final Response<dynamic>? response = await ApiService.executeWithRetry(
+        () => ApiService.headUri(
+          Uri.parse('https://www.google.com'),
+          skipAuth: true,
+        ),
+        context: 'networkUtils.isConnected',
+        timeout: const Duration(seconds: 5),
+        maxRetries: 1,
+      );
+      return response != null && ApiService.isSuccessResponse(response);
+    } catch (_) {
       return false;
     }
   }
 
   /// Get user-friendly error message
   static String getErrorMessage(dynamic error) {
-    if (error is SocketException) {
+    if (NetworkErrorUtils.isSocketLikeError(error)) {
       return 'No internet connection. Please check your network settings.';
     } else if (error is TimeoutException) {
       return 'Request timeout. Server may be busy. Please try again.';
@@ -120,11 +126,12 @@ class NetworkUtils {
         return 'No internet connection. Please check your network settings.';
       }
       return error.message ?? 'Network error. Please try again.';
-    } else if (error is HttpException) {
+    } else if (NetworkErrorUtils.isHttpLikeError(error)) {
       return 'Server error. Please try again later.';
     } else if (error is FormatException) {
       return 'Data format error. Please try again.';
-    } else if (error is Exception && error.toString().toLowerCase().contains('timeout')) {
+    } else if (error is Exception &&
+        error.toString().toLowerCase().contains('timeout')) {
       return 'Request timeout. Server may be busy. Please try again.';
     } else {
       return 'An unexpected error occurred. Please try again.';
@@ -190,11 +197,11 @@ class NetworkStatusIndicator extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
               color: Colors.red[600],
-              child: Row(
+              child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.wifi_off, color: Colors.white, size: 16),
-                  const SizedBox(width: 8),
+                  SizedBox(width: 8),
                   Text(
                     'No internet connection',
                     style: TextStyle(

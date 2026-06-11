@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 import '../api_service.dart';
 import '../models/auth_response.dart';
 import '../models/auth_user.dart';
@@ -11,8 +13,8 @@ import 'auth_header_provider.dart';
 import 'secure_storage_config.dart';
 
 class AuthService {
-  static const String baseUrl = AppConfig.baseUrl;
-  static const String wpBaseUrl = AppConfig.wpBaseUrl;
+  static String get baseUrl => AppConfig.baseUrl;
+  static String get wpBaseUrl => AppConfig.wpBaseUrl;
   static const String consumerKey = AppConfig.consumerKey;
   static const String consumerSecret = AppConfig.consumerSecret;
 
@@ -83,7 +85,7 @@ class AuthService {
       'Content-Type': 'application/json',
       'Authorization':
           'Basic ${base64Encode(utf8.encode('${request.email}:${request.password}'))}',
-      ...AppConfig.clientIdentificationHeaders,
+      ...AppConfig.apiClientHeaders,
     };
   }
 
@@ -300,9 +302,9 @@ class AuthService {
       () => ApiService.post(
         '${AppConfig.tworkApiBasePath}/auth/sign-in',
         skipAuth: true,
-        headers: const <String, dynamic>{
+        headers: <String, dynamic>{
           'Content-Type': 'application/json',
-          'X-PlanetMM-Client': '1',
+          if (!kIsWeb) 'X-PlanetMM-Client': '1',
         },
         data: <String, dynamic>{
           'email': request.email.trim(),

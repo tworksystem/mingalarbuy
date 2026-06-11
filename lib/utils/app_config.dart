@@ -26,21 +26,104 @@ class AppConfig {
   // static const String defaultUserAgent =
   //     'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 ...';
 
+  /// PlanetMM headers for WAF allow-lists on native only.
+  /// Browsers send a CORS preflight for custom headers; production WP must allow
+  /// them via `twork-cors` plugin — until then web omits these headers.
+  static Map<String, String> get apiClientHeaders =>
+      kIsWeb ? const <String, String>{} : clientIdentificationHeaders;
+
   /// Default REST headers for [ApiService] / Dio / background tasks.
-  static Map<String, String> get defaultApiHeaders => {
-        'User-Agent': defaultUserAgent,
+  static Map<String, String> get defaultApiHeaders {
+    if (kIsWeb) {
+      return const {
         'Accept': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
-        'Accept-Encoding': 'gzip, deflate',
-        ...clientIdentificationHeaders,
       };
+    }
+    return {
+      'User-Agent': defaultUserAgent,
+      'Accept': 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9,my;q=0.8',
+      'Accept-Encoding': 'gzip, deflate',
+      ...clientIdentificationHeaders,
+    };
+  }
 
   /// Back-compat alias for existing `...AppConfig.defaultBrowserHeaders` spreads.
   static Map<String, String> get defaultBrowserHeaders => defaultApiHeaders;
 
   // API Configuration (WooCommerce - mingalarbuy.com)
-  static const String baseUrl = 'https://mingalarbuy.com/wp-json/wc/v3';
-  static const String wpBaseUrl = 'https://mingalarbuy.com/wp-json/wp/v2';
+  static const String _productionOrigin = 'https://mingalarbuy.com';
+
+  /// Local CORS proxy (`npm run proxy` in backend/) for `flutter run -d chrome`.
+  static const String _localWebDevProxyOrigin = 'http://127.0.0.1:8787';
+
+  /// Resolved API origin for web.
+  ///
+  /// - Production host (https://mingalarbuy.com/app/): same-origin API.
+  /// - Localhost dev: needs Admin **nginx CORS** (`backend/nginx/twork-web-cors.conf`)
+  ///   or optional local proxy (`npm run proxy` + `WEB_DEV_PROXY`).
+  /// - Admin reverse-proxy path: `--dart-define=WEB_API_ORIGIN=https://mingalarbuy.com/twork-api`
+  static String get resolvedOrigin {
+    if (kIsWeb) {
+      const String adminProxy = String.fromEnvironment('WEB_API_ORIGIN');
+      if (adminProxy.isNotEmpty) {
+        return adminProxy.replaceAll(RegExp(r'/+$'), '');
+      }
+
+      const String proxy = String.fromEnvironment('WEB_DEV_PROXY');
+      if (kDebugMode && proxy.isNotEmpty) {
+        return proxy;
+      }
+
+      final Uri? page = Uri.tryParse(Uri.base.origin);
+      final bool isLocalPage =
+          page != null && page.host.isNotEmpty && _isLocalDevHost(page.host);
+
+      if (page != null &&
+          page.scheme == 'https' &&
+          page.host.isNotEmpty &&
+          !isLocalPage) {
+        return page.origin;
+      }
+
+      // localhost / 127.0.0.1 → cross-origin to mingalarbuy.com (needs CORS plugin).
+      if (isLocalPage) {
+        return _productionOrigin;
+      }
+    }
+    return _productionOrigin;
+  }
+
+  static bool _isLocalDevHost(String host) {
+    final String h = host.toLowerCase();
+    return h == 'localhost' ||
+        h == '127.0.0.1' ||
+        h == '0.0.0.0' ||
+        h == '[::1]' ||
+        h.endsWith('.local');
+  }
+
+  /// True for debug web traffic to the local CORS proxy (http://127.0.0.1:8787).
+  static bool allowsInsecureLocalDevApi(Uri uri) {
+    return kDebugMode &&
+        kIsWeb &&
+        uri.scheme == 'http' &&
+        _isLocalDevHost(uri.host);
+  }
+
+  /// Active API host (production, same-origin HTTPS, or local dev proxy).
+  static String get backendUrl => resolvedOrigin;
+
+  static String get baseUrl => '$backendUrl/wp-json/wc/v3';
+
+  static String get wpBaseUrl => '$backendUrl/wp-json/wp/v2';
+
+  static String get effectiveBaseUrl => baseUrl;
+
+  static String get effectiveWpBaseUrl => wpBaseUrl;
+
+  static String get effectiveBackendUrl => backendUrl;
   static const String consumerKey =
       'ck_9838e0a0aa35fee12d90c29026441c096863f0c6';
   static const String consumerSecret =
@@ -72,7 +155,6 @@ class AppConfig {
   // - AWS/DigitalOcean: 'https://webhook.yourdomain.com'
   //
   // For NOW: Using WooCommerce host as backend base (adjust if you deploy a separate webhook server)
-  static const String backendUrl = 'https://mingalarbuy.com';
   static const String backendRegisterTokenEndpoint =
       '/wp-json/twork/v1/register-token';
   static const String tworkApiBasePath = '/wp-json/twork/v1';

@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -8,6 +6,8 @@ import '../api_service.dart';
 import '../utils/app_config.dart';
 import '../utils/logger.dart';
 import '../utils/network_utils.dart';
+import '../utils/platform_helper.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// Service for tracking app usage duration
 /// Tracks when users open/close the app and calculates usage duration
@@ -22,19 +22,23 @@ class UsageTrackingService {
     try {
       final deviceInfo = DeviceInfoPlugin();
       
-      if (Platform.isAndroid) {
+      if (kIsWeb) {
+        final webInfo = await deviceInfo.webBrowserInfo;
+        return 'Web ${webInfo.browserName} ${webInfo.platform ?? ''}'.trim();
+      }
+      if (PlatformHelper.isAndroid) {
         final androidInfo = await deviceInfo.androidInfo;
         return '${androidInfo.brand} ${androidInfo.model} (Android ${androidInfo.version.release})';
-      } else if (Platform.isIOS) {
+      } else if (PlatformHelper.isIOS) {
         final iosInfo = await deviceInfo.iosInfo;
         return '${iosInfo.name} ${iosInfo.model} (iOS ${iosInfo.systemVersion})';
-      } else if (Platform.isWindows) {
+      } else if (PlatformHelper.isWindows) {
         final windowsInfo = await deviceInfo.windowsInfo;
         return 'Windows ${windowsInfo.computerName}';
-      } else if (Platform.isMacOS) {
+      } else if (PlatformHelper.isMacOS) {
         final macInfo = await deviceInfo.macOsInfo;
         return 'macOS ${macInfo.computerName}';
-      } else if (Platform.isLinux) {
+      } else if (PlatformHelper.isLinux) {
         final linuxInfo = await deviceInfo.linuxInfo;
         return 'Linux ${linuxInfo.prettyName}';
       }

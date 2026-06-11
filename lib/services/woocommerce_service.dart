@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
-
 import 'package:dio/dio.dart';
 import 'package:ecommerce_int2/api_service.dart';
 import 'package:ecommerce_int2/config/woocommerce_config.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:ecommerce_int2/utils/app_config.dart';
+import 'package:ecommerce_int2/utils/network_error_utils.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 
 /// WooCommerce API Service
@@ -127,12 +126,6 @@ class WooCommerceService {
           statusCode: response.statusCode,
         );
       }
-    } on SocketException catch (e) {
-      debugPrint('❌ Network error: $e');
-      throw WooCommerceException(
-        'No internet connection. Please check your network.',
-        originalError: e,
-      );
     } on TimeoutException catch (e) {
       debugPrint('❌ Timeout error: $e');
       throw WooCommerceException(
@@ -148,6 +141,13 @@ class WooCommerceService {
     } catch (e) {
       debugPrint('❌ Unexpected error: $e');
       if (e is WooCommerceException) rethrow;
+
+      if (NetworkErrorUtils.isSocketLikeError(e)) {
+        throw WooCommerceException(
+          'No internet connection. Please check your network.',
+          originalError: e,
+        );
+      }
 
       // Handle web-specific CORS errors
       if (kIsWeb && e.toString().contains('Failed to fetch')) {
