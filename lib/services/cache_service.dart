@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/cached_product.dart';
 import '../models/woocommerce_product.dart';
@@ -14,10 +15,11 @@ class CacheService {
   static Box? _settingsBox;
 
   static bool _isInitialized = false;
+  static bool _initFailed = false;
 
   /// Initialize Hive and open boxes
   static Future<void> initialize() async {
-    if (_isInitialized) return;
+    if (_isInitialized || _initFailed) return;
 
     try {
       await Hive.initFlutter();
@@ -39,6 +41,11 @@ class CacheService {
       print('✅ Cache Service initialized successfully');
     } catch (e) {
       print('❌ Cache Service initialization failed: $e');
+      if (kIsWeb) {
+        // Graceful degradation: fetch directly from API when IndexedDB is blocked.
+        _initFailed = true;
+        return;
+      }
       rethrow;
     }
   }
@@ -49,6 +56,7 @@ class CacheService {
     List<WooCommerceProduct> products,
   ) async {
     await _ensureInitialized();
+    if (!_isInitialized) return;
 
     try {
       // Clear old products with this key
@@ -82,6 +90,7 @@ class CacheService {
     Duration maxAge = const Duration(hours: 24),
   }) async {
     await _ensureInitialized();
+    if (!_isInitialized) return [];
 
     try {
       // Check metadata
@@ -229,9 +238,8 @@ class CacheService {
 
   /// Ensure cache service is initialized
   static Future<void> _ensureInitialized() async {
-    if (!_isInitialized) {
-      await initialize();
-    }
+    if (_initFailed || _isInitialized) return;
+    await initialize();
   }
 
   /// Dispose (close boxes)

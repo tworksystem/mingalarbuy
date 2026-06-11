@@ -1,4 +1,5 @@
-import 'dart:io';
+import 'dart:io' if (dart.library.html) 'package:ecommerce_int2/utils/io_stub.dart';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../api_service.dart';
 import '../utils/logger.dart';
+import '../utils/platform_helper.dart';
 import 'connectivity_service.dart';
 
 /// Professional App Download Service
@@ -40,6 +42,13 @@ class AppDownloadService {
     Function(int received, int total)? onProgress,
     Function(String error)? onError,
   }) async {
+    if (kIsWeb) {
+      onError?.call(
+        'App download is not available on web. Please use the Android app.',
+      );
+      return null;
+    }
+
     if (_isDownloading) {
       Logger.warning('Download already in progress', tag: 'AppDownloadService');
       onError?.call('Download already in progress');
@@ -76,7 +85,7 @@ class AppDownloadService {
           tag: 'AppDownloadService');
 
       // Step 3: Request storage permissions (Android)
-      if (!kIsWeb && Platform.isAndroid) {
+      if (PlatformHelper.isAndroid) {
         final hasPermission = await _requestStoragePermission();
         if (!hasPermission) {
           final error =
@@ -433,7 +442,7 @@ class AppDownloadService {
   /// For older versions, we request permission but proceed anyway if denied
   /// (Downloads folder might still work on some devices)
   Future<bool> _requestStoragePermission() async {
-    if (kIsWeb || !Platform.isAndroid) {
+    if (!PlatformHelper.isAndroid) {
       return true; // Not needed on other platforms
     }
 
@@ -497,7 +506,7 @@ class AppDownloadService {
         return null;
       }
 
-      if (Platform.isAndroid) {
+      if (PlatformHelper.isAndroid) {
         // Use Downloads directory on Android
         final directory = Directory('/storage/emulated/0/Download');
         if (await directory.exists()) {
@@ -511,7 +520,7 @@ class AppDownloadService {
           await downloadDir.create(recursive: true);
         }
         return downloadDir;
-      } else if (Platform.isIOS) {
+      } else if (PlatformHelper.isIOS) {
         // iOS - use app documents directory
         final appDir = await getApplicationDocumentsDirectory();
         final downloadDir = Directory('${appDir.path}/Downloads');
@@ -560,7 +569,7 @@ class AppDownloadService {
   /// Uses method channel to call native Android Intent for APK installation
   /// This is the proper way to install APKs on Android (uses FileProvider)
   Future<bool> installApk(String filePath) async {
-    if (kIsWeb || !Platform.isAndroid) {
+    if (!PlatformHelper.isAndroid) {
       Logger.warning('APK installation only supported on Android',
           tag: 'AppDownloadService');
       return false;
@@ -636,7 +645,7 @@ class AppDownloadService {
       return false;
     }
 
-    if (Platform.isAndroid) {
+    if (PlatformHelper.isAndroid) {
       return await installApk(filePath);
     }
 

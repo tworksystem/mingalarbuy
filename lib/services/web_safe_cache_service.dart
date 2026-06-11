@@ -1,48 +1,30 @@
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// Web-safe cache service that doesn't use Hive on web
+/// Web-safe cache service — SharedPreferences on web, Hive on mobile.
 class WebSafeCacheService {
   static bool _isInitialized = false;
+  static SharedPreferences? _prefs;
 
   /// Initialize cache service with web compatibility
   static Future<void> initialize() async {
     if (_isInitialized) return;
 
     try {
-      if (kIsWeb) {
-        print('🌐 Web platform detected - using memory cache');
-        // For web, we'll use a simple in-memory cache
-        _initializeWebCache();
-      } else {
-        print('📱 Mobile platform detected - using Hive cache');
-        // For mobile, we could use Hive if needed
-        await _initializeMobileCache();
-      }
-
+      _prefs = await SharedPreferences.getInstance();
       _isInitialized = true;
-      print('✅ WebSafe Cache Service initialized successfully');
+      if (kIsWeb) {
+        print('🌐 Web cache initialized (SharedPreferences / localStorage)');
+      } else {
+        print('📱 Mobile cache initialized (SharedPreferences + Hive)');
+      }
     } catch (e) {
       print('❌ WebSafe Cache Service initialization failed: $e');
-      // Don't rethrow - let the app continue without cache
     }
   }
 
-  /// Initialize web-specific cache
-  static void _initializeWebCache() {
-    print('🌐 Initializing web cache...');
-    // Simple in-memory cache for web
-    // This is just a placeholder - in a real app you might use IndexedDB
-  }
-
-  /// Initialize mobile-specific cache
-  static Future<void> _initializeMobileCache() async {
-    print('📱 Initializing mobile cache...');
-    // Placeholder for mobile cache initialization
-    await Future.delayed(const Duration(milliseconds: 100));
-  }
-
   /// Check if cache is available
-  static bool get isAvailable => _isInitialized;
+  static bool get isAvailable => _isInitialized && _prefs != null;
 
   /// Get cache stats (web-safe)
   static Map<String, dynamic> getCacheStats() {
@@ -51,15 +33,17 @@ class WebSafeCacheService {
     return {
       'platform': kIsWeb ? 'web' : 'mobile',
       'initialized': _isInitialized,
-      'cache_type': kIsWeb ? 'memory' : 'hive',
+      'cache_type': kIsWeb ? 'localStorage' : 'hive+prefs',
+      'keys': _prefs?.getKeys().length ?? 0,
     };
   }
 
   /// Dispose cache service
   static Future<void> dispose() async {
     if (_isInitialized) {
-      print('✅ WebSafe Cache Service disposed');
+      _prefs = null;
       _isInitialized = false;
+      print('✅ WebSafe Cache Service disposed');
     }
   }
 }

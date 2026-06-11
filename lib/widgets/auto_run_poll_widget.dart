@@ -889,6 +889,10 @@ class _AutoRunPollWidgetState extends State<AutoRunPollWidget>
   }
 
   Future<void> _triggerRestartVibration() async {
+    if (kIsWeb) {
+      HapticFeedback.lightImpact();
+      return;
+    }
     try {
       final hasVibrator = (await Vibration.hasVibrator()) == true;
       if (hasVibrator) {

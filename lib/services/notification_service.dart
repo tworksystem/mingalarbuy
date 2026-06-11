@@ -1,7 +1,8 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'dart:io' show Platform;
+
 import '../utils/logger.dart';
+import '../utils/platform_helper.dart';
 import 'web_notification_impl.dart' if (dart.library.io) 'web_notification_stub.dart';
 
 /// Service for handling local notifications
@@ -128,7 +129,7 @@ class NotificationService {
               stackTrace: stackTrace);
           return false;
         }
-      } else if (Platform.isAndroid) {
+      } else if (PlatformHelper.isAndroid) {
         // Android 13+ requires runtime permission
         final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
             _flutterLocalNotificationsPlugin
@@ -162,7 +163,7 @@ class NotificationService {
           
           return granted ?? true; // Default to true if cannot determine
         }
-      } else if (Platform.isIOS) {
+      } else if (PlatformHelper.isIOS) {
         // iOS permissions are requested during initialization
         // Permissions are handled automatically via DarwinInitializationSettings
         Logger.info('iOS notification permissions requested during initialization',
@@ -481,7 +482,7 @@ class NotificationService {
           return WebNotificationImpl.getPermission() == 'granted';
         }
         return false;
-      } else if (Platform.isAndroid) {
+      } else if (PlatformHelper.isAndroid) {
         final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
             _flutterLocalNotificationsPlugin
                 .resolvePlatformSpecificImplementation<
