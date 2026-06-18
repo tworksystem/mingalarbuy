@@ -31,6 +31,18 @@ class CmsHtmlSanitizer {
     out = out.replaceAll(_eventHandlers, '');
     out = out.replaceAll(_javascriptHref, r'$1="#"');
     out = out.replaceAll(_dataUriScript, 'src=""');
-    return out.trim();
+    return injectImgReferrerPolicy(out.trim());
+  }
+
+  /// Adds hotlink-safe referrer policy to CMS `<img>` tags (web browser native load).
+  static String injectImgReferrerPolicy(String html) {
+    if (html.isEmpty) return html;
+    return html.replaceAllMapped(
+      RegExp(
+        r'<\s*img((?![^>]*\breferrerpolicy\b)[^>]*)>',
+        caseSensitive: false,
+      ),
+      (match) => '<img referrerpolicy="no-referrer"${match.group(1)!}>',
+    );
   }
 }
