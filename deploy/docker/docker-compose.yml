@@ -1,0 +1,22 @@
+# Local production-like test — serves the same static files as app.mingalarbuy.com httpdocs.
+#
+# Prerequisites:
+#   ./scripts/build-web-subdomain.sh
+#
+# Usage:
+#   cd deploy/docker
+#   docker compose up -d
+#   open http://localhost:8080
+#
+# Note: API still calls https://mingalarbuy.com (cross-origin, same as live subdomain).
+# For dev with CORS proxy + hot reload use: ./scripts/run-web-dev.sh
+
+services:
+  planetmm-web:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ../plesk-subdomain:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
