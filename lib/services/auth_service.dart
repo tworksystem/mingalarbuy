@@ -272,7 +272,7 @@ class AuthService {
 
     if (response == null) {
       return AuthResponse.error(
-        message: 'Request timeout or server unreachable. Please try again.',
+        message: NetworkUtils.unreachableMessage(),
       );
     }
 
@@ -317,7 +317,7 @@ class AuthService {
 
     if (response == null) {
       return AuthResponse.error(
-        message: 'Request timeout or server unreachable. Please try again.',
+        message: NetworkUtils.unreachableMessage(),
       );
     }
 
@@ -450,7 +450,7 @@ class AuthService {
 
       if (response == null) {
         return AuthResponse.error(
-          message: 'Request timeout or server unreachable. Please try again.',
+          message: NetworkUtils.unreachableMessage(),
         );
       }
 
@@ -728,7 +728,7 @@ class AuthService {
 
       if (response == null) {
         return AuthResponse.error(
-          message: 'Request timeout or server unreachable. Please try again.',
+          message: NetworkUtils.unreachableMessage(),
         );
       }
 
@@ -966,7 +966,7 @@ class AuthService {
 
       if (response == null) {
         return AuthResponse.error(
-          message: 'Request timeout or server unreachable. Please try again.',
+          message: NetworkUtils.unreachableMessage(),
         );
       }
 
@@ -1171,7 +1171,7 @@ class AuthService {
 
       if (response == null) {
         return AuthResponse.error(
-          message: 'Request timeout or server unreachable. Please try again.',
+          message: NetworkUtils.unreachableMessage(),
         );
       }
 

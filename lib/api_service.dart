@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'utils/network_error_utils.dart';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'models/user.dart';
@@ -107,6 +108,7 @@ class ApiService {
                 options.headers.remove('content-type');
                 options.headers.remove('Content-Type');
               }
+              AppConfig.stripForbiddenBrowserHeaders(options.headers);
               handler.next(options);
             },
         onResponse:
@@ -802,7 +804,10 @@ class ApiService {
     }
 
     mergedHeaders.putIfAbsent('Accept', () => 'application/json');
-    mergedHeaders.putIfAbsent('User-Agent', () => AppConfig.defaultUserAgent);
+    if (!kIsWeb) {
+      mergedHeaders.putIfAbsent('User-Agent', () => AppConfig.defaultUserAgent);
+    }
+    AppConfig.stripForbiddenBrowserHeaders(mergedHeaders);
 
     return Options(
       extra: extra,

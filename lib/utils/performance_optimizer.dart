@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../widgets/web_html_image_widget.dart';
+
 /// Professional performance optimization utilities
 class PerformanceOptimizer {
   static const int _maxCacheSize = 100;
@@ -79,6 +81,28 @@ class OptimizedImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final errorFallback = errorWidget ??
+        Container(
+          color: Colors.grey[200],
+          child: fallbackAsset != null
+              ? Image.asset(fallbackAsset!, fit: fit)
+              : Icon(Icons.image, color: Colors.grey),
+        );
+
+    if (kIsWeb) {
+      return SizedBox(
+        width: width,
+        height: height,
+        child: WebHtmlImageWidget(
+          imageUrl: imageUrl,
+          width: width,
+          height: height,
+          fit: fit,
+          errorWidget: errorFallback,
+        ),
+      );
+    }
+
     return SizedBox(
       width: width,
       height: height,
@@ -100,15 +124,7 @@ class OptimizedImage extends StatelessWidget {
                 ),
               );
         },
-        errorBuilder: (context, error, stackTrace) {
-          return errorWidget ??
-              Container(
-                color: Colors.grey[200],
-                child: fallbackAsset != null
-                    ? Image.asset(fallbackAsset!, fit: fit)
-                    : Icon(Icons.image, color: Colors.grey),
-              );
-        },
+        errorBuilder: (context, error, stackTrace) => errorFallback,
       ),
     );
   }

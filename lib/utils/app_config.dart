@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 class AppConfig {
   static const String appName = 'PlanetMM';
   static const String appVersion = '1.0.1';
-  static const String buildNumber = '2';
+  static const String buildNumber = '4';
 
   /// Honest native client id (do not spoof Chrome — TLS fingerprint mismatch triggers WAF bots).
   static String get defaultUserAgent {
@@ -52,6 +52,27 @@ class AppConfig {
   /// Back-compat alias for existing `...AppConfig.defaultBrowserHeaders` spreads.
   static Map<String, String> get defaultBrowserHeaders => defaultApiHeaders;
 
+  /// Browser XHR/fetch forbids setting these — strip on Flutter Web (Dio uses XHR).
+  static const List<String> forbiddenBrowserRequestHeaders = [
+    'User-Agent',
+    'user-agent',
+    'Connection',
+    'connection',
+    'Accept-Encoding',
+    'accept-encoding',
+    'Host',
+    'host',
+    'Referer',
+    'referer',
+  ];
+
+  static void stripForbiddenBrowserHeaders(Map<String, dynamic> headers) {
+    if (!kIsWeb) return;
+    for (final name in forbiddenBrowserRequestHeaders) {
+      headers.remove(name);
+    }
+  }
+
   // API Configuration (WooCommerce - mingalarbuy.com)
   static const String _productionOrigin = 'https://mingalarbuy.com';
 
@@ -61,6 +82,7 @@ class AppConfig {
   /// Resolved API origin for web.
   ///
   /// - Production host (https://mingalarbuy.com/app/): same-origin API.
+  /// - App subdomain (https://app.mingalarbuy.com/): cross-origin to mingalarbuy.com.
   /// - Localhost dev: needs Admin **nginx CORS** (`backend/nginx/twork-web-cors.conf`)
   ///   or optional local proxy (`npm run proxy` + `WEB_DEV_PROXY`).
   /// - Admin reverse-proxy path: `--dart-define=WEB_API_ORIGIN=https://mingalarbuy.com/twork-api`
@@ -84,6 +106,10 @@ class AppConfig {
           page.scheme == 'https' &&
           page.host.isNotEmpty &&
           !isLocalPage) {
+        // app.mingalarbuy.com serves the UI; WooCommerce API stays on main domain.
+        if (_isAppWebSubdomain(page.host)) {
+          return _productionOrigin;
+        }
         return page.origin;
       }
 
@@ -95,6 +121,15 @@ class AppConfig {
     return _productionOrigin;
   }
 
+  /// True when the Flutter web app runs on a dedicated app subdomain (not the API host).
+  static bool _isAppWebSubdomain(String host) {
+    final String h = host.toLowerCase();
+    if (h == 'app.mingalarbuy.com') {
+      return true;
+    }
+    return h.startsWith('app.') && h.endsWith('.mingalarbuy.com');
+  }
+
   static bool _isLocalDevHost(String host) {
     final String h = host.toLowerCase();
     return h == 'localhost' ||
@@ -102,6 +137,36 @@ class AppConfig {
         h == '0.0.0.0' ||
         h == '[::1]' ||
         h.endsWith('.local');
+  }
+
+  /// True when Flutter web runs on a dedicated app subdomain (not the API host).
+  static bool get isAppWebSubdomainPage {
+    if (!kIsWeb) {
+      return false;
+    }
+    final Uri? page = Uri.tryParse(Uri.base.origin);
+    if (page == null || page.host.isEmpty) {
+      return false;
+    }
+    return _isAppWebSubdomain(page.host);
+  }
+
+  /// True when Flutter web runs on localhost / 127.0.0.1 (Chrome dev server).
+  static bool get isLocalWebDevPage {
+    if (!kIsWeb) {
+      return false;
+    }
+    final Uri? page = Uri.tryParse(Uri.base.origin);
+    return page != null && page.host.isNotEmpty && _isLocalDevHost(page.host);
+  }
+
+  /// True when debug web build uses the local CORS proxy (`WEB_DEV_PROXY`).
+  static bool get usesLocalDevProxy {
+    if (!kIsWeb || !kDebugMode) {
+      return false;
+    }
+    const String proxy = String.fromEnvironment('WEB_DEV_PROXY');
+    return proxy.isNotEmpty;
   }
 
   /// True for debug web traffic to the local CORS proxy (http://127.0.0.1:8787).
@@ -194,6 +259,7 @@ class AppConfig {
 
   // Image Settings
   static const int maxImageCacheSize = 50;
+
   /// ~80MB decoded image RAM budget (Flutter imageCache byte limit).
   static const int maxImageCacheSizeBytes = 80 * 1024 * 1024;
   static const Duration imageCacheExpiry = Duration(hours: 1);
@@ -246,12 +312,12 @@ class AppConfig {
 
   /// Get headers for API requests
   static Map<String, String> getApiHeaders() {
-    // OLD CODE:
-    // return {
-    //   'Content-Type': 'application/json',
-    //   'Authorization': 'Basic ${_getAuthToken()}',
-    //   'User-Agent': '$appName/$appVersion',
-    // };
+    if (kIsWeb) {
+      return {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ${_getAuthToken()}',
+      };
+    }
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Basic ${_getAuthToken()}',

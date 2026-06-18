@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../api_service.dart';
+import '../config/web_config.dart';
 import 'network_error_utils.dart';
 
 /// Professional network utilities for robust API communication
@@ -109,9 +110,15 @@ class NetworkUtils {
     }
   }
 
+  /// Message when [ApiService.executeWithRetry] returns null (timeout / unreachable).
+  static String unreachableMessage() => WebConfig.webConnectionErrorMessage;
+
   /// Get user-friendly error message
   static String getErrorMessage(dynamic error) {
     if (NetworkErrorUtils.isSocketLikeError(error)) {
+      if (WebConfig.isLikelyCorsBlock) {
+        return WebConfig.webConnectionErrorMessage;
+      }
       return 'No internet connection. Please check your network settings.';
     } else if (error is TimeoutException) {
       return 'Request timeout. Server may be busy. Please try again.';
@@ -123,6 +130,9 @@ class NetworkUtils {
         return 'Request timeout. Server may be busy. Please try again.';
       }
       if (t == DioExceptionType.connectionError) {
+        if (WebConfig.isLikelyCorsBlock) {
+          return WebConfig.webConnectionErrorMessage;
+        }
         return 'No internet connection. Please check your network settings.';
       }
       return error.message ?? 'Network error. Please try again.';
