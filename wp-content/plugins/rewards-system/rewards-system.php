@@ -754,7 +754,11 @@ class TWork_Rewards_System
      */
     public function ajax_search_users_for_point_transactions()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+        if (class_exists('Rewards_Admin_Permissions', false)) {
+            if (!Rewards_Admin_Permissions::current_user_can_access('point_transactions')) {
+                wp_send_json_error(array('message' => __('Insufficient permissions.', 'twork-rewards')), 403);
+            }
+        } elseif (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
             wp_send_json_error(array('message' => __('Insufficient permissions.', 'twork-rewards')), 403);
         }
 
@@ -933,6 +937,12 @@ class TWork_Rewards_System
         $poll_pnp_file = TWORK_REWARDS_PLUGIN_DIR . 'includes/class-poll-pnp.php';
         if (file_exists($poll_pnp_file)) {
             require_once $poll_pnp_file;
+        }
+
+        $admin_permissions_file = TWORK_REWARDS_PLUGIN_DIR . 'includes/class-admin-permissions.php';
+        if (file_exists($admin_permissions_file)) {
+            require_once $admin_permissions_file;
+            Rewards_Admin_Permissions::register_hooks();
         }
 
         if ($migration_version !== $current_version) {
@@ -2325,11 +2335,33 @@ class TWork_Rewards_System
     }
 
     /**
+     * Admin POST/AJAX permission gate (falls back to legacy caps if module missing).
+     *
+     * @param string $page_key Rewards admin page permission key.
+     * @return void
+     */
+    private function rewards_require_action($page_key)
+    {
+        if (class_exists('Rewards_Admin_Permissions', false)) {
+            Rewards_Admin_Permissions::require_action_access($page_key);
+            return;
+        }
+
+        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+            wp_die(__('Insufficient permissions.', 'twork-rewards'));
+        }
+    }
+
+    /**
      * Admin menu pages
      */
     public function add_admin_menu()
     {
-        $capability = current_user_can('manage_woocommerce') ? 'manage_woocommerce' : 'manage_options';
+        // Old Code:
+        // $capability = current_user_can('manage_woocommerce') ? 'manage_woocommerce' : 'manage_options';
+        $capability = class_exists('Rewards_Admin_Permissions', false)
+            ? Rewards_Admin_Permissions::menu_capability()
+            : (current_user_can('manage_woocommerce') ? 'manage_woocommerce' : 'manage_options');
         $parent_slug = 'twork-rewards';
 
         add_menu_page(
@@ -2433,6 +2465,17 @@ class TWork_Rewards_System
             array($this, 'render_settings_page')
         );
 
+        if (class_exists('Rewards_Admin_Permissions', false) && Rewards_Admin_Permissions::is_super_admin()) {
+            add_submenu_page(
+                $parent_slug,
+                __('Access Control', 'twork-rewards'),
+                __('Access Control', 'twork-rewards'),
+                'manage_options',
+                'rewards-access-control',
+                array('Rewards_Admin_Permissions', 'render_access_control_page')
+            );
+        }
+
         // Hidden edit page
         add_submenu_page(
             null,
@@ -2517,10 +2560,6 @@ class TWork_Rewards_System
      */
     public function render_settings_page()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         $webhook_url = get_option('twork_rewards_webhook_url', '');
         $vote_enabled = (int) get_option(self::OPTION_VOTE_ENABLED, 1);
         global $wpdb;
@@ -3544,9 +3583,7 @@ class TWork_Rewards_System
 
         check_admin_referer('twork_rewards_save_settings');
 
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('settings');
         $get_sanitized_text_or_existing = static function ($post_key, $option_key, $default = '') {
             if (!isset($_POST[$post_key])) {
                 return get_option($option_key, $default);
@@ -3781,9 +3818,7 @@ class TWork_Rewards_System
      */
     public function handle_test_notification()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('settings');
 
         check_admin_referer('twork_rewards_test_notification', 'twork_rewards_test_notification_nonce');
 
@@ -9711,9 +9746,7 @@ class TWork_Rewards_System
     public function handle_initialize_activity()
     {
         // Security check
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('users');
 
         check_admin_referer('twork_rewards_initialize_activity');
 
@@ -13566,10 +13599,6 @@ class TWork_Rewards_System
      */
     public function render_point_transactions_admin_page()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         global $wpdb;
         $table_name = $wpdb->prefix . 'twork_point_transactions';
 
@@ -14482,10 +14511,6 @@ class TWork_Rewards_System
      */
     public function render_transactions_page()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         global $wpdb;
         $table = $this->table_name();
 
@@ -15368,10 +15393,6 @@ class TWork_Rewards_System
      */
     public function render_transaction_edit_page()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         $transaction_id = isset($_GET['transaction_id']) ? absint($_GET['transaction_id']) : 0;
         if ($transaction_id <= 0) {
             wp_die(__('Missing transaction_id.', 'twork-rewards'));
@@ -15506,9 +15527,7 @@ class TWork_Rewards_System
 
     public function handle_transaction_update()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('transactions');
         check_admin_referer('twork_rewards_update_transaction', 'twork_rewards_txn_nonce');
 
         $transaction_id = isset($_POST['transaction_id']) ? absint($_POST['transaction_id']) : 0;
@@ -15714,9 +15733,7 @@ class TWork_Rewards_System
      */
     public function handle_transaction_delete()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('transactions');
 
         check_admin_referer('twork_rewards_delete_transaction', 'twork_rewards_delete_nonce');
 
@@ -15759,9 +15776,7 @@ class TWork_Rewards_System
      */
     public function handle_transaction_restore()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('transactions');
 
         check_admin_referer('twork_rewards_restore_transaction', 'twork_rewards_restore_nonce');
 
@@ -15804,9 +15819,7 @@ class TWork_Rewards_System
      */
     public function handle_transaction_permanent_delete()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('transactions');
 
         check_admin_referer('twork_rewards_permanent_delete_transaction', 'twork_rewards_permanent_delete_nonce');
 
@@ -15848,9 +15861,7 @@ class TWork_Rewards_System
      */
     public function handle_bulk_transaction_action()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('transactions');
 
         check_admin_referer('twork_rewards_bulk_transaction_action', 'twork_rewards_bulk_nonce');
 
@@ -15972,9 +15983,7 @@ class TWork_Rewards_System
      */
     public function handle_point_transaction_delete()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('point_transactions');
 
         check_admin_referer('twork_rewards_delete_point_transaction', 'twork_rewards_delete_point_nonce');
 
@@ -16010,9 +16019,7 @@ class TWork_Rewards_System
      */
     public function handle_point_transaction_restore()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('point_transactions');
 
         check_admin_referer('twork_rewards_restore_point_transaction', 'twork_rewards_restore_point_nonce');
 
@@ -16047,9 +16054,7 @@ class TWork_Rewards_System
      */
     public function handle_point_transaction_permanent_delete()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('point_transactions');
 
         check_admin_referer('twork_rewards_permanent_delete_point_transaction', 'twork_rewards_permanent_delete_point_nonce');
 
@@ -16072,9 +16077,7 @@ class TWork_Rewards_System
      */
     public function handle_bulk_point_transaction_action()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('point_transactions');
 
         check_admin_referer('twork_rewards_bulk_point_transaction_action', 'twork_rewards_bulk_point_nonce');
 
@@ -16157,9 +16160,7 @@ class TWork_Rewards_System
      */
     public function handle_bulk_activity_action()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('users');
 
         check_admin_referer('twork_rewards_bulk_activity_action', 'twork_rewards_bulk_activity_nonce');
 
@@ -17830,10 +17831,6 @@ class TWork_Rewards_System
      */
     public function render_users_page()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         // Get User Page settings
         $settings = $this->get_user_page_settings();
 
@@ -18643,10 +18640,6 @@ class TWork_Rewards_System
      */
     public function render_user_detail_page()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         $user_id = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
         if ($user_id <= 0) {
             wp_die(__('Missing user_id.', 'twork-rewards'));
@@ -19459,9 +19452,7 @@ class TWork_Rewards_System
      */
     public function handle_user_rewards_update()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('users');
         check_admin_referer('twork_rewards_update_user_rewards', 'twork_rewards_user_nonce');
 
         $user_id = isset($_POST['user_id']) ? absint($_POST['user_id']) : 0;
@@ -19667,10 +19658,6 @@ class TWork_Rewards_System
      */
     public function render_engagement_page()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         // Enqueue media uploader
         wp_enqueue_media();
 
@@ -21437,9 +21424,7 @@ class TWork_Rewards_System
 
     public function handle_engagement_item_save()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die('Insufficient permissions');
-        }
+        $this->rewards_require_action('engagement');
         check_admin_referer('twork_rewards_save_engagement_item');
 
         // CRITICAL: Ensure migration runs before save to prevent "column doesn't exist" errors
@@ -21806,9 +21791,7 @@ class TWork_Rewards_System
      */
     public function handle_resolve_poll()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('engagement');
         check_admin_referer('twork_rewards_resolve_poll');
 
         $item_id = isset($_POST['item_id']) ? absint($_POST['item_id']) : 0;
@@ -21951,7 +21934,11 @@ class TWork_Rewards_System
      */
     public function ajax_engagement_interaction_counts()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+        if (class_exists('Rewards_Admin_Permissions', false)) {
+            if (!Rewards_Admin_Permissions::current_user_can_access('engagement')) {
+                wp_send_json_error(array('message' => 'Insufficient permissions'));
+            }
+        } elseif (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
             wp_send_json_error(array('message' => 'Insufficient permissions'));
         }
 
@@ -22012,7 +21999,11 @@ class TWork_Rewards_System
      */
     public function ajax_get_poll_results_data()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
+        if (class_exists('Rewards_Admin_Permissions', false)) {
+            if (!Rewards_Admin_Permissions::current_user_can_access('engagement')) {
+                wp_send_json_error(array('message' => 'Insufficient permissions'));
+            }
+        } elseif (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
             wp_send_json_error(array('message' => 'Insufficient permissions'));
         }
 
@@ -22164,9 +22155,7 @@ class TWork_Rewards_System
 
     public function handle_engagement_item_delete()
     {
-        if (!current_user_can('manage_options') && !current_user_can('manage_woocommerce')) {
-            wp_die('Insufficient permissions');
-        }
+        $this->rewards_require_action('engagement');
         check_admin_referer('twork_rewards_delete_engagement_item');
 
         $id = absint($_POST['item_id']);
@@ -22185,9 +22174,7 @@ class TWork_Rewards_System
      */
     public function handle_engagement_settings_save()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('engagement');
         check_admin_referer('twork_rewards_save_engagement_settings');
 
         $rotation_duration = isset($_POST['global_rotation_duration']) ? intval($_POST['global_rotation_duration']) : 5;
@@ -22261,10 +22248,6 @@ class TWork_Rewards_System
     {
         // PROFESSIONAL FIX: Wrap in try-catch to prevent critical errors
         try {
-            if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-                wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-            }
-
             global $wpdb;
             $table_name = $this->page_content_table_name();
 
@@ -22523,9 +22506,7 @@ class TWork_Rewards_System
      */
     public function handle_page_content_save()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('page_content');
 
         check_admin_referer('twork_rewards_save_page_content');
 
@@ -22606,10 +22587,6 @@ class TWork_Rewards_System
     {
         // PROFESSIONAL FIX: Wrap in try-catch to prevent critical errors
         try {
-            if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-                wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-            }
-
             global $wpdb;
             $table_name = $this->faq_table_name();
 
@@ -22862,9 +22839,7 @@ class TWork_Rewards_System
      */
     public function handle_faq_save()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('faq');
 
         check_admin_referer('twork_rewards_save_faq');
 
@@ -22927,9 +22902,7 @@ class TWork_Rewards_System
      */
     public function handle_faq_delete()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('faq');
 
         check_admin_referer('twork_rewards_delete_faq');
 
@@ -22964,10 +22937,6 @@ class TWork_Rewards_System
     {
         // PROFESSIONAL FIX: Wrap in try-catch to prevent critical errors
         try {
-            if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-                wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-            }
-
             global $wpdb;
             $table_name = $this->about_us_table_name();
 
@@ -23220,9 +23189,7 @@ class TWork_Rewards_System
      */
     public function handle_about_us_save()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('about_us');
 
         check_admin_referer('twork_rewards_save_about_us');
 
@@ -23285,10 +23252,6 @@ class TWork_Rewards_System
 
     public function render_exchange_requests_page()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         global $wpdb;
         $exchange_table = $this->exchange_requests_table_name();
 
@@ -24047,9 +24010,7 @@ class TWork_Rewards_System
      */
     public function handle_exchange_action()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('exchange_requests');
 
         check_admin_referer('twork_rewards_handle_exchange', 'twork_rewards_exchange_nonce');
 
@@ -24292,9 +24253,7 @@ class TWork_Rewards_System
      */
     public function handle_bulk_exchange_action()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('exchange_requests');
 
         check_admin_referer('twork_rewards_bulk_exchange_action', 'twork_rewards_bulk_exchange_nonce');
 
@@ -24510,9 +24469,7 @@ class TWork_Rewards_System
      */
     public function handle_exchange_export()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('exchange_requests');
 
         // Get filter parameters (same as render page)
         $status = isset($_GET['status']) ? sanitize_text_field($_GET['status']) : '';
@@ -24639,10 +24596,6 @@ class TWork_Rewards_System
      */
     public function render_exchange_edit_page()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         $request_id = isset($_GET['id']) ? absint($_GET['id']) : 0;
         if ($request_id <= 0) {
             wp_die(__('Invalid request ID.', 'twork-rewards'));
@@ -24980,9 +24933,7 @@ class TWork_Rewards_System
      */
     public function handle_exchange_save()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('exchange_requests');
 
         check_admin_referer('twork_rewards_save_exchange', 'twork_rewards_exchange_save_nonce');
 
@@ -25550,10 +25501,6 @@ class TWork_Rewards_System
      */
     public function render_usage_analytics_page()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to access this page.', 'twork-rewards'));
-        }
-
         // Handle CSV export
         if (isset($_GET['export']) && $_GET['export'] === 'csv') {
             $this->export_analytics_csv();
@@ -26764,9 +26711,7 @@ class TWork_Rewards_System
      */
     public function export_analytics_csv()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('usage');
 
         global $wpdb;
         $usage_table = $this->usage_tracking_table_name();
@@ -26876,9 +26821,7 @@ class TWork_Rewards_System
      */
     public function handle_create_usage_table()
     {
-        if (!current_user_can('manage_woocommerce') && !current_user_can('manage_options')) {
-            wp_die(__('You do not have permission to perform this action.', 'twork-rewards'));
-        }
+        $this->rewards_require_action('usage');
 
         check_admin_referer('twork_rewards_create_usage_table');
 
