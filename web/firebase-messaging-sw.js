@@ -1,7 +1,7 @@
 /* eslint-disable no-undef */
 /**
- * FCM background handler for PlanetMM web (/app/).
- * `scripts/build-web-plesk.sh` replaces __FIREBASE_*__ placeholders at build time.
+ * FCM background handler for PlanetMM web.
+ * Build scripts replace __FIREBASE_*__ and __BASE_PATH__ at build time.
  */
 importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js');
@@ -30,8 +30,8 @@ messaging.onBackgroundMessage((payload) => {
 
   return self.registration.showNotification(title, {
     body,
-    icon: '/app/icons/Icon-192.png',
-    badge: '/app/icons/Icon-192.png',
+    icon: '__BASE_PATH__icons/Icon-192.png',
+    badge: '__BASE_PATH__icons/Icon-192.png',
     tag: payload.data?.type || 'planetmm',
     data: payload.data || {},
   });
@@ -39,13 +39,13 @@ messaging.onBackgroundMessage((payload) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = '/app/';
+  const target = '__BASE_PATH__';
   event.waitUntil(
     clients
       .matchAll({ type: 'window', includeUncontrolled: true })
       .then((windowClients) => {
         for (const client of windowClients) {
-          if (client.url.includes('/app') && 'focus' in client) {
+          if ('focus' in client) {
             return client.focus();
           }
         }
