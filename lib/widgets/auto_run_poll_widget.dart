@@ -8,6 +8,7 @@
 /// 5. RESET - Fetch new session → ACTIVE
 
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -23,7 +24,7 @@ import '../services/canonical_point_balance_sync.dart';
 import '../utils/poll_result_snapshot_meta.dart';
 import '../services/point_service.dart';
 import '../utils/logger.dart';
-import 'package:flutter/foundation.dart';
+import 'web_html_image_widget.dart';
 
 /*
 // Old Code: deferred duplicate balance refresh dedupe set (replaced by smart poll).
@@ -2563,6 +2564,15 @@ class _WinningResultWidgetState extends State<WinningResultWidget> {
         );
       } else if (mediaType == 'video') {
         mediaContent = const Center(child: CircularProgressIndicator());
+      } else if (kIsWeb) {
+        mediaContent = WebHtmlImageWidget(
+          imageUrl: mediaUrl,
+          fit: BoxFit.cover,
+          expandToFill: true,
+          errorWidget: Center(
+            child: Icon(Icons.broken_image, size: 40, color: Colors.grey[400]),
+          ),
+        );
       } else {
         mediaContent = CachedNetworkImage(
           imageUrl: mediaUrl,

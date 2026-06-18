@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -17,6 +18,8 @@ import '../utils/logger.dart' as app_logger;
 import '../utils/poll_display_helpers.dart';
 import '../utils/poll_option_totals_debug.dart';
 import '../utils/poll_result_card_debug.dart';
+import 'cms_html_content_widget.dart';
+import 'web_html_image_widget.dart';
 
 /// Interactive Engagement Carousel Widget
 class EngagementCarousel extends StatefulWidget {
@@ -4360,26 +4363,42 @@ class _CompactPollResultCard extends StatelessWidget {
       children: [
         // Full-card image / fallback background
         mediaUrl != null && mediaUrl!.isNotEmpty
-            ? CachedNetworkImage(
-                imageUrl: mediaUrl!,
-                width: double.infinity,
-                height: double.infinity,
-                fit: BoxFit.cover,
-                placeholder: (_, __) => Container(
-                  color: Colors.grey[200],
-                  child: const Center(child: CircularProgressIndicator()),
-                ),
-                errorWidget: (_, __, ___) => Container(
-                  color: Colors.grey[200],
-                  child: Center(
-                    child: Icon(
-                      Icons.image_not_supported,
-                      size: 40,
-                      color: Colors.grey[400],
+            ? kIsWeb
+                ? WebHtmlImageWidget(
+                    imageUrl: mediaUrl!,
+                    fit: BoxFit.cover,
+                    expandToFill: true,
+                    errorWidget: Container(
+                      color: Colors.grey[200],
+                      child: Center(
+                        child: Icon(
+                          Icons.image_not_supported,
+                          size: 40,
+                          color: Colors.grey[400],
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              )
+                  )
+                : CachedNetworkImage(
+                    imageUrl: mediaUrl!,
+                    width: double.infinity,
+                    height: double.infinity,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => Container(
+                      color: Colors.grey[200],
+                      child: const Center(child: CircularProgressIndicator()),
+                    ),
+                    errorWidget: (_, __, ___) => Container(
+                      color: Colors.grey[200],
+                      child: Center(
+                        child: Icon(
+                          Icons.image_not_supported,
+                          size: 40,
+                          color: Colors.grey[400],
+                        ),
+                      ),
+                    ),
+                  )
             : Container(
                 color: Colors.grey[200],
                 child: Center(
@@ -4576,6 +4595,55 @@ class _EngagementMediaWidgetState extends State<_EngagementMediaWidget> {
     });
   }
 
+  /// Web: browser-native `<img>` via [WebHtmlImageWidget] (hotlink-safe).
+  /// Mobile: [CachedNetworkImage] for disk/memory cache.
+  Widget _buildCachedOrWebImage() {
+    if (kIsWeb) {
+      // OLD CODE: Image.network (hotlink / referer errors on external wp-content URLs).
+      return WebHtmlImageWidget(
+        imageUrl: widget.mediaUrl,
+        fit: widget.fit,
+        expandToFill: true,
+        errorWidget: widget.errorWidget ??
+            Container(
+              color: Colors.grey[900],
+              child: const Center(
+                child: Icon(
+                  Icons.broken_image,
+                  color: Colors.white70,
+                  size: 50,
+                ),
+              ),
+            ),
+      );
+    }
+
+    return CachedNetworkImage(
+      imageUrl: widget.mediaUrl,
+      fit: widget.fit,
+      placeholder: (context, url) =>
+          widget.placeholder ??
+          Container(
+            color: Colors.grey[900],
+            child: const Center(
+              child: CircularProgressIndicator(color: Colors.white),
+            ),
+          ),
+      errorWidget: (context, url, error) =>
+          widget.errorWidget ??
+          Container(
+            color: Colors.grey[900],
+            child: const Center(
+              child: Icon(
+                Icons.broken_image,
+                color: Colors.white70,
+                size: 50,
+              ),
+            ),
+          ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final mediaType = getMediaType(widget.mediaUrl);
@@ -4631,58 +4699,11 @@ class _EngagementMediaWidgetState extends State<_EngagementMediaWidget> {
         );
 
       case 'gif':
-        // GIFs are handled as images - CachedNetworkImage supports GIFs
-        return CachedNetworkImage(
-          imageUrl: widget.mediaUrl,
-          fit: widget.fit,
-          placeholder: (context, url) =>
-              widget.placeholder ??
-              Container(
-                color: Colors.grey[900],
-                child: const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                ),
-              ),
-          errorWidget: (context, url, error) =>
-              widget.errorWidget ??
-              Container(
-                color: Colors.grey[900],
-                child: const Center(
-                  child: Icon(
-                    Icons.broken_image,
-                    color: Colors.white70,
-                    size: 50,
-                  ),
-                ),
-              ),
-        );
+        return _buildCachedOrWebImage();
 
       case 'image':
       default:
-        return CachedNetworkImage(
-          imageUrl: widget.mediaUrl,
-          fit: widget.fit,
-          placeholder: (context, url) =>
-              widget.placeholder ??
-              Container(
-                color: Colors.grey[900],
-                child: const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                ),
-              ),
-          errorWidget: (context, url, error) =>
-              widget.errorWidget ??
-              Container(
-                color: Colors.grey[900],
-                child: const Center(
-                  child: Icon(
-                    Icons.image_not_supported,
-                    color: Colors.white70,
-                    size: 50,
-                  ),
-                ),
-              ),
-        );
+        return _buildCachedOrWebImage();
     }
   }
 }
@@ -6893,28 +6914,45 @@ class _ImageQuickViewDialogState extends State<_ImageQuickViewDialog> {
                     : InteractiveViewer(
                         minScale: 0.5,
                         maxScale: 4.0,
-                        child: CachedNetworkImage(
-                          imageUrl: widget.imageUrl,
-                          fit: BoxFit.contain,
-                          placeholder: (context, url) => Container(
-                            color: Colors.black,
-                            child: const Center(
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
+                        child: kIsWeb
+                            ? WebHtmlImageWidget(
+                                imageUrl: widget.imageUrl,
+                                fit: BoxFit.contain,
+                                expandToFill: true,
+                                alt: widget.title,
+                                errorWidget: Container(
+                                  color: Colors.black,
+                                  child: const Center(
+                                    child: Icon(
+                                      Icons.image_not_supported,
+                                      color: Colors.white70,
+                                      size: 64,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : CachedNetworkImage(
+                                imageUrl: widget.imageUrl,
+                                fit: BoxFit.contain,
+                                placeholder: (context, url) => Container(
+                                  color: Colors.black,
+                                  child: const Center(
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                                errorWidget: (context, url, error) => Container(
+                                  color: Colors.black,
+                                  child: const Center(
+                                    child: Icon(
+                                      Icons.image_not_supported,
+                                      color: Colors.white70,
+                                      size: 64,
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                          errorWidget: (context, url, error) => Container(
-                            color: Colors.black,
-                            child: const Center(
-                              child: Icon(
-                                Icons.image_not_supported,
-                                color: Colors.white70,
-                                size: 64,
-                              ),
-                            ),
-                          ),
-                        ),
                       ),
               ),
             ),
@@ -7015,16 +7053,6 @@ class _ContentQuickViewDialog extends StatelessWidget {
   final EngagementItem item;
 
   const _ContentQuickViewDialog({required this.item});
-
-  /// Helper method to strip HTML tags from content
-  String _stripHtmlTags(String html) {
-    final RegExp exp = RegExp(
-      r'<[^>]*>',
-      multiLine: true,
-      caseSensitive: false,
-    );
-    return html.replaceAll(exp, '').trim();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -7181,25 +7209,9 @@ class _ContentQuickViewDialog extends StatelessWidget {
                                 width: 1,
                               ),
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _stripHtmlTags(item.content),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    height: 1.6,
-                                    shadows: [
-                                      Shadow(
-                                        color: Colors.black54,
-                                        offset: Offset(0, 1),
-                                        blurRadius: 2,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
+                            child: CmsHtmlContentWidget(
+                              html: item.content,
+                              colorScheme: CmsHtmlColorScheme.darkOnOverlay,
                             ),
                           ),
                         ] else if (!hasImage) ...[

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../api_service.dart';
 import '../utils/app_config.dart';
@@ -967,7 +968,8 @@ class EngagementService {
           skipAuth: false,
           headers: <String, dynamic>{
             'Content-Type': 'application/json',
-            'Idempotency-Key': idempotencyKey,
+            // Web: custom headers need CORS preflight allow-list on mingalarbuy.com.
+            if (!kIsWeb) 'Idempotency-Key': idempotencyKey,
           },
           data: bodyMap,
         ).timeout(AppConfig.networkTimeout);
