@@ -434,10 +434,10 @@ class AuthService {
                 'Basic ${base64Encode(utf8.encode('$consumerKey:$consumerSecret'))}',
           },
           data: <String, dynamic>{
-            'email': request.email,
+            'email': request.resolvedEmail,
             'first_name': request.firstName,
             'last_name': request.lastName,
-            'username': request.username ?? request.email.split('@')[0],
+            'username': request.username.trim(),
             'password': request.password,
             'billing': <String, dynamic>{
               'phone': request.phone,

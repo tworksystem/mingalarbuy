@@ -1,71 +1,76 @@
 class RegisterRequest {
-  final String email;
+  final String username;
   final String password;
+  final String? email;
   final String firstName;
   final String lastName;
   final String? phone;
-  final String? username;
+
+  /// Placeholder domain for WooCommerce accounts created without a real email.
+  static const String autoEmailDomain = 'noreply.planetmm.com';
 
   RegisterRequest({
-    required this.email,
+    required this.username,
     required this.password,
-    required this.firstName,
-    required this.lastName,
+    this.email,
+    this.firstName = '',
+    this.lastName = '',
     this.phone,
-    this.username,
   });
+
+  /// WooCommerce requires an email; generate one from username when omitted.
+  String get resolvedEmail {
+    final provided = email?.trim();
+    if (provided != null && provided.isNotEmpty) {
+      return provided;
+    }
+    final safeUsername = username
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9._-]'), '');
+    return '$safeUsername@$autoEmailDomain';
+  }
 
   Map<String, dynamic> toJson() {
     return {
-      'email': email,
+      'email': resolvedEmail,
       'password': password,
       'first_name': firstName,
       'last_name': lastName,
       'phone': phone,
-      'username': username ??
-          email.split('@')[0], // Use email prefix as username if not provided
+      'username': username.trim(),
     };
   }
 
-  // Validation methods
-  bool get isValidEmail {
-    return RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(email);
+  bool get isValidUsername {
+    final value = username.trim();
+    return value.length >= 3 &&
+        RegExp(r'^[a-zA-Z0-9._-]+$').hasMatch(value);
   }
 
   /// Password validation - accepts any non-empty password
-  /// No length or complexity requirements for maximum flexibility
   bool get isValidPassword {
     return password.isNotEmpty;
   }
 
-  /// Name validation - accepts full name in firstName, lastName can be empty
-  /// This supports single field name entry where full name is stored as-is
-  bool get isValidName {
-    return firstName.trim().isNotEmpty; // Only firstName (full name) is required
-  }
-
   bool get isValidPhone {
-    if (phone == null || phone!.isEmpty) return true; // Phone is optional
+    if (phone == null || phone!.isEmpty) return true;
     return RegExp(r'^\+?[\d\s\-\(\)]{10,}$').hasMatch(phone!);
   }
 
   bool get isValid {
-    return isValidEmail && isValidPassword && isValidName && isValidPhone;
+    return isValidUsername && isValidPassword && isValidPhone;
   }
 
   List<String> get validationErrors {
-    List<String> errors = [];
+    final errors = <String>[];
 
-    if (!isValidEmail) {
-      errors.add('Please enter a valid email address');
+    if (!isValidUsername) {
+      errors.add('Username must be at least 3 characters');
     }
 
     if (!isValidPassword) {
       errors.add('Password is required');
-    }
-
-    if (!isValidName) {
-      errors.add('Full name is required');
     }
 
     if (!isValidPhone) {
