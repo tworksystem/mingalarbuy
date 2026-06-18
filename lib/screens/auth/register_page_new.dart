@@ -59,8 +59,10 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
       }
     }
 
+    final email = emailController.text.trim();
     final registerRequest = RegisterRequest(
-      email: emailController.text.trim(),
+      username: email.split('@').first,
+      email: email,
       password: passwordController.text,
       firstName: firstName,
       lastName: lastName,

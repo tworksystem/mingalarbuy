@@ -27,12 +27,9 @@ class RegisterPageState extends State<RegisterPage> {
   final _formKey = GlobalKey<FormState>();
   final _scrollController = ScrollController();
 
-  final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   final TextEditingController confirmPasswordController =
       TextEditingController();
-  final TextEditingController firstNameController = TextEditingController();
-  final TextEditingController lastNameController = TextEditingController();
   final TextEditingController phoneController = TextEditingController();
   final TextEditingController usernameController = TextEditingController();
 
@@ -41,11 +38,8 @@ class RegisterPageState extends State<RegisterPage> {
 
   @override
   void dispose() {
-    emailController.dispose();
     passwordController.dispose();
     confirmPasswordController.dispose();
-    firstNameController.dispose();
-    lastNameController.dispose();
     phoneController.dispose();
     usernameController.dispose();
     _scrollController.dispose();
@@ -66,20 +60,11 @@ class RegisterPageState extends State<RegisterPage> {
 
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
-    // Use full name as-is without splitting
-    // Store in firstName field, leave lastName empty
-    final fullName = firstNameController.text.trim();
-
     final registerRequest = RegisterRequest(
-      email: emailController.text.trim(),
+      username: usernameController.text.trim(),
       password: passwordController.text,
-      firstName: fullName, // Store full name as-is in firstName
-      lastName: '', // Empty string - backend accepts this
       phone: phoneController.text.trim().isNotEmpty
           ? phoneController.text.trim()
-          : null,
-      username: usernameController.text.trim().isNotEmpty
-          ? usernameController.text.trim()
           : null,
     );
 
@@ -93,9 +78,7 @@ class RegisterPageState extends State<RegisterPage> {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(
           builder: (_) => WelcomeBackPage(
-            initialUsername: usernameController.text.trim().isNotEmpty
-                ? usernameController.text.trim()
-                : emailController.text.trim().split('@')[0],
+            initialUsername: usernameController.text.trim(),
           ),
         ),
         (route) => false,
@@ -268,7 +251,7 @@ class RegisterPageState extends State<RegisterPage> {
   /// Build registration form
   Widget _buildRegisterForm() {
     return SizedBox(
-      height: 520, // Fixed height to accommodate all fields and button
+      height: 400, // Fixed height to accommodate all fields and button
       child: Stack(
         children: <Widget>[
           // Form container
@@ -299,20 +282,10 @@ class RegisterPageState extends State<RegisterPage> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
-                      // Full Name field (Required)
-                      _buildTextField(
-                        controller: firstNameController,
-                        hintText: 'နာမည်အပြည့်အစုံ * (မော်ကွန်း မြတ်)',
-                        validator: (value) => ValidationUtils.validateName(
-                          value,
-                          'နာမည်အပြည့်အစုံ',
-                        ),
-                      ),
-
                       // Username field (Required)
                       _buildTextField(
                         controller: usernameController,
-                        hintText: 'အသုံးပြုသူအမည်* (mawkunn)',
+                        hintText: 'အသုံးပြုသူအမည်* (planetmm)',
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
                             return 'အသုံးပြုသူအမည် ထည့်ရန် လိုအပ်ပါတယ်';
@@ -322,14 +295,6 @@ class RegisterPageState extends State<RegisterPage> {
                           }
                           return null;
                         },
-                      ),
-
-                      // Email field (Required)
-                      _buildTextField(
-                        controller: emailController,
-                        hintText: 'အီးမေးလ် *',
-                        keyboardType: TextInputType.emailAddress,
-                        validator: ValidationUtils.validateEmail,
                       ),
 
                       // Phone field (Optional)
