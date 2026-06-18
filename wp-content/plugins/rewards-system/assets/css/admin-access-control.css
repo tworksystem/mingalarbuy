@@ -1,0 +1,183 @@
+.rewards-ac-wrap {
+    max-width: 1200px;
+}
+
+.rewards-ac-nav {
+    margin: 16px 0 20px;
+    border-bottom: 1px solid #c3c4c7;
+}
+
+.rewards-ac-nav .nav-tab {
+    margin-left: 0;
+    margin-right: 4px;
+}
+
+.rewards-ac-panel {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.rewards-ac-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 14px;
+}
+
+.rewards-ac-toolbar form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.rewards-ac-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.6;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.rewards-ac-badge--administrator {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.rewards-ac-badge--override {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.rewards-ac-badge--role {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.rewards-ac-badge--legacy {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.rewards-ac-badge--none {
+    background: #f3f4f6;
+    color: #4b5563;
+}
+
+.rewards-ac-editor {
+    margin-top: 20px;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 16px;
+}
+
+.rewards-ac-editor__header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+
+.rewards-ac-editor__meta {
+    margin: 0;
+    color: #50575e;
+}
+
+.rewards-ac-editor__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.rewards-ac-checkbox-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px 16px;
+    margin: 12px 0 16px;
+}
+
+.rewards-ac-checkbox-grid label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+}
+
+.rewards-ac-matrix-wrap {
+    overflow-x: auto;
+    margin-bottom: 12px;
+}
+
+.rewards-ac-matrix {
+    min-width: 720px;
+}
+
+.rewards-ac-matrix th,
+.rewards-ac-matrix td {
+    text-align: center;
+    vertical-align: middle;
+}
+
+.rewards-ac-matrix th:first-child,
+.rewards-ac-matrix td:first-child {
+    text-align: left;
+    position: sticky;
+    left: 0;
+    background: #fff;
+    z-index: 1;
+    min-width: 140px;
+}
+
+.rewards-ac-matrix thead th {
+    background: #f6f7f7;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.rewards-ac-matrix .rewards-ac-col-toggle,
+.rewards-ac-matrix .rewards-ac-row-toggle {
+    font-size: 11px;
+    font-weight: 400;
+    display: block;
+    margin-top: 4px;
+}
+
+.rewards-ac-hint {
+    color: #646970;
+    font-style: italic;
+    margin: 8px 0 0;
+}
+
+.rewards-ac-settings-list {
+    margin: 12px 0 0 20px;
+}
+
+.rewards-ac-settings-list li {
+    margin-bottom: 6px;
+}
+
+.rewards-ac-unsaved {
+    display: none;
+    color: #b45309;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+.rewards-ac-unsaved.is-visible {
+    display: inline;
+}
+
+@media (max-width: 782px) {
+    .rewards-ac-checkbox-grid {
+        grid-template-columns: 1fr;
+    }
+}
