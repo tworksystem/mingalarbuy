@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../utils/app_config.dart';
+import 'web_html_image_widget.dart';
 
 class NetworkImageWidget extends StatelessWidget {
   final String imageUrl;
@@ -10,6 +11,7 @@ class NetworkImageWidget extends StatelessWidget {
   final double? width;
   final BoxFit fit;
   final String fallbackAsset;
+  final bool expandToFill;
 
   const NetworkImageWidget({
     super.key,
@@ -18,6 +20,7 @@ class NetworkImageWidget extends StatelessWidget {
     this.width,
     this.fit = BoxFit.contain,
     this.fallbackAsset = 'assets/headphones.png',
+    this.expandToFill = false,
   });
 
   @override
@@ -41,31 +44,18 @@ class NetworkImageWidget extends StatelessWidget {
       );
     }
 
-    // On web, prefer Image.network to avoid service worker/cache conflicts
+    // Web: browser-native <img> (no fetch/CORS). Never use Image.network + headers on web.
     if (kIsWeb) {
-      // OLD CODE: Image.network without headers (engine default User-Agent).
-      // return Image.network(
-      //   resolvedUrl,
-      //   height: height,
-      //   width: width,
-      //   fit: fit,
-      //   loadingBuilder: ...
-      return Image.network(
-        resolvedUrl,
+      // OLD CODE: Image.network + User-Agent header → browser fetch → CORS block on cross-origin images.
+      final bool autoFill =
+          !expandToFill && height == null && width == null;
+      return WebHtmlImageWidget(
+        imageUrl: resolvedUrl,
         height: height,
         width: width,
         fit: fit,
-        headers: <String, String>{
-          'User-Agent': AppConfig.defaultUserAgent,
-          'Accept': 'image/*',
-        },
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return _buildLoadingIndicator();
-        },
-        errorBuilder: (context, error, stackTrace) {
-          return _buildFallbackImage();
-        },
+        expandToFill: expandToFill || autoFill,
+        errorWidget: _buildFallbackImage(),
       );
     }
 

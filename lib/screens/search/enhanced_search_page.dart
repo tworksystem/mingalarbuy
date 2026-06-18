@@ -4,6 +4,7 @@ import 'package:ecommerce_int2/providers/product_filter_provider.dart';
 import 'package:ecommerce_int2/services/search_service.dart';
 import 'package:ecommerce_int2/screens/product/view_product_page.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:ecommerce_int2/widgets/network_status_banner.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -347,19 +348,11 @@ class _EnhancedSearchPageState extends State<EnhancedSearchPage> {
               contentPadding: EdgeInsets.all(12),
               leading: ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: Image.network(
-                  product.image,
+                child: NetworkImageWidget(
+                  imageUrl: product.image,
                   width: 60,
                   height: 60,
                   fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      width: 60,
-                      height: 60,
-                      color: Colors.grey[200],
-                      child: Icon(Icons.image, color: Colors.grey),
-                    );
-                  },
                 ),
               ),
               title: Text(

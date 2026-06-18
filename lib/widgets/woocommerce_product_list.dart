@@ -1,7 +1,7 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:ecommerce_int2/services/product_repository.dart';
 import 'package:ecommerce_int2/screens/product/woocommerce_product_page.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_rating_bar/flutter_rating_bar.dart';
 
@@ -134,30 +134,11 @@ class _WooCommerceProductListState extends State<WooCommerceProductList> {
                   ClipRRect(
                     borderRadius:
                         BorderRadius.vertical(top: Radius.circular(12)),
-                    child: CachedNetworkImage(
+                    child: NetworkImageWidget(
                       imageUrl: product.imageUrl,
                       width: double.infinity,
                       fit: BoxFit.cover,
-                      placeholder: (context, url) => Container(
-                        color: Colors.grey[200],
-                        child: Center(child: CircularProgressIndicator()),
-                      ),
-                      errorWidget: (context, url, error) => Container(
-                        color: Colors.grey[200],
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.image_not_supported,
-                                size: 40, color: Colors.grey),
-                            SizedBox(height: 8),
-                            Text(
-                              'Image not available',
-                              style:
-                                  TextStyle(fontSize: 10, color: Colors.grey),
-                            ),
-                          ],
-                        ),
-                      ),
+                      expandToFill: true,
                     ),
                   ),
                   // Sale Badge

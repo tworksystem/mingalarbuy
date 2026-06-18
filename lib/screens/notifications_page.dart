@@ -11,9 +11,9 @@ import 'package:ecommerce_int2/utils/in_app_notification_time.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:ecommerce_int2/widgets/network_status_banner.dart';
 import 'package:ecommerce_int2/widgets/app_pull_to_refresh.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 
 /// Professional notifications page with original design
 /// Shows in-app notifications with original UI style
@@ -356,14 +356,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
                           height: 80,
                           width: 80,
                           child: productImage != null
-                              ? CachedNetworkImage(
+                              ? NetworkImageWidget(
                                   imageUrl: productImage,
+                                  height: 80,
+                                  width: 80,
                                   fit: BoxFit.cover,
-                                  errorWidget: (context, url, error) {
-                                    return Image.asset(
-                                      'assets/headphones.png',
-                                    );
-                                  },
                                 )
                               : Image.asset(
                                   'assets/headphones.png',

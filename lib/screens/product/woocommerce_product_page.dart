@@ -1,9 +1,9 @@
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:ecommerce_int2/screens/search_page.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 
 import 'woocommerce_view_product_page.dart';
 
@@ -202,32 +202,10 @@ class WooCommerceProductDisplay extends StatelessWidget {
               borderRadius: BorderRadius.all(Radius.circular(24)),
               child: Hero(
                 tag: product.imageUrl,
-                child: CachedNetworkImage(
+                child: NetworkImageWidget(
                   imageUrl: product.imageUrl,
                   fit: BoxFit.cover,
-                  placeholder: (context, url) => Container(
-                    color: Colors.grey[200],
-                    child: Center(
-                      child: CircularProgressIndicator(color: mediumYellow),
-                    ),
-                  ),
-                  errorWidget: (context, url, error) => Container(
-                    color: Colors.grey[200],
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.shopping_bag, size: 64, color: Colors.grey),
-                        SizedBox(height: 8),
-                        Text(
-                          product.name,
-                          style: TextStyle(fontSize: 14),
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
+                  expandToFill: true,
                 ),
               ),
             ),

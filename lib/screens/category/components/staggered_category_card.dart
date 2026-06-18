@@ -1,5 +1,6 @@
 import 'package:ecommerce_int2/models/category.dart' as models;
 import 'package:ecommerce_int2/screens/category/category_products_page.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
 
 class CategoryCard extends StatelessWidget {
@@ -45,28 +46,11 @@ class CategoryCard extends StatelessWidget {
   Widget _buildCategoryImage(String imagePath) {
     // Check if imagePath is a URL (starts with http) or a local asset
     if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-      // Load network image
-      return Image.network(
-        imagePath,
+      // OLD CODE: Image.network (web hotlink errors).
+      return NetworkImageWidget(
+        imageUrl: imagePath,
         fit: BoxFit.contain,
-        errorBuilder: (context, error, stackTrace) {
-          // Fallback to default asset if network image fails
-          return Image.asset(
-            'assets/jeans_5.png',
-            fit: BoxFit.contain,
-          );
-        },
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Center(
-            child: CircularProgressIndicator(
-              value: loadingProgress.expectedTotalBytes != null
-                  ? loadingProgress.cumulativeBytesLoaded /
-                      loadingProgress.expectedTotalBytes!
-                  : null,
-            ),
-          );
-        },
+        fallbackAsset: 'assets/jeans_5.png',
       );
     } else {
       // Load local asset

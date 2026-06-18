@@ -2,8 +2,8 @@ import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:ecommerce_int2/providers/cart_provider.dart';
 import 'package:ecommerce_int2/screens/shop/check_out_page.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
 
 class WooCommerceProductOption extends StatelessWidget {
@@ -25,38 +25,11 @@ class WooCommerceProductOption extends StatelessWidget {
             left: 16.0,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: CachedNetworkImage(
+              child: NetworkImageWidget(
                 imageUrl: product.imageUrl,
                 height: 200,
                 width: 200,
                 fit: BoxFit.cover,
-                placeholder: (context, url) => Container(
-                  height: 200,
-                  width: 200,
-                  color: Colors.grey[200],
-                  child: Center(
-                    child: CircularProgressIndicator(color: mediumYellow),
-                  ),
-                ),
-                errorWidget: (context, url, error) => Container(
-                  height: 200,
-                  width: 200,
-                  color: Colors.grey[200],
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.shopping_bag, size: 64, color: Colors.grey),
-                      SizedBox(height: 8),
-                      Text(
-                        product.name,
-                        style: TextStyle(fontSize: 14),
-                        textAlign: TextAlign.center,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
               ),
             ),
           ),

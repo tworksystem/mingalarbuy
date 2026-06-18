@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/network_image_service.dart';
 import '../utils/app_config.dart';
+import 'web_html_image_widget.dart';
 
 /// Robust Image Widget with comprehensive error handling and network optimization
 class RobustImageWidget extends StatefulWidget {
@@ -86,9 +88,8 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
       print('🖼️ Optimized URL: $_optimizedUrl');
     }
 
-    // OPTIMIZED: Skip expensive connectivity checks - let CachedNetworkImage handle errors
-    // Only do connectivity check if cache is expired
-    if (widget.imageUrl.startsWith('http')) {
+    // OPTIMIZED: Skip expensive connectivity checks on web (XHR cannot set User-Agent).
+    if (widget.imageUrl.startsWith('http') && !kIsWeb) {
       final now = DateTime.now();
       final shouldCheckConnectivity =
           _connectivityCheckTime == null ||
@@ -144,6 +145,16 @@ class _RobustImageWidgetState extends State<RobustImageWidget> {
 
   Widget _buildImage() {
     if (widget.imageUrl.startsWith('http')) {
+      if (kIsWeb) {
+        return WebHtmlImageWidget(
+          imageUrl: _optimizedUrl ?? widget.imageUrl,
+          height: widget.height,
+          width: widget.width,
+          fit: widget.fit,
+          expandToFill: widget.height == null && widget.width == null,
+          errorWidget: widget.errorWidget ?? _buildErrorWidget(),
+        );
+      }
       return CachedNetworkImage(
         imageUrl: _optimizedUrl ?? widget.imageUrl,
         height: widget.height,

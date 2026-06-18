@@ -4,6 +4,7 @@ import 'package:ecommerce_int2/services/page_content_service.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
 import 'package:ecommerce_int2/utils/logger.dart' as app_logger;
 import 'package:ecommerce_int2/widgets/app_pull_to_refresh.dart';
+import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -148,22 +149,10 @@ class _AboutUsPageState extends State<AboutUsPage> {
                             child: logoUrl.isNotEmpty
                                 ? ClipRRect(
                                     borderRadius: BorderRadius.circular(40),
-                                    child: Image.network(
-                                      logoUrl,
+                                    child: NetworkImageWidget(
+                                      imageUrl: logoUrl,
                                       fit: BoxFit.cover,
-                                      errorBuilder: (context, error, stackTrace) {
-                                        return Image.asset(
-                                          'assets/icons/planetmm_logo.png',
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (context, error, stackTrace) {
-                                            return const Icon(
-                                              Icons.business,
-                                              color: Colors.white,
-                                              size: 40,
-                                            );
-                                          },
-                                        );
-                                      },
+                                      fallbackAsset: 'assets/icons/planetmm_logo.png',
                                     ),
                                   )
                                 : ClipRRect(

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+
+import 'network_image_widget.dart';
 import '../services/network_image_service.dart';
-import '../utils/app_config.dart';
 
 /// Enhanced Product Image Widget with comprehensive error handling and debugging
 /// Handles both network and asset images with detailed error reporting
@@ -44,7 +44,6 @@ class ProductImageWidget extends StatelessWidget {
   }
 
   Widget _buildNetworkImage(BuildContext context) {
-    // Get optimized image URL
     final optimizedUrl = NetworkImageService.getOptimizedImageUrl(
       imageUrl,
       width: width?.toInt(),
@@ -56,48 +55,13 @@ class ProductImageWidget extends StatelessWidget {
       print('🖼️ Optimized URL: $optimizedUrl');
     }
 
-    return CachedNetworkImage(
+    return NetworkImageWidget(
       imageUrl: optimizedUrl,
       height: height,
       width: width,
       fit: fit,
-      placeholder: (context, url) {
-        if (debugMode) print('⏳ Loading placeholder for: $url');
-        return _buildLoadingPlaceholder();
-      },
-      errorWidget: (context, url, error) {
-        if (debugMode) {
-          print('❌ Image load error for: $url');
-          print('❌ Error details: $error');
-
-          // Test the URL to understand the issue
-          _testImageUrl(url);
-        }
-        return _buildErrorPlaceholder('Network Error');
-      },
-      // OPTIMIZED: Use exact size (1.0x) instead of 1.5x to reduce memory usage
-      memCacheHeight: height?.toInt(),
-      memCacheWidth: width?.toInt(),
-      // OPTIMIZED: Reduced disk cache limits to save storage
-      maxHeightDiskCache: 600,
-      maxWidthDiskCache: 600,
-      // Add timeout and retry configuration
-      fadeInDuration: const Duration(milliseconds: 300),
-      fadeOutDuration: const Duration(milliseconds: 300),
-      // Add HTTP headers for better compatibility
-      // OLD CODE:
-      // httpHeaders: const {
-      //   'User-Agent': 'HomeAid-Flutter-App/1.0',
-      //   'Accept': 'image/*',
-      //   'Accept-Encoding': 'gzip, deflate',
-      //   'Connection': 'keep-alive',
-      // },
-      httpHeaders: <String, String>{
-        'User-Agent': AppConfig.defaultUserAgent,
-        'Accept': 'image/*',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-      },
+      expandToFill: height == null && width == null,
+      fallbackAsset: 'assets/headphones.png',
     );
   }
 

@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../services/web_network_service_stub.dart'
     if (dart.library.html) '../services/web_network_service.dart';
 import '../utils/app_config.dart';
+import 'web_html_image_widget.dart';
 
 /// Web-optimized image widget with CORS and connectivity handling
 class WebOptimizedImageWidget extends StatefulWidget {
@@ -72,48 +74,51 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
 
     // Handle network images
     if (widget.imageUrl.startsWith('http')) {
-      try {
-        // Test browser connectivity
-        final isConnected = await WebNetworkService.testBrowserConnectivity();
-        if (!isConnected) {
+      // Web: native <img> — skip Dio/XHR preflight (User-Agent blocked by browser).
+      if (kIsWeb) {
+        _workingImageUrl = widget.imageUrl.trim();
+      } else {
+        try {
+          final isConnected =
+              await WebNetworkService.testBrowserConnectivity();
+          if (!isConnected) {
+            setState(() {
+              _hasError = true;
+              _errorMessage = 'No internet connection';
+              _isLoading = false;
+            });
+            return;
+          }
+
+          final isServerAccessible =
+              await WebNetworkService.testWooCommerceWebAccess();
+          if (!isServerAccessible) {
+            setState(() {
+              _hasError = true;
+              _errorMessage = 'Server connection failed';
+              _isLoading = false;
+            });
+            return;
+          }
+
+          _workingImageUrl = await WebNetworkService.getWorkingImageUrl(
+            widget.imageUrl,
+          );
+
+          if (widget.enableDebug) {
+            print('✅ Working image URL: $_workingImageUrl');
+          }
+        } catch (e) {
+          if (widget.enableDebug) {
+            print('❌ Image initialization error: $e');
+          }
           setState(() {
             _hasError = true;
-            _errorMessage = 'No internet connection';
+            _errorMessage = 'Network test failed: $e';
             _isLoading = false;
           });
           return;
         }
-
-        // Test WooCommerce server access
-        final isServerAccessible =
-            await WebNetworkService.testWooCommerceWebAccess();
-        if (!isServerAccessible) {
-          setState(() {
-            _hasError = true;
-            _errorMessage = 'Server connection failed';
-            _isLoading = false;
-          });
-          return;
-        }
-
-        // Find working image URL
-        _workingImageUrl = await WebNetworkService.getWorkingImageUrl(
-          widget.imageUrl,
-        );
-
-        if (widget.enableDebug) {
-          print('✅ Working image URL: $_workingImageUrl');
-        }
-      } catch (e) {
-        if (widget.enableDebug) {
-          print('❌ Image initialization error: $e');
-        }
-        setState(() {
-          _hasError = true;
-          _errorMessage = 'Network test failed: $e';
-          _isLoading = false;
-        });
-        return;
       }
     } else {
       // Asset image
@@ -140,6 +145,16 @@ class _WebOptimizedImageWidgetState extends State<WebOptimizedImageWidget> {
 
   Widget _buildImage() {
     if (_workingImageUrl!.startsWith('http')) {
+      if (kIsWeb) {
+        return WebHtmlImageWidget(
+          imageUrl: _workingImageUrl!,
+          height: widget.height,
+          width: widget.width,
+          fit: widget.fit,
+          expandToFill: widget.height == null && widget.width == null,
+          errorWidget: widget.errorWidget ?? _buildErrorWidget(),
+        );
+      }
       return CachedNetworkImage(
         imageUrl: _workingImageUrl!,
         height: widget.height,

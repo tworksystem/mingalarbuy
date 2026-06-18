@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../api_service.dart';
 import '../utils/app_config.dart';
@@ -12,16 +13,14 @@ class NetworkImageService {
 
   /// Test network connectivity
   static Future<bool> testConnectivity() async {
+    if (kIsWeb) {
+      return true;
+    }
     try {
-      // Test with a reliable endpoint
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.getUri(
           Uri.parse('https://www.google.com'),
           skipAuth: true,
-          // OLD CODE:
-          // headers: const <String, dynamic>{
-          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
-          // },
           headers: <String, dynamic>{
             'User-Agent': AppConfig.defaultUserAgent,
           },
@@ -38,15 +37,14 @@ class NetworkImageService {
 
   /// Test WooCommerce server connectivity
   static Future<bool> testWooCommerceConnectivity() async {
+    if (kIsWeb) {
+      return true;
+    }
     try {
       final Response<dynamic>? response = await ApiService.executeWithRetry(
         () => ApiService.getUri(
-          Uri.parse('https://www.homeaid.com.mm'),
+          Uri.parse(AppConfig.effectiveBackendUrl),
           skipAuth: true,
-          // OLD CODE:
-          // headers: const <String, dynamic>{
-          //   'User-Agent': 'HomeAid-Flutter-App/1.0',
-          // },
           headers: <String, dynamic>{
             'User-Agent': AppConfig.defaultUserAgent,
           },
@@ -71,6 +69,9 @@ class NetworkImageService {
     String imageUrl, {
     int maxRetries = _maxRetries,
   }) async {
+    if (kIsWeb) {
+      return ImageTestResult.success(imageUrl, 200);
+    }
     print('🖼️ Testing image URL: $imageUrl');
 
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
