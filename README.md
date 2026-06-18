@@ -94,6 +94,7 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 🌍 **App Subdomain Web** - Production Flutter web at `app.mingalarbuy.com` with cross-origin API to `mingalarbuy.com`
 - 🖼️ **Web-Native Images** - Browser `<img>` rendering for WooCommerce media (bypasses canvas/CORS hotlink blocks)
 - 📄 **CMS HTML Widget** - Shared `flutter_html` renderer with XSS sanitizer for About/Legal and engagement overlays
+- 🔐 **Rewards Admin Access Control** - Per-role and per-user WordPress admin page permissions (app REST routes untouched)
 
 ---
 
@@ -721,6 +722,8 @@ mingalarbuy/
 │   └── plugins/
 │       ├── twork-points-system/    # Points system plugin
 │       ├── rewards-system/         # Rewards & engagement plugin
+│       │   ├── includes/class-admin-permissions.php  # WP admin page ACL
+│       │   └── assets/             # Admin access-control UI (CSS/JS)
 │       ├── fcm-notify/             # FCM notification plugin
 │       └── twork-cors/             # Flutter web CORS + media hotlink plugin
 │
@@ -1437,6 +1440,14 @@ We would like to express our gratitude to the following technologies, platforms,
 - ✅ **Uploads media headers** — CORS + cache headers on `wp-content/uploads` via `.htaccess` injection
 - ✅ **Media proxy REST route** — Serves hotlink-blocked images through WordPress when referer is allowed
 - ✅ **PlanetMM client headers** — `X-PlanetMM-*` allowed in preflight `Access-Control-Allow-Headers`
+
+#### 🔐 Rewards Admin Access Control (WordPress)
+- ✅ **`Rewards_Admin_Permissions`** — Central module for per-page admin ACL (Transactions, Engagement, Users, Settings, etc.)
+- ✅ **Role + user overrides** — Grant or deny individual screens by WordPress role or specific user account
+- ✅ **Strict mode toggle** — Optional enforcement that supersedes legacy `manage_woocommerce` blanket access
+- ✅ **Access Control screen** — Super-admin settings UI with Select2 user search, unsaved-change guard, and role matrix
+- ✅ **Action gates** — `rewards_require_action()` replaces scattered capability checks on POST/AJAX handlers
+- ✅ **App API untouched** — Mobile/web REST routes and `twork_*` storage remain unchanged; admin-only hardening
 
 ### Recent Updates (07 June 2026 — Plugin Directory Migration)
 
