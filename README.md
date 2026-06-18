@@ -95,6 +95,7 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 🖼️ **Web-Native Images** - Browser `<img>` rendering for WooCommerce media (bypasses canvas/CORS hotlink blocks)
 - 📄 **CMS HTML Widget** - Shared `flutter_html` renderer with XSS sanitizer for About/Legal and engagement overlays
 - 🔐 **Rewards Admin Access Control** - Per-role and per-user WordPress admin page permissions (app REST routes untouched)
+- 👤 **Username-First Sign-Up** - Register with username + password; WooCommerce email auto-derived when omitted
 
 ---
 
@@ -197,7 +198,7 @@ See [docs/POLL_AUTO_RUN_INTEGRATION.md](docs/POLL_AUTO_RUN_INTEGRATION.md) for i
 ### 📱 User Experience
 
 #### Authentication & Profile
-- **User Registration** - Email/phone registration with OTP verification
+- **User Registration** - Username-first sign-up with optional email; auto-generated WooCommerce email when omitted
 - **Login System** - Secure authentication with session management
 - **Password Recovery** - Forgot password with email/SMS verification
 - **Profile Management** - Edit profile, avatar, preferences
@@ -1448,6 +1449,13 @@ We would like to express our gratitude to the following technologies, platforms,
 - ✅ **Access Control screen** — Super-admin settings UI with Select2 user search, unsaved-change guard, and role matrix
 - ✅ **Action gates** — `rewards_require_action()` replaces scattered capability checks on POST/AJAX handlers
 - ✅ **App API untouched** — Mobile/web REST routes and `twork_*` storage remain unchanged; admin-only hardening
+
+#### 👤 Username-First Registration (Flutter)
+- ✅ **`RegisterRequest` refactor** — Username is the primary credential; email and name fields are optional
+- ✅ **Auto WooCommerce email** — Generates `{username}@noreply.planetmm.com` when no email is provided (WooCommerce requires one)
+- ✅ **Simplified register UI** — Legacy `register_page.dart` collects username, password, and optional phone only
+- ✅ **`resolvedEmail` in AuthService** — Customer creation POST uses sanitized username + derived email consistently
+- ✅ **Validation** — Minimum 3-character alphanumeric username (`a-z`, `0-9`, `.`, `_`, `-`)
 
 ### Recent Updates (07 June 2026 — Plugin Directory Migration)
 
