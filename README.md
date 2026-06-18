@@ -8,15 +8,16 @@
 [![Dart](https://img.shields.io/badge/Dart-3.0+-0175C2?logo=dart)](https://dart.dev)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Desktop-blue)](https://flutter.dev)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](https://github.com/tworksystem/mingalarbuy)
-[![GitHub](https://img.shields.io/badge/GitHub-mingalarbuy-181717?logo=github)](https://github.com/tworksystem/mingalarbuy)
-[![Version](https://img.shields.io/badge/Version-1.0.1%20(build%202)-blueviolet)](https://github.com/tworksystem/mingalarbuy)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](https://github.com/mawkunnmyat/mingalarbuy)
+[![GitHub](https://img.shields.io/badge/GitHub-mingalarbuy-181717?logo=github)](https://github.com/mawkunnmyat/mingalarbuy)
+[![Version](https://img.shields.io/badge/Version-1.0.1%20(build%204)-blueviolet)](https://github.com/mawkunnmyat/mingalarbuy)
+[![Web App](https://img.shields.io/badge/Web%20App-app.mingalarbuy.com-0ea5e9?logo=googlechrome&logoColor=white)](https://app.mingalarbuy.com)
 
 A production-ready, enterprise-grade e-commerce application built with Flutter, seamlessly integrated with WooCommerce and WordPress. Features comprehensive loyalty rewards system, engagement hub, offline-first architecture, real-time notifications, and advanced payment solutions.
 
 **Live Demo**: [mingalarbuy.com](https://mingalarbuy.com)
 
-**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repository**: [@tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy) · Author mirror: [@mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repository**: [@mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy) · Org mirror: [@tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 **Poll System (Auto-Run Poll, Engagement Hub)**  
 Auto-run poll lifecycle and engagement components are maintained within this repository and documented under `docs/`.
@@ -68,8 +69,8 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - **Backend**: WordPress + WooCommerce
 - **Author**: Maw Kunn Myat
 - **Maintained by**: T-Work System
-- **Primary Repository**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Author Mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Primary Repository**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Organization Mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 - **License**: MIT License
 - **Status**: Production Ready ✅
 
@@ -428,7 +429,7 @@ Ensure all checks pass before proceeding.
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/tworksystem/mingalarbuy.git
+git clone https://github.com/mawkunnmyat/mingalarbuy.git
 cd mingalarbuy
 ```
 
@@ -874,7 +875,7 @@ flutter doctor       # Verify development environment
 
 ```bash
 # Clone the repository
-git clone https://github.com/tworksystem/mingalarbuy.git
+git clone https://github.com/mawkunnmyat/mingalarbuy.git
 cd mingalarbuy
 
 # Install dependencies
@@ -1222,7 +1223,7 @@ cd ..
 
 ### Getting Help
 
-1. Check existing [Issues](https://github.com/tworksystem/mingalarbuy/issues) or [Author mirror issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
+1. Check existing [Issues](https://github.com/mawkunnmyat/mingalarbuy/issues) or [Org mirror issues](https://github.com/tworksystem/mingalarbuy/issues)
 2. Review documentation in `docs/` folder
 3. Check [Flutter documentation](https://flutter.dev/docs)
 4. Contact support: support@tworksystem.com
@@ -1240,7 +1241,7 @@ We welcome contributions from the community! This project is maintained by T-Wor
 1. **Fork the repository**
    ```bash
    # Click the "Fork" button on GitHub, or use:
-   gh repo fork tworksystem/mingalarbuy
+   gh repo fork mawkunnmyat/mingalarbuy
    ```
 
 2. **Create a feature branch**
@@ -1307,7 +1308,7 @@ All pull requests require review before merging. Our maintainers will review:
 ### Getting Help
 
 If you need help with contributing:
-- Check existing [Issues](https://github.com/tworksystem/mingalarbuy/issues)
+- Check existing [Issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
 - Review the [Documentation](#-documentation) section
 - Contact: support@tworksystem.com
 
@@ -1364,9 +1365,9 @@ We're here to help! Here are the best ways to get support:
   - [WooCommerce Integration](README_WOOCOMMERCE.md)
 
 #### Community Support
-- **GitHub Issues**: [Report bugs or request features](https://github.com/tworksystem/mingalarbuy/issues)
-- **Author Mirror Issues**: [mawkunnmyat/mingalarbuy/issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
-- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/tworksystem/mingalarbuy/discussions)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/mawkunnmyat/mingalarbuy/issues)
+- **Org Mirror Issues**: [tworksystem/mingalarbuy/issues](https://github.com/tworksystem/mingalarbuy/issues)
+- **GitHub Discussions**: [Ask questions and share ideas](https://github.com/mawkunnmyat/mingalarbuy/discussions)
 
 #### Direct Contact
 - **Email**: support@tworksystem.com
@@ -1376,8 +1377,8 @@ We're here to help! Here are the best ways to get support:
 #### Project Information
 - **Author**: Maw Kunn Myat
 - **Maintained by**: T-Work System
-- **Primary Repository**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Author Mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Primary Repository**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Organization Mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
 
 ---
 
@@ -1596,12 +1597,12 @@ We would like to express our gratitude to the following technologies, platforms,
 - **Email**: support@tworksystem.com
 - **Website**: [www.tworksystem.com](https://www.tworksystem.com)
 - **Store**: [mingalarbuy.com](https://mingalarbuy.com)
-- **GitHub**: [@tworksystem](https://github.com/tworksystem)
+- **GitHub**: [@mawkunnmyat](https://github.com/mawkunnmyat)
 
 ### Project Repository
-- **Primary**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
-- **Author mirror**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
-- **Issues**: [GitHub Issues](https://github.com/tworksystem/mingalarbuy/issues)
+- **Primary**: [github.com/mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
+- **Organization mirror**: [github.com/tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+- **Issues**: [GitHub Issues](https://github.com/mawkunnmyat/mingalarbuy/issues)
 - **Documentation**: See `docs/` folder for detailed guides
 
 ---
@@ -1610,7 +1611,7 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Made with ❤️ by the T-Work Team**
 
-**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repo**: [tworksystem/mingalarbuy](https://github.com/tworksystem/mingalarbuy)
+**Author**: Maw Kunn Myat | **Maintained by**: T-Work System | **Repo**: [mawkunnmyat/mingalarbuy](https://github.com/mawkunnmyat/mingalarbuy)
 
 [⬆ Back to Top](#mingalarbuy---planetmm-e-commerce-platform)
 
