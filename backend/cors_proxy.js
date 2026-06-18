@@ -38,7 +38,7 @@ app.use((req, res, next) => {
   res.setHeader(
     'Access-Control-Allow-Headers',
     requested ||
-      'Authorization, Content-Type, Accept, User-Agent, X-PlanetMM-Client, X-PlanetMM-Version, X-PlanetMM-Build, X-PlanetMM-Platform',
+      'Authorization, Content-Type, Accept, Accept-Language, User-Agent, Idempotency-Key, X-PlanetMM-Client, X-PlanetMM-Version, X-PlanetMM-Build, X-PlanetMM-Platform',
   );
   res.setHeader('Access-Control-Max-Age', '86400');
 
