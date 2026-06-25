@@ -105,6 +105,42 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
     }
   }
 
+  InputDecoration _authInputDecoration({
+    required String hintText,
+    Widget? suffixIcon,
+  }) {
+    final borderRadius = BorderRadius.circular(8);
+    final enabledBorderSide = BorderSide(color: Colors.grey.shade300);
+
+    return InputDecoration(
+      hintText: hintText,
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      suffixIcon: suffixIcon,
+      border: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: AppTheme.brightPurple, width: 1.5),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red, width: 1.5),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     Widget title = Text(
@@ -185,19 +221,14 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
     );
 
     Widget registerForm = Container(
-      width: MediaQuery.of(context).size.width,
-      padding: const EdgeInsets.only(
-        left: 32.0,
-        right: 12.0,
-        top: 8.0, // Add top padding for consistency
-        bottom: 16.0, // Add bottom padding to ensure spacing is visible
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: 20.0,
+        vertical: 12.0,
       ),
       decoration: BoxDecoration(
         color: Color.fromRGBO(255, 255, 255, 0.8),
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(10),
-          bottomLeft: Radius.circular(10),
-        ),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Form(
         key: _formKey,
@@ -212,11 +243,7 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
               child: TextFormField(
                 controller: firstNameController,
                 style: TextStyle(fontSize: 16.0),
-                decoration: InputDecoration(
-                  hintText: 'နာမည်အပြည့်အစုံ',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12.0),
-                ),
+                decoration: _authInputDecoration(hintText: 'နာမည်အပြည့်အစုံ'),
                 validator: (value) =>
                     ValidationUtils.validateName(value, 'Full name'),
               ),
@@ -228,11 +255,7 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
                 style: TextStyle(fontSize: 16.0),
-                decoration: InputDecoration(
-                  hintText: 'အီးမေးလ်',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12.0),
-                ),
+                decoration: _authInputDecoration(hintText: 'အီးမေးလ်'),
                 validator: ValidationUtils.validateEmail,
               ),
             ),
@@ -243,10 +266,8 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
                 controller: phoneController,
                 keyboardType: TextInputType.phone,
                 style: TextStyle(fontSize: 16.0),
-                decoration: InputDecoration(
+                decoration: _authInputDecoration(
                   hintText: 'လက်ရှိအသုံးပြုနေတဲ့ ဖုန်းနံပါတ်',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12.0),
                 ),
                 validator: ValidationUtils.validatePhone,
               ),
@@ -257,11 +278,12 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
               child: TextFormField(
                 controller: passwordController,
                 obscureText: _obscurePassword,
+                keyboardType: TextInputType.visiblePassword,
+                enableSuggestions: false,
+                autocorrect: false,
                 style: TextStyle(fontSize: 16.0),
-                decoration: InputDecoration(
+                decoration: _authInputDecoration(
                   hintText: 'လျို့ဝှက်နံပါတ်',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12.0),
                   suffixIcon: IconButton(
                     icon: Icon(
                       _obscurePassword
@@ -285,11 +307,12 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
               child: TextFormField(
                 controller: confirmPasswordController,
                 obscureText: _obscureConfirmPassword,
+                keyboardType: TextInputType.visiblePassword,
+                enableSuggestions: false,
+                autocorrect: false,
                 style: TextStyle(fontSize: 16.0),
-                decoration: InputDecoration(
+                decoration: _authInputDecoration(
                   hintText: 'လျို့ဝှက်နံပါတ် အတည်ပြုချက်',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12.0),
                   suffixIcon: IconButton(
                     icon: Icon(
                       _obscureConfirmPassword
@@ -385,7 +408,7 @@ class _RegisterPageNewState extends State<RegisterPageNew> {
                     ),
                     child: IntrinsicHeight(
                       child: Padding(
-                        padding: const EdgeInsets.only(left: 28.0),
+                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisAlignment: MainAxisAlignment.start,

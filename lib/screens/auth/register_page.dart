@@ -120,7 +120,7 @@ class RegisterPageState extends State<RegisterPage> {
 
                   // Main content
                   Padding(
-                    padding: const EdgeInsets.only(left: 28.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
@@ -250,108 +250,119 @@ class RegisterPageState extends State<RegisterPage> {
 
   /// Build registration form
   Widget _buildRegisterForm() {
-    return SizedBox(
-      height: 400, // Fixed height to accommodate all fields and button
-      child: Stack(
-        children: <Widget>[
-          // Form container
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            bottom: 80.0, // Space for button
-            child: Container(
-              padding: const EdgeInsets.only(
-                left: 32.0,
-                right: 12.0,
-                top: 12.0,
-                bottom: 12.0,
-              ),
-              decoration: BoxDecoration(
-                color: Color.fromRGBO(255, 255, 255, 0.8),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(10),
-                  bottomLeft: Radius.circular(10),
-                ),
-              ),
-              child: Form(
-                key: _formKey,
-                child: SingleChildScrollView(
-                  physics: const ClampingScrollPhysics(),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      // Username field (Required)
-                      _buildTextField(
-                        controller: usernameController,
-                        hintText: 'အသုံးပြုသူအမည်* (planetmm)',
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'အသုံးပြုသူအမည် ထည့်ရန် လိုအပ်ပါတယ်';
-                          }
-                          if (value.trim().length < 3) {
-                            return 'အသုံးပြုသူအမည် အနည်းဆုံး အက္ခရာ ၃ လုံးဖြစ်ရမယ်';
-                          }
-                          return null;
-                        },
-                      ),
-
-                      // Phone field (Optional)
-                      _buildTextField(
-                        controller: phoneController,
-                        hintText: 'ဖုန်းနံပါတ် (မဖြစ်မနေ လိုအပ်ပါသည်)',
-                        keyboardType: TextInputType.phone,
-                        validator: ValidationUtils.validatePhone,
-                      ),
-
-                      // Password field (Required)
-                      _buildPasswordField(
-                        controller: passwordController,
-                        hintText: 'လျို့ဝှက်နံပါတ် *',
-                        obscureText: _obscurePassword,
-                        onToggleVisibility: () {
-                          setState(() {
-                            _obscurePassword = !_obscurePassword;
-                          });
-                        },
-                        validator: ValidationUtils.validatePassword,
-                      ),
-
-                      // Confirm Password field (Required)
-                      _buildPasswordField(
-                        controller: confirmPasswordController,
-                        hintText: 'လျို့ဝှက်နံပါတ် အတည်ပြုချက် *',
-                        obscureText: _obscureConfirmPassword,
-                        onToggleVisibility: () {
-                          setState(() {
-                            _obscureConfirmPassword = !_obscureConfirmPassword;
-                          });
-                        },
-                        validator: (value) =>
-                            ValidationUtils.validateConfirmPassword(
-                          value,
-                          passwordController.text,
-                        ),
-                      ),
-
-                      // Bottom padding
-                      const SizedBox(height: 12.0),
-                    ],
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(
+            horizontal: 20.0,
+            vertical: 12.0,
+          ),
+          decoration: BoxDecoration(
+            color: Color.fromRGBO(255, 255, 255, 0.8),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Form(
+            key: _formKey,
+            child: SingleChildScrollView(
+              physics: const ClampingScrollPhysics(),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  _buildTextField(
+                    controller: usernameController,
+                    hintText: 'အသုံးပြုသူအမည်* (planetmm)',
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'အသုံးပြုသူအမည် ထည့်ရန် လိုအပ်ပါတယ်';
+                      }
+                      if (value.trim().length < 3) {
+                        return 'အသုံးပြုသူအမည် အနည်းဆုံး အက္ခရာ ၃ လုံးဖြစ်ရမယ်';
+                      }
+                      return null;
+                    },
                   ),
-                ),
+                  _buildTextField(
+                    controller: phoneController,
+                    hintText: 'ဖုန်းနံပါတ် * (မဖြစ်မနေ လိုအပ်ပါသည်)',
+                    keyboardType: TextInputType.phone,
+                    validator: ValidationUtils.validatePhone,
+                  ),
+                  _buildPasswordField(
+                    controller: passwordController,
+                    hintText: 'လျို့ဝှက်နံပါတ် *',
+                    obscureText: _obscurePassword,
+                    onToggleVisibility: () {
+                      setState(() {
+                        _obscurePassword = !_obscurePassword;
+                      });
+                    },
+                    validator: ValidationUtils.validatePassword,
+                  ),
+                  _buildPasswordField(
+                    controller: confirmPasswordController,
+                    hintText: 'လျို့ဝှက်နံပါတ် အတည်ပြုချက် *',
+                    obscureText: _obscureConfirmPassword,
+                    onToggleVisibility: () {
+                      setState(() {
+                        _obscureConfirmPassword = !_obscureConfirmPassword;
+                      });
+                    },
+                    validator: (value) =>
+                        ValidationUtils.validateConfirmPassword(
+                      value,
+                      passwordController.text,
+                    ),
+                  ),
+                  const SizedBox(height: 12.0),
+                ],
               ),
             ),
           ),
+        ),
+        const SizedBox(height: 16),
+        Center(child: _buildRegisterButton()),
+      ],
+    );
+  }
 
-          // Register button positioned at bottom
-          Positioned(
-            left: MediaQuery.of(context).size.width / 4,
-            right: 12.0,
-            bottom: 12.0,
-            child: _buildRegisterButton(),
-          ),
-        ],
+  /// Shared rounded input decoration for auth fields
+  InputDecoration _authInputDecoration({required String hintText}) {
+    final borderRadius = BorderRadius.circular(8);
+    final enabledBorderSide = BorderSide(color: Colors.grey.shade300);
+
+    return InputDecoration(
+      hintText: hintText,
+      hintStyle: TextStyle(
+        color: Colors.grey[600],
+        fontSize: 16.0,
+      ),
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      isDense: true,
+      border: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: AppTheme.brightPurple, width: 1.5),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red, width: 1.5),
       ),
     );
   }
@@ -372,20 +383,7 @@ class RegisterPageState extends State<RegisterPage> {
           fontSize: 16.0,
           color: Colors.black87,
         ),
-        decoration: InputDecoration(
-          hintText: hintText,
-          hintStyle: TextStyle(
-            color: Colors.grey[600],
-            fontSize: 16.0,
-          ),
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          errorBorder: InputBorder.none,
-          focusedErrorBorder: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(vertical: 12.0),
-          isDense: true,
-        ),
+        decoration: _authInputDecoration(hintText: hintText),
         validator: validator,
       ),
     );
@@ -404,23 +402,14 @@ class RegisterPageState extends State<RegisterPage> {
       child: TextFormField(
         controller: controller,
         obscureText: obscureText,
+        keyboardType: TextInputType.visiblePassword,
+        enableSuggestions: false,
+        autocorrect: false,
         style: const TextStyle(
           fontSize: 16.0,
           color: Colors.black87,
         ),
-        decoration: InputDecoration(
-          hintText: hintText,
-          hintStyle: TextStyle(
-            color: Colors.grey[600],
-            fontSize: 16.0,
-          ),
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          errorBorder: InputBorder.none,
-          focusedErrorBorder: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(vertical: 12.0),
-          isDense: true,
+        decoration: _authInputDecoration(hintText: hintText).copyWith(
           suffixIcon: IconButton(
             icon: Icon(
               obscureText ? Icons.visibility : Icons.visibility_off,

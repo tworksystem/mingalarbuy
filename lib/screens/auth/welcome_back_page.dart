@@ -4,9 +4,11 @@ import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/utils/validation_utils.dart';
 import 'package:ecommerce_int2/screens/main/main_page.dart';
 import 'package:ecommerce_int2/widgets/modern_loading_indicator.dart';
+import 'package:ecommerce_int2/widgets/planetmm_auth_background.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'forgot_password_page.dart';
 import 'register_page.dart';
 
 class WelcomeBackPage extends StatefulWidget {
@@ -70,6 +72,43 @@ class _WelcomeBackPageState extends State<WelcomeBackPage> {
     }
   }
 
+  InputDecoration _authInputDecoration({
+    required String hintText,
+    Widget? suffixIcon,
+  }) {
+    final borderRadius = BorderRadius.circular(8);
+    final enabledBorderSide = BorderSide(color: Colors.grey.shade300);
+
+    return InputDecoration(
+      hintText: hintText,
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      isDense: true,
+      suffixIcon: suffixIcon,
+      border: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: AppTheme.brightPurple, width: 1.5),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red, width: 1.5),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     Widget welcomeBack = Text(
@@ -97,181 +136,147 @@ class _WelcomeBackPageState extends State<WelcomeBackPage> {
               ),
         ));
 
-    Widget loginButton = Positioned(
-      left: MediaQuery.of(context).size.width / 4,
-      bottom: 12, // Adjusted to add more space above button
-      child: Consumer<AuthProvider>(
-        builder: (context, authProvider, child) {
-          return InkWell(
-            onTap: authProvider.isLoading ? null : _handleLogin,
-            child: Container(
-              width: MediaQuery.of(context).size.width / 2,
-              height: 60, // Reduced from 80 to make Remember Me visible
-              decoration: BoxDecoration(
-                // PlanetMM primary gradient for login button
-                gradient: AppTheme.primaryGradient,
-                boxShadow: [
-                  BoxShadow(
-                    color: AppTheme.brightPurple.withValues(alpha: 0.4),
-                    offset: const Offset(0, 8),
-                    blurRadius: 20.0,
-                    spreadRadius: -4,
-                  )
-                ],
-                borderRadius: BorderRadius.circular(9.0),
-              ),
-              child: Center(
-                child: authProvider.isLoading
-                    ? ModernLoadingIndicator(
-                        size: 24,
-                        color: Colors.white,
-                      )
-                    : Text(
-                        "ဝင်ရောက်မည်",
-                        style: const TextStyle(
-                          color: Color(0xfffefefe),
-                          fontWeight: FontWeight.w600,
-                          fontStyle: FontStyle.normal,
-                          fontSize: 20.0,
-                        ),
-                      ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
+    final screenWidth = MediaQuery.of(context).size.width;
 
-    Widget loginForm = SizedBox(
-      height: 280, // Increased height to accommodate content without overflow
-      child: Stack(
-        children: <Widget>[
-          // Form container with scrollable content to prevent overflow
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            child: Container(
-              width: MediaQuery.of(context).size.width,
-              constraints: const BoxConstraints(
-                minHeight: 190, // Increased to accommodate all content
-                maxHeight: 220, // Increased to prevent overflow
-              ),
-              padding: const EdgeInsets.only(
-                left: 32.0,
-                right: 12.0,
-                top: 8.0,
-                bottom: 24.0, // Space above button
-              ),
-              decoration: BoxDecoration(
-                color: Color.fromRGBO(255, 255, 255, 0.8),
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(10),
-                  bottomLeft: Radius.circular(10),
-                ),
-              ),
-              child: Form(
-                key: _formKey,
-                child: SingleChildScrollView(
-                  // Make form scrollable to prevent overflow
-                  physics: const ClampingScrollPhysics(),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      // Username field with optimized padding
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8.0),
-                        child: TextFormField(
-                          controller: emailController,
-                          style: const TextStyle(fontSize: 16.0),
-                          decoration: InputDecoration(
-                            hintText: 'အသုံးပြုသူအမည်',
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 10.0,
-                              horizontal: 0,
-                            ),
-                            isDense: true,
-                          ),
-                          validator: ValidationUtils.validateUsername,
-                        ),
+    Widget loginForm = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(
+            horizontal: 20.0,
+            vertical: 12.0,
+          ),
+          decoration: BoxDecoration(
+            color: Color.fromRGBO(255, 255, 255, 0.8),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Form(
+            key: _formKey,
+            child: SingleChildScrollView(
+              physics: const ClampingScrollPhysics(),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: TextFormField(
+                      controller: emailController,
+                      style: const TextStyle(fontSize: 16.0),
+                      decoration: _authInputDecoration(
+                        hintText: 'အသုံးပြုသူအမည်',
                       ),
-                      // Password field with optimized padding
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8.0),
-                        child: TextFormField(
-                          controller: passwordController,
-                          obscureText: _obscurePassword,
-                          style: const TextStyle(fontSize: 16.0),
-                          decoration: InputDecoration(
-                            hintText: 'လျို့ဝှက်နံပါတ်',
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 10.0,
-                              horizontal: 0,
-                            ),
-                            isDense: true,
-                            suffixIcon: IconButton(
-                              icon: Icon(
-                                _obscurePassword
-                                    ? Icons.visibility
-                                    : Icons.visibility_off,
-                                color: Colors.grey,
-                                size: 20,
-                              ),
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              onPressed: () {
-                                setState(() {
-                                  _obscurePassword = !_obscurePassword;
-                                });
-                              },
-                            ),
-                          ),
-                          validator: ValidationUtils.validatePassword,
-                        ),
-                      ),
-                      // Remember me checkbox with optimized padding
-                      Padding(
-                        padding: const EdgeInsets.only(top: 6.0),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              value: _rememberMe,
-                              onChanged: (value) {
-                                setState(() {
-                                  _rememberMe = value ?? false;
-                                });
-                              },
-                              activeColor: AppTheme.brightPurple,
-                              checkColor: Colors.white,
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            Flexible(
-                              child: Text(
-                                'အကောင့်ကို မှတ်ထားမယ်',
-                                style: const TextStyle(fontSize: 14.0),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                      validator: ValidationUtils.validateUsername,
+                    ),
                   ),
-                ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: TextFormField(
+                      controller: passwordController,
+                      obscureText: _obscurePassword,
+                      keyboardType: TextInputType.visiblePassword,
+                      enableSuggestions: false,
+                      autocorrect: false,
+                      style: const TextStyle(fontSize: 16.0),
+                      decoration: _authInputDecoration(
+                        hintText: 'လျို့ဝှက်နံပါတ်',
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility
+                                : Icons.visibility_off,
+                            color: Colors.grey,
+                            size: 20,
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            setState(() {
+                              _obscurePassword = !_obscurePassword;
+                            });
+                          },
+                        ),
+                      ),
+                      validator: ValidationUtils.validatePassword,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6.0),
+                    child: Row(
+                      children: [
+                        Checkbox(
+                          value: _rememberMe,
+                          onChanged: (value) {
+                            setState(() {
+                              _rememberMe = value ?? false;
+                            });
+                          },
+                          activeColor: AppTheme.brightPurple,
+                          checkColor: Colors.white,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        Flexible(
+                          child: Text(
+                            'အကောင့်ကို မှတ်ထားမယ်',
+                            style: const TextStyle(fontSize: 14.0),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          // Login button positioned at bottom
-          loginButton,
-        ],
-      ),
+        ),
+        const SizedBox(height: 16),
+        Center(
+          child: Consumer<AuthProvider>(
+            builder: (context, authProvider, child) {
+              return InkWell(
+                onTap: authProvider.isLoading ? null : _handleLogin,
+                child: Container(
+                  width: screenWidth / 2,
+                  height: 60,
+                  decoration: BoxDecoration(
+                    gradient: AppTheme.primaryGradient,
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppTheme.brightPurple.withValues(alpha: 0.4),
+                        offset: const Offset(0, 8),
+                        blurRadius: 20.0,
+                        spreadRadius: -4,
+                      )
+                    ],
+                    borderRadius: BorderRadius.circular(9.0),
+                  ),
+                  child: Center(
+                    child: authProvider.isLoading
+                        ? ModernLoadingIndicator(
+                            size: 24,
+                            color: Colors.white,
+                          )
+                        : Text(
+                            "ဝင်ရောက်မည်",
+                            style: const TextStyle(
+                              color: Color(0xfffefefe),
+                              fontWeight: FontWeight.w600,
+                              fontStyle: FontStyle.normal,
+                              fontSize: 20.0,
+                            ),
+                          ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
 
     Widget forgotPassword = Padding(
@@ -291,7 +296,9 @@ class _WelcomeBackPageState extends State<WelcomeBackPage> {
             ),
             InkWell(
               onTap: () {
-                // TODO: Implement forgot password
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ForgotPasswordPage()),
+                );
               },
               child: Text(
                 'လျို့ဝှက်နံပါတ် အသစ်ပြန်သတ်မှတ်မယ်',
@@ -365,6 +372,7 @@ class _WelcomeBackPageState extends State<WelcomeBackPage> {
     );
 
     return Scaffold(
+      backgroundColor: Colors.black,
       body: RefreshIndicator(
         onRefresh: () async {
           if (!mounted) return;
@@ -375,54 +383,24 @@ class _WelcomeBackPageState extends State<WelcomeBackPage> {
           children: [
             SizedBox(
               height: MediaQuery.of(context).size.height,
-              child: Stack(
-                children: <Widget>[
-                  // New PlanetMM in-app artwork as full-screen background
-                  Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.black,
-                    ),
+              child: PlanetMMAuthBackground(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Spacer(flex: 3),
+                      welcomeBack,
+                      Spacer(),
+                      subTitle,
+                      Spacer(flex: 2),
+                      loginForm,
+                      Spacer(flex: 2),
+                      forgotPassword,
+                      signUpLink
+                    ],
                   ),
-                  Positioned.fill(
-                    child: Opacity(
-                      opacity: 0.85,
-                      child: Image.asset(
-                        'assets/icons/planetmm_inapplogo.png',
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  ),
-                  // Soft overlay to keep text readable
-                  Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.black.withOpacity(0.75),
-                          Colors.black.withOpacity(0.55),
-                        ],
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 28.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Spacer(flex: 3),
-                        welcomeBack,
-                        Spacer(),
-                        subTitle,
-                        Spacer(flex: 2),
-                        loginForm,
-                        Spacer(flex: 2),
-                        forgotPassword,
-                        signUpLink
-                      ],
-                    ),
-                  )
-                ],
+                ),
               ),
             ),
           ],
