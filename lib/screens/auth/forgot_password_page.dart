@@ -1,198 +1,387 @@
 import 'package:ecommerce_int2/app_properties.dart';
+import 'package:ecommerce_int2/models/forgot_password_settings.dart';
+import 'package:ecommerce_int2/providers/auth_provider.dart';
+import 'package:ecommerce_int2/services/forgot_password_settings_service.dart';
+import 'package:ecommerce_int2/theme/app_theme.dart';
+import 'package:ecommerce_int2/utils/html_link_launcher.dart';
+import 'package:ecommerce_int2/utils/validation_utils.dart';
+import 'package:ecommerce_int2/widgets/modern_loading_indicator.dart';
+import 'package:ecommerce_int2/widgets/planetmm_auth_background.dart';
 import 'package:flutter/material.dart';
-
-import 'confirm_otp_page.dart';
+import 'package:provider/provider.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
   const ForgotPasswordPage({super.key});
 
   @override
-  _ForgotPasswordPageState createState() => _ForgotPasswordPageState();
+  State<ForgotPasswordPage> createState() => _ForgotPasswordPageState();
 }
 
 class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
-  TextEditingController phoneNumber = TextEditingController(text: '46834683');
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _emailController = TextEditingController();
 
-  GlobalKey prefixKey = GlobalKey();
-  double prefixWidth = 0;
+  ForgotPasswordSettings? _settings;
+  bool _loadingSettings = true;
+  bool _isSubmitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadSettings({bool forceRefresh = false}) async {
+    setState(() {
+      _loadingSettings = true;
+    });
+
+    final settings = await ForgotPasswordSettingsService.getSettings(
+      forceRefresh: forceRefresh,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _settings = settings;
+      _loadingSettings = false;
+    });
+  }
+
+  String _resolveAccountLogin(String input, String emailDomain) {
+    final value = input.trim();
+    if (value.contains('@')) {
+      return value.toLowerCase();
+    }
+    return '${value.toLowerCase()}@$emailDomain';
+  }
+
+  String? _validateAccountInput(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'အီးမေးလ် ထည့်ရန် လိုအပ်ပါတယ်';
+    }
+
+    final trimmed = value.trim();
+    if (trimmed.contains('@')) {
+      final emailError = ValidationUtils.validateEmail(trimmed);
+      if (emailError != null) {
+        return 'မှန်ကန်သော အီးမေးလ် ထည့်ပါ';
+      }
+      return null;
+    }
+
+    if (trimmed.length < 3) {
+      return 'အသုံးပြုသူအမည် အနည်းဆုံး အက္ခရာ ၃ လုံးဖြစ်ရမယ်';
+    }
+
+    if (!RegExp(r'^[a-zA-Z0-9._-]+$').hasMatch(trimmed)) {
+      return 'အက္ခရာ၊ နံပါတ်၊ . _ - သာ သုံးနိုင်ပါတယ်';
+    }
+
+    return null;
+  }
+
+  bool _isNetworkFailureMessage(String message) {
+    final lower = message.toLowerCase();
+    return lower.contains('network') ||
+        lower.contains('unreachable') ||
+        lower.contains('connection') ||
+        lower.contains('internet') ||
+        lower.contains('timeout');
+  }
+
+  Future<void> _handleSubmit() async {
+    if (_isSubmitting || _settings == null) return;
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final loginValue = _resolveAccountLogin(
+      _emailController.text,
+      _settings!.emailDomain,
+    );
+
+    final response = await authProvider.forgotPassword(loginValue);
+
+    if (!mounted) return;
+    setState(() {
+      _isSubmitting = false;
+    });
+
+    const genericMessage =
+        'အကောင့် ရှိပါက reset link ပို့ပြီးပါပြီ။ Inbox နှင့် spam folder စစ်ဆေးပါ။';
+
+    final String message;
+    if (!response.success && _isNetworkFailureMessage(response.message)) {
+      message = response.message.isNotEmpty
+          ? response.message
+          : 'အင်တာနက် စစ်ဆေးပြီး ထပ်စမ်းကြည့်ပါ။';
+    } else {
+      // Avoid account enumeration — same message for success and unknown email.
+      message = genericMessage;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  InputDecoration _inputDecoration({
+    required String hintText,
+    String? labelText,
+  }) {
+    final borderRadius = BorderRadius.circular(8);
+    final enabledBorderSide = BorderSide(color: Colors.grey.shade300);
+
+    return InputDecoration(
+      labelText: labelText,
+      hintText: hintText,
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      isDense: true,
+      border: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: enabledBorderSide,
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: AppTheme.brightPurple, width: 1.5),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: borderRadius,
+        borderSide: const BorderSide(color: Colors.red, width: 1.5),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    Widget title = Text(
-      'လျို့ဝှက်နံပါတ်မေ့သွားသလား။',
-      style: TextStyle(
-          color: Colors.white,
-          fontSize: 34.0,
-          fontWeight: FontWeight.bold,
-          shadows: [
-            BoxShadow(
-              color: Color.fromRGBO(0, 0, 0, 0.15),
-              offset: Offset(0, 5),
-              blurRadius: 10.0,
-            )
-          ]),
-    );
+    final settings = _settings;
+    final topPadding = MediaQuery.of(context).padding.top + 8;
 
-    Widget subTitle = Padding(
-        padding: const EdgeInsets.only(right: 56.0),
-        child: Text(
-          'မှတ်ပုံတင်ထားသော ဖုန်းနံပါတ်ကို ထည့်ပြီး OTP ရယူပါ',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 16.0,
-          ),
-        ));
-
-    Widget sendButton = Positioned(
-      left: MediaQuery.of(context).size.width / 4,
-      bottom: 40,
-      child: InkWell(
-        onTap: () {
-          Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => ConfirmOtpPage()));
-        },
-        child: Container(
-          width: MediaQuery.of(context).size.width / 2,
-          height: 80,
-          decoration: BoxDecoration(
-              gradient: LinearGradient(
-                  colors: [
-                    Color.fromRGBO(236, 60, 3, 1),
-                    Color.fromRGBO(234, 60, 3, 1),
-                    Color.fromRGBO(216, 78, 16, 1),
-                  ],
-                  begin: FractionalOffset.topCenter,
-                  end: FractionalOffset.bottomCenter),
-              boxShadow: [
-                BoxShadow(
-                  color: Color.fromRGBO(0, 0, 0, 0.16),
-                  offset: Offset(0, 5),
-                  blurRadius: 10.0,
-                )
-              ],
-              borderRadius: BorderRadius.circular(9.0)),
-          child: Center(
-              child: Text("OTP ပို့မယ်",
-                  style: const TextStyle(
-                      color: Color(0xfffefefe),
-                      fontWeight: FontWeight.w600,
-                      fontStyle: FontStyle.normal,
-                      fontSize: 20.0))),
-        ),
-      ),
-    );
-
-    Widget phoneForm = SizedBox(
-      height: 210,
-      child: Stack(
-        children: <Widget>[
-          Container(
-            height: 100,
-            width: MediaQuery.of(context).size.width,
-            padding: const EdgeInsets.only(left: 32.0, right: 12.0, bottom: 30),
-            decoration: BoxDecoration(
-                color: Color.fromRGBO(255, 255, 255, 0.8),
-                borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(10),
-                    bottomLeft: Radius.circular(10))),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: <Widget>[
-                Flexible(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: TextField(
-                      controller: phoneNumber,
-                      style: TextStyle(fontSize: 16.0),
-                      keyboardType: TextInputType.phone,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          sendButton,
-        ],
-      ),
-    );
-
-    Widget resendAgainText = Padding(
-        padding: const EdgeInsets.only(bottom: 20),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            Text(
-              "OTP မရသေးဘူးလား ",
-              style: TextStyle(
-                fontStyle: FontStyle.italic,
-                color: Color.fromRGBO(255, 255, 255, 0.5),
-                fontSize: 14.0,
-              ),
-            ),
-            InkWell(
-              onTap: () {},
-              child: Text(
-                'ထပ်ပြီး ပို့မယ်',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14.0,
-                ),
-              ),
-            ),
-          ],
-        ));
     return GestureDetector(
-      onTap: () => FocusScope.of(context).requestFocus(FocusNode()),
-      child: Container(
-        decoration: BoxDecoration(
-            image: DecorationImage(
-                image: AssetImage('assets/background.jpg'), fit: BoxFit.cover)),
-        child: Container(
-          decoration: BoxDecoration(color: transparentYellow),
-          child: Scaffold(
-            appBar: AppBar(
-              backgroundColor: Colors.transparent,
-              elevation: 0.0,
-            ),
-            body: RefreshIndicator(
-              onRefresh: () async {
-                if (!mounted) return;
-                setState(() {});
-              },
+      onTap: () => FocusScope.of(context).unfocus(),
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            const PlanetMMAuthBackground(child: SizedBox.expand()),
+            RefreshIndicator(
+              onRefresh: () => _loadSettings(forceRefresh: true),
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.fromLTRB(24, topPadding, 24, 40),
                 children: [
-                  SizedBox(
-                    height: MediaQuery.of(context).size.height -
-                        kToolbarHeight -
-                        MediaQuery.of(context).padding.top,
-                    child: Stack(
-                      children: <Widget>[
-                        Padding(
-                          padding: const EdgeInsets.only(left: 28.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Spacer(flex: 3),
-                              title,
-                              Spacer(),
-                              subTitle,
-                              Spacer(flex: 2),
-                              phoneForm,
-                              Spacer(flex: 2),
-                              resendAgainText
-                            ],
-                          ),
-                        )
+                  IconButton(
+                    alignment: Alignment.centerLeft,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'လျို့ဝှက်နံပါတ် ပြန်သတ်မှတ်မယ်',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      shadows: const [
+                        BoxShadow(
+                          color: Color.fromRGBO(0, 0, 0, 0.15),
+                          offset: Offset(0, 5),
+                          blurRadius: 10,
+                        ),
                       ],
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'မှတ်ပုံတင်ထားသော အီးမေးလ်ကို ထည့်ပြီး reset link ရယူပါ',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.9),
+                      fontSize: 16,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  if (_loadingSettings)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: Center(
+                        child: ModernLoadingIndicator(
+                          size: 32,
+                          color: Colors.white,
+                        ),
+                      ),
+                    )
+                  else if (settings != null) ...[
+                    _HintCard(settings: settings),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color.fromRGBO(255, 255, 255, 0.9),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Form(
+                        key: _formKey,
+                        child: TextFormField(
+                          controller: _emailController,
+                          keyboardType: TextInputType.emailAddress,
+                          autocorrect: false,
+                          autofillHints: const [AutofillHints.email],
+                          textInputAction: TextInputAction.done,
+                          onFieldSubmitted: (_) {
+                            if (!_isSubmitting) _handleSubmit();
+                          },
+                          style: const TextStyle(fontSize: 16),
+                          decoration: _inputDecoration(
+                            hintText: settings.exampleEmail,
+                            labelText: 'အီးမေးလ်',
+                          ),
+                          validator: _validateAccountInput,
+                          enabled: !_isSubmitting,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Center(
+                      child: Semantics(
+                        button: true,
+                        label: 'Reset Email ပို့မယ်',
+                        child: InkWell(
+                          onTap: _isSubmitting ? null : _handleSubmit,
+                          child: Container(
+                            width: MediaQuery.of(context).size.width * 0.65,
+                            height: 56,
+                            decoration: BoxDecoration(
+                              gradient: mainButton,
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: shadow,
+                            ),
+                            child: Center(
+                              child: _isSubmitting
+                                  ? const ModernLoadingIndicator(
+                                      size: 24,
+                                      color: Colors.white,
+                                    )
+                                  : const Text(
+                                      'Reset Email ပို့မယ်',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (settings.customerService.isVisible) ...[
+                      const SizedBox(height: 20),
+                      Center(
+                        child: OutlinedButton.icon(
+                          onPressed: _isSubmitting
+                              ? null
+                              : () => HtmlLinkLauncher.launch(
+                                    context,
+                                    settings.customerService.link,
+                                  ),
+                          icon: const Icon(Icons.support_agent, size: 20),
+                          label: Text(settings.customerService.label),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white70),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ],
               ),
             ),
-          ),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+class _HintCard extends StatelessWidget {
+  final ForgotPasswordSettings settings;
+
+  const _HintCard({required this.settings});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, color: Colors.white, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  settings.hintText,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    height: 1.45,
+                  ),
+                ),
+                if (!settings.hintText.contains(settings.exampleEmail)) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'ဥပမာ — ${settings.exampleEmail}',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.85),
+                      fontSize: 13,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
