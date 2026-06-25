@@ -282,8 +282,8 @@ class _CheckoutFlowPageState extends State<CheckoutFlowPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (!hasAddresses) ...[
-                  _buildNoAddressState(),
+                if (hasAddresses && _selectedShippingAddress != null) ...[
+                  _buildSelectedAddressCard(_selectedShippingAddress!),
                   SizedBox(height: 20),
                 ],
                 _buildContactPhoneField(),
@@ -336,38 +336,77 @@ class _CheckoutFlowPageState extends State<CheckoutFlowPage> {
     );
   }
 
-  Widget _buildNoAddressState() {
+  Widget _buildSelectedAddressCard(Address address) {
     return Container(
-      padding: EdgeInsets.all(32),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.grey[50],
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey[300]!),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.location_off,
-            size: 64,
-            color: Colors.grey[400],
+          Row(
+            children: [
+              Icon(Icons.location_on, color: mediumYellow, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Shipping Address',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: darkGrey,
+                ),
+              ),
+              if (address.isDefault) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.green,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    'Default',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
-          SizedBox(height: 16),
+          const SizedBox(height: 12),
           Text(
-            'No addresses found',
+            address.fullName,
             style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey[600],
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: darkGrey,
             ),
           ),
-          SizedBox(height: 8),
+          const SizedBox(height: 4),
           Text(
-            'You can continue without adding an address.',
+            address.formattedAddress,
             style: TextStyle(
               fontSize: 14,
-              color: Colors.grey[500],
+              color: Colors.grey[700],
             ),
           ),
+          if (address.phone.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              address.phone,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -554,6 +593,37 @@ class _CheckoutFlowPageState extends State<CheckoutFlowPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Please enter your current contact phone.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return false;
+    }
+
+    final digitsOnly = phone.replaceAll(RegExp(r'[^\d]'), '');
+    if (digitsOnly.isEmpty) {
+      setState(() {
+        _contactPhoneError = 'Please enter a valid phone number.';
+      });
+      if (showSnackBar) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Please enter a valid phone number.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return false;
+    }
+
+    if (digitsOnly.length > 15) {
+      setState(() {
+        _contactPhoneError = 'Phone number is too long.';
+      });
+      if (showSnackBar) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Phone number is too long.'),
             backgroundColor: Colors.red,
           ),
         );
