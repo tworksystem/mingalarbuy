@@ -937,59 +937,59 @@ class _MainPageState extends State<MainPage>
         controller: bottomTabController,
         physics: const NeverScrollableScrollPhysics(),
         children: <Widget>[
-            SafeArea(
-              child: RefreshIndicator(
-                onRefresh: () async {
-                  // Refresh all Home Page data
-                  await _refreshAllHomePageData();
-                },
-                child: Builder(
-                  builder: (context) => CustomScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(
-                      parent: ClampingScrollPhysics(),
-                    ),
-                    slivers: [
-                      // AppBar
-                      SliverToBoxAdapter(child: appBar),
-                      // My Point Widget - Creative display
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                          child: _MyPointWidget(key: _myPointWidgetKey),
-                        ),
-                      ),
-                      // Action Buttons (Buy Now)
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                          child: const _HomeActionButtons(),
-                        ),
-                      ),
-                      // Interactive Engagement Carousel
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                          child: EngagementCarousel(
-                            initialItemId: widget
-                                .engagementItemId, // PROFESSIONAL FIX: Pass item ID for navigation
-                          ),
-                        ),
-                      ),
-                      // FIXED: Add minimal bottom padding for safe area above bottom nav
-                      SliverToBoxAdapter(
-                        child: SizedBox(
-                          height: MediaQuery.of(context).padding.bottom + 8,
-                        ),
-                      ),
-                    ],
+          SafeArea(
+            child: RefreshIndicator(
+              onRefresh: () async {
+                // Refresh all Home Page data
+                await _refreshAllHomePageData();
+              },
+              child: Builder(
+                builder: (context) => CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: ClampingScrollPhysics(),
                   ),
+                  slivers: [
+                    // AppBar
+                    SliverToBoxAdapter(child: appBar),
+                    // My Point Widget - Creative display
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: _MyPointWidget(key: _myPointWidgetKey),
+                      ),
+                    ),
+                    // Action Buttons (Buy Now)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                        child: const _HomeActionButtons(),
+                      ),
+                    ),
+                    // Interactive Engagement Carousel
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                        child: EngagementCarousel(
+                          initialItemId: widget
+                              .engagementItemId, // PROFESSIONAL FIX: Pass item ID for navigation
+                        ),
+                      ),
+                    ),
+                    // FIXED: Add minimal bottom padding for safe area above bottom nav
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: MediaQuery.of(context).padding.bottom + 8,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            // Only Home and Profile tabs are accessible from the bottom bar.
-            ProfilePageNew(),
-          ],
-        ),
+          ),
+          // Only Home and Profile tabs are accessible from the bottom bar.
+          ProfilePageNew(),
+        ],
+      ),
     );
 
     if (wideWeb) {

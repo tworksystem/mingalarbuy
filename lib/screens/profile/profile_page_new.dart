@@ -133,7 +133,8 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
             if (success) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('App update downloaded successfully! Opening installer...'),
+                  content: Text(
+                      'App update downloaded successfully! Opening installer...'),
                   backgroundColor: Colors.green,
                   duration: Duration(seconds: 3),
                 ),
@@ -141,7 +142,8 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
             } else {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(errorMessage ?? 'Download failed. Please try again.'),
+                  content: Text(
+                      errorMessage ?? 'Download failed. Please try again.'),
                   backgroundColor: Colors.red,
                   duration: const Duration(seconds: 5),
                   action: SnackBarAction(
@@ -168,7 +170,8 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Invalid URL format. Please use http:// or https://'),
+              content:
+                  Text('Invalid URL format. Please use http:// or https://'),
               backgroundColor: Colors.red,
               duration: Duration(seconds: 3),
             ),
@@ -254,8 +257,8 @@ class _ProfilePageNewState extends State<ProfilePageNew> {
         );
       }
     } catch (e, stackTrace) {
-      Logger.error('Error opening URL: $e', tag: 'ProfilePage',
-          error: e, stackTrace: stackTrace);
+      Logger.error('Error opening URL: $e',
+          tag: 'ProfilePage', error: e, stackTrace: stackTrace);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -866,7 +869,8 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
           if (mounted) {
             setState(() {
               _progress = total > 0 ? received / total : 0.0;
-              _status = 'Downloading... ${(_progress * 100).toStringAsFixed(1)}%';
+              _status =
+                  'Downloading... ${(_progress * 100).toStringAsFixed(1)}%';
             });
           }
         },
@@ -905,7 +909,8 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
             } else {
               setState(() {
                 _isDownloading = false;
-                _errorMessage = 'Download complete but installation failed. Please install manually.';
+                _errorMessage =
+                    'Download complete but installation failed. Please install manually.';
                 _status = 'Installation failed';
               });
               Future.delayed(const Duration(seconds: 2), () {
@@ -927,8 +932,8 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
         }
       }
     } catch (e, stackTrace) {
-      Logger.error('Error in download dialog: $e', tag: 'ProfilePage',
-          error: e, stackTrace: stackTrace);
+      Logger.error('Error in download dialog: $e',
+          tag: 'ProfilePage', error: e, stackTrace: stackTrace);
       if (mounted) {
         setState(() {
           _isDownloading = false;

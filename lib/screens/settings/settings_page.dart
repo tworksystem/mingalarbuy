@@ -39,10 +39,10 @@ class SettingsPage extends StatelessWidget {
 
     try {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      
+
       // Perform logout
       await authProvider.logout();
-      
+
       // Navigate to login page using global navigator key for reliability
       // This ensures navigation works even if the current context is disposed
       final navigatorContext = AppKeys.navigatorKey.currentContext ?? context;
@@ -52,7 +52,8 @@ class SettingsPage extends StatelessWidget {
       );
     } catch (e) {
       // Show error if logout fails
-      final scaffoldContext = AppKeys.scaffoldMessengerKey.currentContext ?? context;
+      final scaffoldContext =
+          AppKeys.scaffoldMessengerKey.currentContext ?? context;
       ScaffoldMessenger.of(scaffoldContext).showSnackBar(
         SnackBar(
           content: Text('Sign out failed: ${e.toString()}'),
@@ -76,96 +77,103 @@ class SettingsPage extends StatelessWidget {
             'Settings',
             style: TextStyle(color: darkGrey),
           ),
-          elevation: 0, systemOverlayStyle: SystemUiOverlayStyle.dark,
+          elevation: 0,
+          systemOverlayStyle: SystemUiOverlayStyle.dark,
         ),
         body: SafeArea(
           bottom: true,
           child: LayoutBuilder(
-                      builder:(builder,constraints)=> AppPullToRefresh(
-                        onRefresh: () async {
-                          final authProvider = Provider.of<AuthProvider>(context, listen: false);
-                          await authProvider.refreshUser();
-                        },
-                        child: SingleChildScrollView(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                          child: Padding(
-              padding: const EdgeInsets.only(top: 24.0, left: 24.0, right: 24.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8.0),
-                    child: Text(
-                      'General',
-                      style: TextStyle(
-                          color: Colors.black,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18.0),
-                    ),
-                  ),
-                   ListTile(
-                    title: Text('Notifications'),
-                     leading: Image.asset(
-                       'assets/icons/notifications.png',
-                       fit: BoxFit.scaleDown,
-                       width: 30,
-                       height: 30,
-                     ),
-                    onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => NotificationSettingsPage())),
-                  ),
-                   ListTile(
-                    title: Text('Legal & About'),
-                     leading: Image.asset(
-                       'assets/icons/legal.png',
-                       fit: BoxFit.scaleDown,
-                       width: 30,
-                       height: 30,
-                     ),
-                    onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => LegalAboutPage())),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8.0, bottom: 8.0),
-                    child: Text(
-                      'Account',
-                      style: TextStyle(
-                          color: Colors.black,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18.0),
-                    ),
-                  ),
-                  ListTile(
-                    title: Text('Change Password'),
-                    leading: Image.asset(
-                      'assets/icons/change_pass.png',
-                      fit: BoxFit.scaleDown,
-                      width: 30,
-                      height: 30,
-                    ),
-                    onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => ChangePasswordPage())),
-                  ),
-                  ListTile(
-                    title: Text('Sign out'),
-                    leading: Image.asset(
-                      'assets/icons/sign_out.png',
-                      fit: BoxFit.scaleDown,
-                      width: 30,
-                      height: 30,
-                    ),
-                    onTap: () => _handleLogout(context),
-                  ),
-                  
-                ],
-              ),
-            ),
+              builder: (builder, constraints) => AppPullToRefresh(
+                    onRefresh: () async {
+                      final authProvider =
+                          Provider.of<AuthProvider>(context, listen: false);
+                      await authProvider.refreshUser();
+                    },
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: ConstrainedBox(
+                        constraints:
+                            BoxConstraints(minHeight: constraints.maxHeight),
+                        child: Padding(
+                          padding: const EdgeInsets.only(
+                              top: 24.0, left: 24.0, right: 24.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8.0),
+                                child: Text(
+                                  'General',
+                                  style: TextStyle(
+                                      color: Colors.black,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 18.0),
+                                ),
+                              ),
+                              ListTile(
+                                title: Text('Notifications'),
+                                leading: Image.asset(
+                                  'assets/icons/notifications.png',
+                                  fit: BoxFit.scaleDown,
+                                  width: 30,
+                                  height: 30,
+                                ),
+                                onTap: () => Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                        builder: (_) =>
+                                            NotificationSettingsPage())),
+                              ),
+                              ListTile(
+                                title: Text('Legal & About'),
+                                leading: Image.asset(
+                                  'assets/icons/legal.png',
+                                  fit: BoxFit.scaleDown,
+                                  width: 30,
+                                  height: 30,
+                                ),
+                                onTap: () => Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                        builder: (_) => LegalAboutPage())),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                    top: 8.0, bottom: 8.0),
+                                child: Text(
+                                  'Account',
+                                  style: TextStyle(
+                                      color: Colors.black,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 18.0),
+                                ),
+                              ),
+                              ListTile(
+                                title: Text('Change Password'),
+                                leading: Image.asset(
+                                  'assets/icons/change_pass.png',
+                                  fit: BoxFit.scaleDown,
+                                  width: 30,
+                                  height: 30,
+                                ),
+                                onTap: () => Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                        builder: (_) => ChangePasswordPage())),
+                              ),
+                              ListTile(
+                                title: Text('Sign out'),
+                                leading: Image.asset(
+                                  'assets/icons/sign_out.png',
+                                  fit: BoxFit.scaleDown,
+                                  width: 30,
+                                  height: 30,
+                                ),
+                                onTap: () => _handleLogout(context),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                      )
-          ),
+                    ),
+                  )),
         ),
       ),
     );
