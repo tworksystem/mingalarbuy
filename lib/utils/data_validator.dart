@@ -24,17 +24,16 @@ class DataValidator {
     return ValidationResult.success();
   }
 
-  /// Validate phone number
+  /// Validate phone number — any digit length (1–15) accepted
   static ValidationResult validatePhone(String phone) {
     if (phone.isEmpty) {
       return ValidationResult.error('Phone number is required');
     }
 
-    // Remove all non-digit characters
     final digitsOnly = phone.replaceAll(RegExp(r'[^\d]'), '');
 
-    if (digitsOnly.length < 10) {
-      return ValidationResult.error('Phone number must be at least 10 digits');
+    if (digitsOnly.isEmpty) {
+      return ValidationResult.error('Please enter a valid phone number');
     }
 
     if (digitsOnly.length > 15) {
@@ -284,7 +283,7 @@ class DataSanitizer {
         product: Product(
           sanitizeString(item.product.image, maxLength: 500),
           sanitizeString(item.product.name, maxLength: 200),
-          sanitizeString(item.product.description, maxLength: 1000),
+          sanitizeString(item.product.plainDescription, maxLength: 1000),
           item.product.price
               .clamp(0.0, 999999.99), // Clamp price to reasonable range
         ),

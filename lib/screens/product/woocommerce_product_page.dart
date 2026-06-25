@@ -2,6 +2,7 @@ import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:ecommerce_int2/screens/search_page.dart';
 import 'package:ecommerce_int2/widgets/network_image_widget.dart';
+import 'package:ecommerce_int2/widgets/cms_html_content_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -139,18 +140,10 @@ class _WooCommerceProductPageState extends State<WooCommerceProductPage> {
                 Padding(
                     padding:
                         EdgeInsets.only(left: 20.0, right: 40.0, bottom: 130),
-                    child: Text(
-                        product.shortDescription.isNotEmpty
-                            ? product.shortDescription
-                                .replaceAll(RegExp(r'<[^>]*>'), '')
-                            : product.description
-                                .replaceAll(RegExp(r'<[^>]*>'), ''),
-                        style: const TextStyle(
-                            color: Color(0xfefefefe),
-                            fontWeight: FontWeight.w800,
-                            fontFamily: "NunitoSans",
-                            fontStyle: FontStyle.normal,
-                            fontSize: 16.0)))
+                    child: CmsHtmlContentWidget(
+                      html: product.htmlDescription,
+                      colorScheme: CmsHtmlColorScheme.darkOnOverlay,
+                    ))
               ],
             ),
           ),

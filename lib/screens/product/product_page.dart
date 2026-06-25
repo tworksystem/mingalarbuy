@@ -1,6 +1,7 @@
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/models/product.dart';
 import 'package:ecommerce_int2/screens/search_page.dart';
+import 'package:ecommerce_int2/widgets/cms_html_content_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -318,15 +319,9 @@ class _ProductPageState extends State<ProductPage>
                         right: 40.0,
                         bottom: 130,
                       ),
-                      child: Text(
-                        widget.product.description,
-                        style: const TextStyle(
-                          color: Color(0xF0FEFEFE),
-                          fontWeight: FontWeight.w500,
-                          fontFamily: "Montserrat",
-                          fontSize: 16.0,
-                          height: 1.5,
-                        ),
+                      child: CmsHtmlContentWidget(
+                        html: widget.product.description,
+                        colorScheme: CmsHtmlColorScheme.darkOnOverlay,
                       ),
                     ),
                   ),

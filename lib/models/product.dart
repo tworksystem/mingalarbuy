@@ -1,5 +1,6 @@
 import 'package:ecommerce_int2/utils/price_formatter.dart';
 import 'package:ecommerce_int2/utils/json_parser_helper.dart';
+import 'package:ecommerce_int2/utils/cms_html_sanitizer.dart';
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 
 class Product {
@@ -25,6 +26,9 @@ class Product {
 
   // Helper method to get formatted price
   String get formattedPrice => PriceFormatter.format(price);
+
+  /// Plain text for search, wishlist filter, and API payloads.
+  String get plainDescription => CmsHtmlSanitizer.toPlainText(description);
 
   // Convert to JSON for caching
   Map<String, dynamic> toJson() {

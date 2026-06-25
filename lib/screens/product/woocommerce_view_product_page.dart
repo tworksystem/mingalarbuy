@@ -1,5 +1,6 @@
 import 'package:ecommerce_int2/models/woocommerce_product.dart';
 import 'package:ecommerce_int2/screens/search_page.dart';
+import 'package:ecommerce_int2/widgets/cms_html_content_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:ecommerce_int2/widgets/app_pull_to_refresh.dart';
@@ -58,11 +59,9 @@ class _WooCommerceViewProductPageState
   Widget build(BuildContext context) {
     Widget description = Padding(
       padding: const EdgeInsets.all(24.0),
-      child: Text(
-        widget.product.shortDescription.isNotEmpty
-            ? widget.product.shortDescription.replaceAll(RegExp(r'<[^>]*>'), '')
-            : widget.product.description.replaceAll(RegExp(r'<[^>]*>'), ''),
-        style: TextStyle(color: Color.fromRGBO(255, 255, 255, 0.6)),
+      child: CmsHtmlContentWidget(
+        html: widget.product.htmlDescription,
+        colorScheme: CmsHtmlColorScheme.darkOnOverlay,
       ),
     );
 

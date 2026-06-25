@@ -138,7 +138,7 @@ class CartProvider with ChangeNotifier {
           'product': {
             'image': product.image,
             'name': product.name,
-            'description': product.description,
+            'description': product.plainDescription,
             'price': product.price,
           },
           'quantity': quantity,
@@ -180,7 +180,7 @@ class CartProvider with ChangeNotifier {
             'product': {
               'image': product.image,
               'name': product.name,
-              'description': product.description,
+              'description': product.plainDescription,
               'price': product.price,
             },
           },
@@ -227,7 +227,7 @@ class CartProvider with ChangeNotifier {
               'product': {
                 'image': cartItem.product.image,
                 'name': cartItem.product.name,
-                'description': cartItem.product.description,
+                'description': cartItem.product.plainDescription,
                 'price': cartItem.product.price,
               },
               'quantity': newQuantity,

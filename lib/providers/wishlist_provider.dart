@@ -305,7 +305,7 @@ class WishlistProvider with ChangeNotifier {
     final lowercaseQuery = query.toLowerCase();
     return _items.where((item) {
       return item.product.name.toLowerCase().contains(lowercaseQuery) ||
-          item.product.description.toLowerCase().contains(lowercaseQuery) ||
+          item.product.plainDescription.toLowerCase().contains(lowercaseQuery) ||
           (item.notes?.toLowerCase().contains(lowercaseQuery) ?? false);
     }).toList();
   }

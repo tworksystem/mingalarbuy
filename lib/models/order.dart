@@ -47,7 +47,7 @@ class OrderItem {
       'product': {
         'image': product.image,
         'name': product.name,
-        'description': product.description,
+        'description': product.plainDescription,
         'price': product.price,
       },
       'quantity': quantity,

@@ -1,5 +1,6 @@
 import 'package:ecommerce_int2/utils/price_formatter.dart';
 import 'package:ecommerce_int2/utils/json_parser_helper.dart';
+import 'package:ecommerce_int2/utils/cms_html_sanitizer.dart';
 
 import 'product.dart';
 
@@ -265,30 +266,16 @@ class WooCommerceProduct {
     return stockStatus != 'outofstock';
   }
 
+  /// Raw HTML from WordPress (short description preferred when present).
+  String get htmlDescription {
+    if (shortDescription.trim().isNotEmpty) return shortDescription;
+    return description;
+  }
+
   // Helper method to get clean description
   String get cleanDescription {
-    // Remove HTML tags and clean up the description
-    String cleanDesc = description
-        .replaceAll(RegExp(r'<[^>]*>'), '')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .trim();
-
-    if (cleanDesc.isEmpty && shortDescription.isNotEmpty) {
-      cleanDesc = shortDescription
-          .replaceAll(RegExp(r'<[^>]*>'), '')
-          .replaceAll('&nbsp;', ' ')
-          .replaceAll('&amp;', '&')
-          .replaceAll('&lt;', '<')
-          .replaceAll('&gt;', '>')
-          .replaceAll('&quot;', '"')
-          .trim();
-    }
-
-    return cleanDesc.isEmpty ? 'No description available' : cleanDesc;
+    final plain = CmsHtmlSanitizer.toPlainText(htmlDescription);
+    return plain.isEmpty ? 'No description available' : plain;
   }
 
   // Convert to JSON
@@ -371,7 +358,7 @@ class WooCommerceProduct {
     return Product(
       productImage,
       name,
-      cleanDescription,
+      htmlDescription,
       double.tryParse(displayPrice) ?? 0.0,
       id: id,
       slug: slug,
