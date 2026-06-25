@@ -435,11 +435,13 @@ class AuthService {
           },
           data: <String, dynamic>{
             'email': request.resolvedEmail,
-            'first_name': request.firstName,
-            'last_name': request.lastName,
+            'first_name': request.resolvedFirstName,
+            'last_name': request.resolvedLastName,
             'username': request.username.trim(),
             'password': request.password,
             'billing': <String, dynamic>{
+              'first_name': request.resolvedFirstName,
+              'last_name': request.resolvedLastName,
               'phone': request.phone,
             },
           },
@@ -497,7 +499,7 @@ class AuthService {
               break;
             case 'woocommerce_rest_customer_invalid_password':
               errorMessage =
-                  'Password is too weak. Please choose a stronger password.';
+                  'လျို့ဝှက်နံပါတ် အားနည်းနေပါတယ်။ ပိုရှည်ပြီး အက္ခရာ၊ ဂဏန်း ရောထည့်ကြည့်ပါ';
               break;
             default:
               errorMessage = errorData['message'] ?? 'Registration failed';
@@ -996,7 +998,7 @@ class AuthService {
           switch (errorData['code']) {
             case 'rest_user_invalid_password':
               errorMessage =
-                  'New password is too weak. Please choose a stronger password.';
+                  'လျို့ဝှက်နံပါတ် အားနည်းနေပါတယ်။ ပိုရှည်ပြီး အက္ခရာ၊ ဂဏန်း ရောထည့်ကြည့်ပါ';
               break;
             case 'rest_user_invalid_id':
               errorMessage = 'User not found';

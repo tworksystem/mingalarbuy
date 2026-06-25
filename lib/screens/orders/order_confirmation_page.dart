@@ -9,6 +9,7 @@ import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
 import 'package:ecommerce_int2/models/order.dart';
 import 'package:ecommerce_int2/models/address.dart';
+import 'package:ecommerce_int2/models/register_request.dart';
 import 'package:ecommerce_int2/models/cart_item.dart';
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/screens/orders/order_details_page.dart';
@@ -1026,8 +1027,13 @@ class _OrderConfirmationPageState extends State<OrderConfirmationPage> {
     return Address(
       id: 'ADDR-NOADDRESS-${DateTime.now().millisecondsSinceEpoch}',
       userId: user.id.toString(),
-      firstName: user.firstName.isNotEmpty ? user.firstName : 'Customer',
-      lastName: user.lastName.isNotEmpty ? user.lastName : '',
+      firstName: RegisterRequest.resolveFirstNameForUser(
+        username: user.username,
+        firstName: user.firstName,
+      ),
+      lastName: RegisterRequest.resolveLastNameForUser(
+        lastName: user.lastName,
+      ),
       addressLine1: 'N/A',
       city: 'N/A',
       state: 'N/A',

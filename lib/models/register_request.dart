@@ -9,6 +9,9 @@ class RegisterRequest {
   /// Placeholder domain for WooCommerce accounts created without a real email.
   static const String autoEmailDomain = 'noreply.planetmm.com';
 
+  /// Default last name for accounts registered without a display name.
+  static const String defaultLastName = 'Level 1';
+
   RegisterRequest({
     required this.username,
     required this.password,
@@ -31,12 +34,45 @@ class RegisterRequest {
     return '$safeUsername@$autoEmailDomain';
   }
 
+  /// WooCommerce requires a first name; default to username when omitted.
+  String get resolvedFirstName {
+    final provided = firstName.trim();
+    if (provided.isNotEmpty) return provided;
+    return username.trim();
+  }
+
+  /// Default tier label when last name is not provided at registration.
+  String get resolvedLastName {
+    final provided = lastName.trim();
+    if (provided.isNotEmpty) return provided;
+    return defaultLastName;
+  }
+
+  /// Resolve display first name for an existing user record.
+  static String resolveFirstNameForUser({
+    required String username,
+    String firstName = '',
+  }) {
+    final provided = firstName.trim();
+    if (provided.isNotEmpty) return provided;
+    final trimmedUsername = username.trim();
+    if (trimmedUsername.isNotEmpty) return trimmedUsername;
+    return 'Customer';
+  }
+
+  /// Resolve display last name for an existing user record.
+  static String resolveLastNameForUser({String lastName = ''}) {
+    final provided = lastName.trim();
+    if (provided.isNotEmpty) return provided;
+    return defaultLastName;
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'email': resolvedEmail,
       'password': password,
-      'first_name': firstName,
-      'last_name': lastName,
+      'first_name': resolvedFirstName,
+      'last_name': resolvedLastName,
       'phone': phone,
       'username': username.trim(),
     };
@@ -55,7 +91,8 @@ class RegisterRequest {
 
   bool get isValidPhone {
     if (phone == null || phone!.isEmpty) return true;
-    return RegExp(r'^\+?[\d\s\-\(\)]{10,}$').hasMatch(phone!);
+    final digitsOnly = phone!.replaceAll(RegExp(r'[^\d]'), '');
+    return digitsOnly.isNotEmpty && digitsOnly.length <= 15;
   }
 
   bool get isValid {
@@ -70,7 +107,7 @@ class RegisterRequest {
     }
 
     if (!isValidPassword) {
-      errors.add('Password is required');
+      errors.add('လျို့ဝှက်နံပါတ် ထည့်ရန် လိုအပ်ပါတယ်');
     }
 
     if (!isValidPhone) {

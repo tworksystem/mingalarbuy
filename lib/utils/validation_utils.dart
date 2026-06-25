@@ -14,30 +14,23 @@ class ValidationUtils {
     return null;
   }
 
-  // Password validation
-  /// Accepts any password value (no length or complexity requirements)
-  /// Only validates that password is not empty
-  ///
-  /// This allows maximum flexibility for user password choices
-  /// while ensuring a password is provided
+  // Password validation — optional length; any characters accepted (1+ chars)
   static String? validatePassword(String? value) {
     if (value == null || value.isEmpty) {
-      return 'Password is required';
+      return 'လျို့ဝှက်နံပါတ် ထည့်ရန် လိုအပ်ပါတယ်';
     }
 
-    // Accept any password - no length or complexity requirements
-    // This provides maximum flexibility for user password choices
     return null;
   }
 
   // Confirm password validation
   static String? validateConfirmPassword(String? value, String? password) {
     if (value == null || value.isEmpty) {
-      return 'Please confirm your password';
+      return 'လျို့ဝှက်နံပါတ် အတည်ပြုချက် ထည့်ရန် လိုအပ်ပါတယ်';
     }
 
     if (value != password) {
-      return 'Passwords do not match';
+      return 'လျို့ဝှက်နံပါတ် မတူညီပါ';
     }
 
     return null;
@@ -59,16 +52,19 @@ class ValidationUtils {
     return null;
   }
 
-  // Phone validation
+  // Phone validation — optional; any digit length (1–15) accepted
   static String? validatePhone(String? value) {
     if (value == null || value.isEmpty) {
       return null; // Phone is optional
     }
 
-    // Remove all non-digit characters for validation
     final digitsOnly = value.replaceAll(RegExp(r'[^\d]'), '');
 
-    if (digitsOnly.length < 10) {
+    if (digitsOnly.isEmpty) {
+      return 'Please enter a valid phone number';
+    }
+
+    if (digitsOnly.length > 15) {
       return 'Please enter a valid phone number';
     }
 
@@ -96,15 +92,15 @@ class ValidationUtils {
   // Username validation
   static String? validateUsername(String? value) {
     if (value == null || value.isEmpty) {
-      return 'Username is required';
+      return 'အသုံးပြုသူအမည် ထည့်ရန် လိုအပ်ပါတယ်';
     }
 
     if (value.length < 3) {
-      return 'Username must be at least 3 characters long';
+      return 'အသုံးပြုသူအမည် အနည်းဆုံး အက္ခရာ ၃ လုံးဖြစ်ရမယ်';
     }
 
     if (!RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(value)) {
-      return 'Username can only contain letters, numbers, and underscores';
+      return 'အက္ခရာ၊ နံပါတ်နှင့် _ သာ သုံးနိုင်ပါတယ်';
     }
 
     return null;
