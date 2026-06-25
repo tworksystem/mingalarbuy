@@ -292,6 +292,7 @@ class TWork_Rewards_System
         add_action('admin_post_twork_rewards_delete_engagement_item', array($this, 'handle_engagement_item_delete'));
         add_action('admin_post_twork_rewards_save_engagement_settings', array($this, 'handle_engagement_settings_save'));
         add_action('admin_post_twork_rewards_save_page_content', array($this, 'handle_page_content_save'));
+        add_action('admin_post_twork_rewards_delete_page_content', array($this, 'handle_page_content_delete'));
         add_action('admin_post_twork_rewards_save_faq', array($this, 'handle_faq_save'));
         add_action('admin_post_twork_rewards_delete_faq', array($this, 'handle_faq_delete'));
         add_action('admin_post_twork_rewards_save_about_us', array($this, 'handle_about_us_save'));
@@ -2556,6 +2557,50 @@ class TWork_Rewards_System
     }
 
     /**
+     * Whitelisted sort columns for Users Management admin list.
+     *
+     * @return string[]
+     */
+    private function get_user_page_allowed_sorts()
+    {
+        return array('activity', 'ID', 'name', 'email', 'registered', 'points');
+    }
+
+    /**
+     * Sanitize Users Management list orderby against whitelist.
+     *
+     * @param string $orderby Raw orderby value.
+     * @param string $fallback Fallback when invalid.
+     * @return string
+     */
+    private function sanitize_user_page_orderby($orderby, $fallback = 'activity')
+    {
+        $orderby = sanitize_text_field((string) $orderby);
+        $allowed = $this->get_user_page_allowed_sorts();
+        if (in_array($orderby, $allowed, true)) {
+            return $orderby;
+        }
+        return in_array($fallback, $allowed, true) ? $fallback : 'activity';
+    }
+
+    /**
+     * Sanitize Users Management list sort order.
+     *
+     * @param string $order Raw order value.
+     * @param string $fallback Fallback when invalid.
+     * @return string ASC|DESC
+     */
+    private function sanitize_user_page_order($order, $fallback = 'DESC')
+    {
+        $order = strtoupper(sanitize_text_field((string) $order));
+        if ($order === 'ASC' || $order === 'DESC') {
+            return $order;
+        }
+        $fallback = strtoupper((string) $fallback);
+        return ($fallback === 'ASC') ? 'ASC' : 'DESC';
+    }
+
+    /**
      * Settings page
      */
     public function render_settings_page()
@@ -2570,6 +2615,11 @@ class TWork_Rewards_System
         $app_update_enabled = (int) get_option('twork_rewards_app_update_enabled', 0);
         $app_update_link = get_option('twork_rewards_app_update_link', '');
         $app_update_version = get_option('twork_rewards_app_update_version', '');
+        $forgot_pw_email_domain = get_option('twork_rewards_forgot_pw_email_domain', 'noreply.planetmm.com');
+        $forgot_pw_hint_text = get_option('twork_rewards_forgot_pw_hint_text', '');
+        $forgot_pw_cs_enabled = (int) get_option('twork_rewards_forgot_pw_cs_enabled', 0);
+        $forgot_pw_cs_label = get_option('twork_rewards_forgot_pw_cs_label', __('Customer Service ဆက်သွယ်ရန်', 'twork-rewards'));
+        $forgot_pw_cs_link = get_option('twork_rewards_forgot_pw_cs_link', '');
         $timezone = get_option('twork_rewards_timezone', 'Asia/Yangon');
         ?>
         <div class="wrap">
@@ -2833,6 +2883,86 @@ class TWork_Rewards_System
                         </td>
                     </tr>
                     <tr>
+                        <th scope="row" colspan="2">
+                            <h2 style="margin: 1em 0 0;"><?php esc_html_e('Forgot Password Screen (Mobile App)', 'twork-rewards'); ?></h2>
+                            <p class="description"><?php esc_html_e('Controls the hint text and customer service button on the app forgot-password screen.', 'twork-rewards'); ?></p>
+                        </th>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="twork_rewards_forgot_pw_email_domain"><?php esc_html_e('Auto Email Domain', 'twork-rewards'); ?></label>
+                        </th>
+                        <td>
+                            <input type="text"
+                                   class="regular-text"
+                                   name="twork_rewards_forgot_pw_email_domain"
+                                   id="twork_rewards_forgot_pw_email_domain"
+                                   value="<?php echo esc_attr($forgot_pw_email_domain); ?>"
+                                   placeholder="noreply.planetmm.com" />
+                            <p class="description">
+                                <?php esc_html_e('Domain appended when users enter username only (e.g. myname@noreply.planetmm.com).', 'twork-rewards'); ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="twork_rewards_forgot_pw_hint_text"><?php esc_html_e('Reminder Hint Text', 'twork-rewards'); ?></label>
+                        </th>
+                        <td>
+                            <textarea class="large-text"
+                                      rows="3"
+                                      name="twork_rewards_forgot_pw_hint_text"
+                                      id="twork_rewards_forgot_pw_hint_text"
+                                      placeholder="<?php echo esc_attr(__('သင့် အသုံးပြုသူအမည် + @noreply.planetmm.com ပုံစံဖြင့် ထည့်ပါ။', 'twork-rewards')); ?>"><?php echo esc_textarea($forgot_pw_hint_text); ?></textarea>
+                            <p class="description">
+                                <?php esc_html_e('Shown on the forgot-password screen. Plain text only. Leave empty to use the app default.', 'twork-rewards'); ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="twork_rewards_forgot_pw_cs_enabled"><?php esc_html_e('Customer Service Button', 'twork-rewards'); ?></label>
+                        </th>
+                        <td>
+                            <label>
+                                <input type="checkbox"
+                                       name="twork_rewards_forgot_pw_cs_enabled"
+                                       id="twork_rewards_forgot_pw_cs_enabled"
+                                       value="1" <?php checked($forgot_pw_cs_enabled, 1); ?> />
+                                <?php esc_html_e('Show customer service button on forgot-password screen', 'twork-rewards'); ?>
+                            </label>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="twork_rewards_forgot_pw_cs_label"><?php esc_html_e('Button Label', 'twork-rewards'); ?></label>
+                        </th>
+                        <td>
+                            <input type="text"
+                                   class="regular-text"
+                                   name="twork_rewards_forgot_pw_cs_label"
+                                   id="twork_rewards_forgot_pw_cs_label"
+                                   value="<?php echo esc_attr($forgot_pw_cs_label); ?>"
+                                   placeholder="<?php echo esc_attr(__('Customer Service ဆက်သွယ်ရန်', 'twork-rewards')); ?>" />
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="twork_rewards_forgot_pw_cs_link"><?php esc_html_e('Button Link', 'twork-rewards'); ?></label>
+                        </th>
+                        <td>
+                            <input type="text"
+                                   class="large-text"
+                                   name="twork_rewards_forgot_pw_cs_link"
+                                   id="twork_rewards_forgot_pw_cs_link"
+                                   value="<?php echo esc_attr($forgot_pw_cs_link); ?>"
+                                   placeholder="https://m.me/planetmm or tel:09123456789" />
+                            <p class="description">
+                                <?php esc_html_e('HTTPS, tel:, or mailto: links supported. Button is hidden when disabled or link is empty.', 'twork-rewards'); ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
                         <th scope="row">
                             <label for="twork_rewards_timezone"><?php esc_html_e('Display Timezone', 'twork-rewards'); ?></label>
                         </th>
@@ -2990,6 +3120,9 @@ class TWork_Rewards_System
                                 </option>
                                 <option value="registered" <?php selected($user_page_settings['default_sort'], 'registered'); ?>>
                                     <?php esc_html_e('Registration Date', 'twork-rewards'); ?>
+                                </option>
+                                <option value="points" <?php selected($user_page_settings['default_sort'], 'points'); ?>>
+                                    <?php esc_html_e('My Points', 'twork-rewards'); ?>
                                 </option>
                             </select>
                             <p class="description">
@@ -3638,6 +3771,36 @@ class TWork_Rewards_System
         $app_update_version = $get_sanitized_text_or_existing('twork_rewards_app_update_version', 'twork_rewards_app_update_version', '');
         update_option('twork_rewards_app_update_version', $app_update_version);
 
+        // Save forgot-password screen settings (mobile app)
+        $forgot_pw_email_domain = isset($_POST['twork_rewards_forgot_pw_email_domain'])
+            ? sanitize_text_field(wp_unslash($_POST['twork_rewards_forgot_pw_email_domain']))
+            : get_option('twork_rewards_forgot_pw_email_domain', 'noreply.planetmm.com');
+        $forgot_pw_email_domain = strtolower(trim($forgot_pw_email_domain));
+        if ($forgot_pw_email_domain === '' || !preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i', $forgot_pw_email_domain)) {
+            $forgot_pw_email_domain = 'noreply.planetmm.com';
+        }
+        update_option('twork_rewards_forgot_pw_email_domain', $forgot_pw_email_domain);
+
+        $forgot_pw_hint_text = isset($_POST['twork_rewards_forgot_pw_hint_text'])
+            ? sanitize_textarea_field(wp_unslash($_POST['twork_rewards_forgot_pw_hint_text']))
+            : get_option('twork_rewards_forgot_pw_hint_text', '');
+        update_option('twork_rewards_forgot_pw_hint_text', $forgot_pw_hint_text);
+
+        $forgot_pw_cs_enabled = isset($_POST['twork_rewards_forgot_pw_cs_enabled']) ? 1 : 0;
+        update_option('twork_rewards_forgot_pw_cs_enabled', $forgot_pw_cs_enabled);
+
+        $forgot_pw_cs_label = $get_sanitized_text_or_existing(
+            'twork_rewards_forgot_pw_cs_label',
+            'twork_rewards_forgot_pw_cs_label',
+            __('Customer Service ဆက်သွယ်ရန်', 'twork-rewards')
+        );
+        update_option('twork_rewards_forgot_pw_cs_label', $forgot_pw_cs_label);
+
+        $forgot_pw_cs_link = isset($_POST['twork_rewards_forgot_pw_cs_link'])
+            ? $this->sanitize_app_link(wp_unslash($_POST['twork_rewards_forgot_pw_cs_link']))
+            : get_option('twork_rewards_forgot_pw_cs_link', '');
+        update_option('twork_rewards_forgot_pw_cs_link', $forgot_pw_cs_link);
+
         // Save timezone setting
         $timezone = $get_sanitized_text_or_existing('twork_rewards_timezone', 'twork_rewards_timezone', 'Asia/Yangon');
         // Validate timezone
@@ -3672,7 +3835,7 @@ class TWork_Rewards_System
         update_option(self::OPTION_USER_PAGE_PER_PAGE, $per_page);
 
         $default_sort = isset($_POST[self::OPTION_USER_PAGE_DEFAULT_SORT]) ? sanitize_text_field(wp_unslash($_POST[self::OPTION_USER_PAGE_DEFAULT_SORT])) : 'activity';
-        $allowed_sorts = array('activity', 'ID', 'name', 'email', 'registered');
+        $allowed_sorts = $this->get_user_page_allowed_sorts();
         if (!in_array($default_sort, $allowed_sorts, true)) {
             $default_sort = 'activity';
         }
@@ -4212,6 +4375,13 @@ class TWork_Rewards_System
             'callback' => array($this, 'rest_app_update_settings'),
             'permission_callback' => array($this, 'rest_permission_public'),
         ));
+
+        // API endpoint for forgot-password screen copy + customer service button
+        register_rest_route('twork/v1', '/app/forgot-password-settings', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'rest_forgot_password_settings'),
+            'permission_callback' => array($this, 'rest_permission_public'),
+        ));
     }
 
     /**
@@ -4254,6 +4424,71 @@ class TWork_Rewards_System
                     'enabled' => (bool) $update_enabled,
                     'update_link' => $update_link,
                     'version' => $update_version,
+                ),
+            ),
+            200
+        );
+    }
+
+    /**
+     * Sanitize mobile-app action links (https, tel, mailto).
+     *
+     * @param mixed $raw_value Raw link from admin form.
+     * @return string
+     */
+    private function sanitize_app_link($raw_value)
+    {
+        $link = trim((string) $raw_value);
+        if ($link === '') {
+            return '';
+        }
+
+        if (preg_match('/^(https?|tel|mailto):/i', $link)) {
+            $sanitized = esc_url_raw($link, array('http', 'https', 'tel', 'mailto'));
+            return is_string($sanitized) ? $sanitized : '';
+        }
+
+        return esc_url_raw($link);
+    }
+
+    /**
+     * REST API: Forgot-password screen settings for mobile app.
+     */
+    public function rest_forgot_password_settings(WP_REST_Request $request)
+    {
+        $email_domain = get_option('twork_rewards_forgot_pw_email_domain', 'noreply.planetmm.com');
+        $email_domain = strtolower(trim((string) $email_domain));
+        if ($email_domain === '' || !preg_match('/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i', $email_domain)) {
+            $email_domain = 'noreply.planetmm.com';
+        }
+
+        $hint_text = trim((string) get_option('twork_rewards_forgot_pw_hint_text', ''));
+        if ($hint_text === '') {
+            $hint_text = sprintf(
+                /* translators: %s: auto-generated email domain */
+                __('သင့် အသုံးပြုသူအမည် + @%s ပုံစံဖြင့် ထည့်ပါ။', 'twork-rewards'),
+                $email_domain
+            );
+        }
+
+        $cs_enabled = (int) get_option('twork_rewards_forgot_pw_cs_enabled', 0);
+        $cs_label = trim((string) get_option('twork_rewards_forgot_pw_cs_label', ''));
+        if ($cs_label === '') {
+            $cs_label = __('Customer Service ဆက်သွယ်ရန်', 'twork-rewards');
+        }
+        $cs_link = trim((string) get_option('twork_rewards_forgot_pw_cs_link', ''));
+
+        return new WP_REST_Response(
+            array(
+                'success' => true,
+                'data' => array(
+                    'email_domain' => $email_domain,
+                    'hint_text' => $hint_text,
+                    'customer_service' => array(
+                        'enabled' => (bool) $cs_enabled,
+                        'label' => $cs_label,
+                        'link' => $cs_link,
+                    ),
                 ),
             ),
             200
@@ -17837,8 +18072,13 @@ class TWork_Rewards_System
         $search = isset($_GET['s']) ? sanitize_text_field(wp_unslash($_GET['s'])) : '';
         $activity_filter = isset($_GET['activity_status']) ? sanitize_text_field($_GET['activity_status']) : $settings['default_activity_filter'];
         $days_inactive_filter = isset($_GET['days_inactive']) ? intval($_GET['days_inactive']) : 0;
-        $orderby = isset($_GET['orderby']) ? sanitize_text_field($_GET['orderby']) : $settings['default_sort'];
-        $order = isset($_GET['order']) && strtoupper($_GET['order']) === 'ASC' ? 'ASC' : $settings['default_order'];
+        $orderby = $this->sanitize_user_page_orderby(
+            isset($_GET['orderby']) ? wp_unslash($_GET['orderby']) : $settings['default_sort'],
+            $settings['default_sort']
+        );
+        $order = isset($_GET['order'])
+            ? $this->sanitize_user_page_order(wp_unslash($_GET['order']), $settings['default_order'])
+            : $this->sanitize_user_page_order($settings['default_order'], 'DESC');
 
         // Pagination using settings
         $paged = isset($_GET['paged']) ? max(1, intval($_GET['paged'])) : 1;
@@ -17849,11 +18089,19 @@ class TWork_Rewards_System
         $inactivity_threshold_days = apply_filters('twork_rewards_inactivity_threshold_days', $settings['inactivity_threshold']);
         $threshold_timestamp = time() - ($inactivity_threshold_days * DAY_IN_SECONDS);
 
+        $post_fetch_sort = in_array($orderby, array('activity', 'points'), true);
+        $db_orderby_map = array(
+            'ID' => 'ID',
+            'registered' => 'registered',
+            'name' => 'display_name',
+            'email' => 'user_email',
+        );
+
         $args = array(
             'number' => $per_page,
             'offset' => $offset,
-            'orderby' => 'ID',  // Default, will be sorted after if needed
-            'order' => 'DESC',
+            'orderby' => (!$post_fetch_sort && isset($db_orderby_map[$orderby])) ? $db_orderby_map[$orderby] : 'ID',
+            'order' => $order,
             'count_total' => true,  // Enable total count for pagination
         );
 
@@ -17995,40 +18243,34 @@ class TWork_Rewards_System
                 $user_activity_cache[$uid]['_full_status'] = $activity_status;
             }
 
-            // Professional: Sort users by activity status if requested
+            // Post-fetch sort for computed/meta-heavy columns (current page only).
             if ($orderby === 'activity') {
                 usort($users, function ($a, $b) use ($user_activity_cache, $order) {
                     $a_status = isset($user_activity_cache[$a->ID]['_full_status']) ? $user_activity_cache[$a->ID]['_full_status'] : array('is_active' => false, 'most_recent_activity' => 0);
                     $b_status = isset($user_activity_cache[$b->ID]['_full_status']) ? $user_activity_cache[$b->ID]['_full_status'] : array('is_active' => false, 'most_recent_activity' => 0);
 
-                    // First sort by active/inactive
                     if ($a_status['is_active'] !== $b_status['is_active']) {
-                        return $order === 'DESC'
-                            ? ($a_status['is_active'] ? -1 : 1)
-                            : ($a_status['is_active'] ? 1 : -1);
+                        $cmp = $a_status['is_active'] ? -1 : 1;
+                        return $order === 'DESC' ? $cmp : -$cmp;
                     }
 
-                    // Then sort by most recent activity
-                    $a_recent = $a_status['most_recent_activity'] ?? 0;
-                    $b_recent = $b_status['most_recent_activity'] ?? 0;
-
-                    return $order === 'DESC'
-                        ? ($b_recent <=> $a_recent)
-                        : ($a_recent <=> $b_recent);
+                    $a_recent = isset($a_status['most_recent_activity']) ? (int) $a_status['most_recent_activity'] : 0;
+                    $b_recent = isset($b_status['most_recent_activity']) ? (int) $b_status['most_recent_activity'] : 0;
+                    $cmp = $b_recent <=> $a_recent;
+                    if ($cmp === 0) {
+                        return $b->ID <=> $a->ID;
+                    }
+                    return $order === 'DESC' ? $cmp : -$cmp;
                 });
-            } elseif ($orderby === 'name') {
-                usort($users, function ($a, $b) use ($order) {
-                    $a_name = strtolower($a->display_name ?: $a->user_email);
-                    $b_name = strtolower($b->display_name ?: $b->user_email);
-                    return $order === 'DESC'
-                        ? strcmp($b_name, $a_name)
-                        : strcmp($a_name, $b_name);
-                });
-            } elseif ($orderby === 'email') {
-                usort($users, function ($a, $b) use ($order) {
-                    return $order === 'DESC'
-                        ? strcmp(strtolower($b->user_email), strtolower($a->user_email))
-                        : strcmp(strtolower($a->user_email), strtolower($b->user_email));
+            } elseif ($orderby === 'points') {
+                usort($users, function ($a, $b) use ($user_meta_cache, $order) {
+                    $a_points = isset($user_meta_cache[$a->ID]['my_points']) ? (int) $user_meta_cache[$a->ID]['my_points'] : 0;
+                    $b_points = isset($user_meta_cache[$b->ID]['my_points']) ? (int) $user_meta_cache[$b->ID]['my_points'] : 0;
+                    $cmp = $b_points <=> $a_points;
+                    if ($cmp === 0) {
+                        return $b->ID <=> $a->ID;
+                    }
+                    return $order === 'DESC' ? $cmp : -$cmp;
                 });
             }
         }
@@ -18121,11 +18363,8 @@ class TWork_Rewards_System
             </div>
             <?php endif; ?>
 
-            <?php if ($settings['show_search'] || $settings['show_filters']): ?>
             <form method="get" style="margin: 12px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                 <input type="hidden" name="page" value="twork-rewards-users" />
-                <input type="hidden" name="orderby" value="<?php echo esc_attr($orderby); ?>" />
-                <input type="hidden" name="order" value="<?php echo esc_attr($order); ?>" />
                 <?php if ($settings['show_search']): ?>
                 <input type="search" name="s" placeholder="<?php esc_attr_e('Search users…', 'twork-rewards'); ?>" value="<?php echo esc_attr($search); ?>" style="flex: 1; min-width: 200px;" />
                 <?php endif; ?>
@@ -18158,17 +18397,39 @@ class TWork_Rewards_System
                         <?php esc_html_e('90+ Days Inactive', 'twork-rewards'); ?>
                     </option>
                 </select>
-                <?php submit_button(__('Filter', 'twork-rewards'), 'secondary', '', false); ?>
-                <?php if (!empty($search) || $activity_filter !== 'all' || $days_inactive_filter > 0): ?>
-                    <a href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-users')); ?>" 
-                       class="button" 
+                <?php endif; ?>
+                <label for="twork-users-orderby" class="screen-reader-text"><?php esc_html_e('Sort by', 'twork-rewards'); ?></label>
+                <select id="twork-users-orderby" name="orderby" style="min-width: 180px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="activity" <?php selected($orderby, 'activity'); ?>><?php esc_html_e('Activity Status', 'twork-rewards'); ?></option>
+                    <option value="ID" <?php selected($orderby, 'ID'); ?>><?php esc_html_e('User ID', 'twork-rewards'); ?></option>
+                    <option value="name" <?php selected($orderby, 'name'); ?>><?php esc_html_e('Name', 'twork-rewards'); ?></option>
+                    <option value="email" <?php selected($orderby, 'email'); ?>><?php esc_html_e('Email', 'twork-rewards'); ?></option>
+                    <option value="registered" <?php selected($orderby, 'registered'); ?>><?php esc_html_e('Registration Date', 'twork-rewards'); ?></option>
+                    <option value="points" <?php selected($orderby, 'points'); ?>><?php esc_html_e('My Points', 'twork-rewards'); ?></option>
+                </select>
+                <label for="twork-users-order" class="screen-reader-text"><?php esc_html_e('Sort order', 'twork-rewards'); ?></label>
+                <select id="twork-users-order" name="order" style="min-width: 150px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="DESC" <?php selected($order, 'DESC'); ?>><?php esc_html_e('Descending', 'twork-rewards'); ?></option>
+                    <option value="ASC" <?php selected($order, 'ASC'); ?>><?php esc_html_e('Ascending', 'twork-rewards'); ?></option>
+                </select>
+                <?php submit_button(__('Apply', 'twork-rewards'), 'secondary', '', false); ?>
+                <?php if ($settings['show_filters'] && (!empty($search) || $activity_filter !== 'all' || $days_inactive_filter > 0)): ?>
+                    <a href="<?php echo esc_url(add_query_arg(array(
+                        'page' => 'twork-rewards-users',
+                        'orderby' => $orderby,
+                        'order' => $order,
+                    ), admin_url('admin.php'))); ?>"
+                       class="button"
                        style="background: #666; border-color: #666; color: white;">
                         <?php esc_html_e('Clear Filters', 'twork-rewards'); ?>
                     </a>
                 <?php endif; ?>
-                <?php endif; // End show_filters check ?>
             </form>
-            <?php endif; // End show_search || show_filters check ?>
+            <?php if ($post_fetch_sort && $total_users > $per_page): ?>
+            <p class="description" style="margin: 0 0 12px;">
+                <?php esc_html_e('Activity and points sorting applies within the current page when multiple pages of users match your filters.', 'twork-rewards'); ?>
+            </p>
+            <?php endif; ?>
             
             <?php
             // Display activity statistics with professional design (if enabled)
@@ -18388,7 +18649,7 @@ class TWork_Rewards_System
                 <tr>
                     <?php if ($settings['show_activity_badge']): ?>
                     <th style="width: 140px;">
-                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'activity', 'order' => $orderby === 'activity' && $order === 'DESC' ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>" 
+                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'activity', 'order' => ($orderby === 'activity' && $order === 'DESC') ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>" 
                            style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 5px; font-weight: 600;">
                             <?php esc_html_e('Activity Status', 'twork-rewards'); ?>
                             <?php if ($orderby === 'activity'): ?>
@@ -18401,7 +18662,7 @@ class TWork_Rewards_System
                     <th style="width: 50px;"><?php esc_html_e('Avatar', 'twork-rewards'); ?></th>
                     <?php endif; ?>
                     <th>
-                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'name', 'order' => $orderby === 'name' && $order === 'DESC' ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>" 
+                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'name', 'order' => ($orderby === 'name' && $order === 'DESC') ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>" 
                            style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 5px; font-weight: 600;">
                             <?php esc_html_e('User', 'twork-rewards'); ?>
                             <?php if ($orderby === 'name'): ?>
@@ -18411,7 +18672,7 @@ class TWork_Rewards_System
                     </th>
                     <?php if ($settings['show_email']): ?>
                     <th>
-                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'email', 'order' => $orderby === 'email' && $order === 'DESC' ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>" 
+                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'email', 'order' => ($orderby === 'email' && $order === 'DESC') ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>" 
                            style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 5px; font-weight: 600;">
                             <?php esc_html_e('Email', 'twork-rewards'); ?>
                             <?php if ($orderby === 'email'): ?>
@@ -18428,13 +18689,29 @@ class TWork_Rewards_System
                     <th><?php esc_html_e('Activity Score', 'twork-rewards'); ?></th>
                     <?php endif; ?>
                     <?php if ($settings['show_points']): ?>
-                    <th><?php esc_html_e('My Points', 'twork-rewards'); ?></th>
+                    <th>
+                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'points', 'order' => ($orderby === 'points' && $order === 'DESC') ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>"
+                           style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 5px; font-weight: 600;">
+                            <?php esc_html_e('My Points', 'twork-rewards'); ?>
+                            <?php if ($orderby === 'points'): ?>
+                                <span style="font-size: 11px; color: #2271b1;"><?php echo $order === 'DESC' ? '↓' : '↑'; ?></span>
+                            <?php endif; ?>
+                        </a>
+                    </th>
                     <?php endif; ?>
                     <?php if ($settings['show_total_transactions']): ?>
                     <th><?php esc_html_e('Transactions', 'twork-rewards'); ?></th>
                     <?php endif; ?>
                     <?php if ($settings['show_registration_date']): ?>
-                    <th><?php esc_html_e('Registered', 'twork-rewards'); ?></th>
+                    <th>
+                        <a href="<?php echo esc_url(add_query_arg(array('orderby' => 'registered', 'order' => ($orderby === 'registered' && $order === 'DESC') ? 'ASC' : 'DESC'), remove_query_arg(array('paged')))); ?>"
+                           style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 5px; font-weight: 600;">
+                            <?php esc_html_e('Registered', 'twork-rewards'); ?>
+                            <?php if ($orderby === 'registered'): ?>
+                                <span style="font-size: 11px; color: #2271b1;"><?php echo $order === 'DESC' ? '↓' : '↑'; ?></span>
+                            <?php endif; ?>
+                        </a>
+                    </th>
                     <?php endif; ?>
                     <?php if ($settings['show_last_updated']): ?>
                     <th><?php esc_html_e('Last Updated', 'twork-rewards'); ?></th>
@@ -22389,6 +22666,12 @@ class TWork_Rewards_System
                                     <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-page-content', 'action' => 'edit', 'id' => $page['id']), admin_url('admin.php'))); ?>" class="button button-small">
                                         <?php esc_html_e('Edit', 'twork-rewards'); ?>
                                     </a>
+                                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline-block;" onsubmit="return confirm('<?php echo esc_js(sprintf(__('Are you sure you want to delete "%1$s" (%2$s)? This cannot be undone.', 'twork-rewards'), $page['title'], $page['page_slug'])); ?>');">
+                                        <input type="hidden" name="action" value="twork_rewards_delete_page_content">
+                                        <input type="hidden" name="page_id" value="<?php echo esc_attr($page['id']); ?>">
+                                        <?php wp_nonce_field('twork_rewards_delete_page_content'); ?>
+                                        <button type="submit" class="button button-small button-link-delete"><?php esc_html_e('Delete', 'twork-rewards'); ?></button>
+                                    </form>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -22497,6 +22780,16 @@ class TWork_Rewards_System
                     </a>
                 </p>
             </form>
+            <?php if ($id > 0 && $page): ?>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top: -10px;" onsubmit="return confirm('<?php echo esc_js(sprintf(__('Are you sure you want to delete "%1$s" (%2$s)? This cannot be undone.', 'twork-rewards'), $title, $page_slug)); ?>');">
+                <input type="hidden" name="action" value="twork_rewards_delete_page_content">
+                <input type="hidden" name="page_id" value="<?php echo esc_attr($id); ?>">
+                <?php wp_nonce_field('twork_rewards_delete_page_content'); ?>
+                <p class="submit">
+                    <button type="submit" class="button button-link-delete"><?php esc_html_e('Delete Page Content', 'twork-rewards'); ?></button>
+                </p>
+            </form>
+            <?php endif; ?>
         </div>
         <?php
     }
@@ -22576,6 +22869,37 @@ class TWork_Rewards_System
         }
 
         wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-page-content', 'updated' => 1), admin_url('admin.php')));
+        exit;
+    }
+
+    /**
+     * Handle page content delete
+     */
+    public function handle_page_content_delete()
+    {
+        $this->rewards_require_action('page_content');
+
+        check_admin_referer('twork_rewards_delete_page_content');
+
+        global $wpdb;
+        $table_name = $this->page_content_table_name();
+
+        // PROFESSIONAL FIX: Ensure table exists before deleting
+        $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
+        if ($table_exists !== $table_name) {
+            wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-page-content', 'deleted' => 1), admin_url('admin.php')));
+            exit;
+        }
+
+        $id = isset($_POST['page_id']) ? absint($_POST['page_id']) : 0;
+        if ($id > 0) {
+            $result = $wpdb->delete($table_name, array('id' => $id), array('%d'));
+            if ($result === false && defined('WP_DEBUG') && WP_DEBUG) {
+                error_log('Rewards: Failed to delete page content. Error: ' . $wpdb->last_error);
+            }
+        }
+
+        wp_safe_redirect(add_query_arg(array('page' => 'twork-rewards-page-content', 'deleted' => 1), admin_url('admin.php')));
         exit;
     }
 
@@ -22699,7 +23023,7 @@ class TWork_Rewards_System
                         <th scope="col" class="manage-column column-question"><?php esc_html_e('Question', 'twork-rewards'); ?></th>
                         <th scope="col" class="manage-column column-status" style="width: 100px;"><?php esc_html_e('Status', 'twork-rewards'); ?></th>
                         <th scope="col" class="manage-column column-updated" style="width: 150px;"><?php esc_html_e('Last Updated', 'twork-rewards'); ?></th>
-                        <th scope="col" class="manage-column column-actions" style="width: 100px;"><?php esc_html_e('Actions', 'twork-rewards'); ?></th>
+                        <th scope="col" class="manage-column column-actions" style="width: 160px;"><?php esc_html_e('Actions', 'twork-rewards'); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -22727,6 +23051,12 @@ class TWork_Rewards_System
                                     <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-faq', 'action' => 'edit', 'id' => $item['id']), admin_url('admin.php'))); ?>" class="button button-small">
                                         <?php esc_html_e('Edit', 'twork-rewards'); ?>
                                     </a>
+                                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline-block;" onsubmit="return confirm('<?php echo esc_js(__('Are you sure you want to delete this FAQ item?', 'twork-rewards')); ?>');">
+                                        <input type="hidden" name="action" value="twork_rewards_delete_faq">
+                                        <input type="hidden" name="faq_id" value="<?php echo esc_attr($item['id']); ?>">
+                                        <?php wp_nonce_field('twork_rewards_delete_faq'); ?>
+                                        <button type="submit" class="button button-small button-link-delete"><?php esc_html_e('Delete', 'twork-rewards'); ?></button>
+                                    </form>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -22830,6 +23160,16 @@ class TWork_Rewards_System
                     </a>
                 </p>
             </form>
+            <?php if ($id > 0 && $item): ?>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top: -10px;" onsubmit="return confirm('<?php echo esc_js(__('Are you sure you want to delete this FAQ item?', 'twork-rewards')); ?>');">
+                <input type="hidden" name="action" value="twork_rewards_delete_faq">
+                <input type="hidden" name="faq_id" value="<?php echo esc_attr($id); ?>">
+                <?php wp_nonce_field('twork_rewards_delete_faq'); ?>
+                <p class="submit">
+                    <button type="submit" class="button button-link-delete"><?php esc_html_e('Delete FAQ Item', 'twork-rewards'); ?></button>
+                </p>
+            </form>
+            <?php endif; ?>
         </div>
         <?php
     }
