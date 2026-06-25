@@ -4,10 +4,9 @@ import '../models/page_content.dart';
 import '../services/page_content_service.dart';
 import '../app_properties.dart';
 import '../theme/app_theme.dart';
-import '../utils/cms_html_sanitizer.dart';
 import '../utils/logger.dart' as app_logger;
 import 'app_pull_to_refresh.dart';
-import 'package:flutter_html/flutter_html.dart';
+import 'cms_html_content_widget.dart';
 
 /// Professional Dynamic Content Page Widget
 /// Displays HTML content from backend with modern, creative design
@@ -202,159 +201,7 @@ class _DynamicContentPageState extends State<DynamicContentPage> {
           ),
         ],
       ),
-      child: _buildHtmlContent(_content!.content),
-    );
-  }
-
-  /// Build HTML content using flutter_html package for professional rendering
-  Widget _buildHtmlContent(String html) {
-    if (html.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    final sanitized = CmsHtmlSanitizer.sanitize(html);
-    return Html(
-      data: sanitized,
-      style: {
-        'body': Style(
-          margin: Margins.zero,
-          padding: HtmlPaddings.zero,
-          fontSize: FontSize(15.0),
-          color: darkGrey,
-          lineHeight: LineHeight(1.6),
-        ),
-        'p': Style(
-          margin: Margins.only(bottom: 12),
-          fontSize: FontSize(15.0),
-          color: darkGrey,
-          lineHeight: LineHeight(1.6),
-        ),
-        'h1': Style(
-          fontSize: FontSize(24.0),
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-          margin: Margins.only(bottom: 16, top: 8),
-        ),
-        'h2': Style(
-          fontSize: FontSize(20.0),
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-          margin: Margins.only(bottom: 14, top: 8),
-        ),
-        'h3': Style(
-          fontSize: FontSize(18.0),
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-          margin: Margins.only(bottom: 12, top: 8),
-        ),
-        'h4': Style(
-          fontSize: FontSize(16.0),
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-          margin: Margins.only(bottom: 10, top: 6),
-        ),
-        'h5': Style(
-          fontSize: FontSize(14.0),
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-          margin: Margins.only(bottom: 8, top: 6),
-        ),
-        'h6': Style(
-          fontSize: FontSize(13.0),
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-          margin: Margins.only(bottom: 8, top: 6),
-        ),
-        'strong': Style(
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-        ),
-        'b': Style(
-          fontWeight: FontWeight.bold,
-          color: darkGrey,
-        ),
-        'em': Style(
-          fontStyle: FontStyle.italic,
-          color: darkGrey,
-        ),
-        'i': Style(
-          fontStyle: FontStyle.italic,
-          color: darkGrey,
-        ),
-        'ul': Style(
-          margin: Margins.only(bottom: 12, left: 16),
-          padding: HtmlPaddings.zero,
-        ),
-        'ol': Style(
-          margin: Margins.only(bottom: 12, left: 16),
-          padding: HtmlPaddings.zero,
-        ),
-        'li': Style(
-          margin: Margins.only(bottom: 6),
-          fontSize: FontSize(15.0),
-          color: darkGrey,
-          lineHeight: LineHeight(1.6),
-        ),
-        'a': Style(
-          color: AppTheme.deepBlue,
-          textDecoration: TextDecoration.underline,
-        ),
-        'code': Style(
-          backgroundColor: Colors.grey[200],
-          padding: HtmlPaddings.all(4),
-          fontFamily: 'monospace',
-          fontSize: FontSize(13.0),
-          color: darkGrey,
-        ),
-        'pre': Style(
-          backgroundColor: Colors.grey[200],
-          padding: HtmlPaddings.all(12),
-          margin: Margins.only(bottom: 12),
-          border: Border.all(color: Colors.grey[300]!),
-        ),
-        'blockquote': Style(
-          border: Border(
-            left: BorderSide(
-              color: AppTheme.deepBlue,
-              width: 4,
-            ),
-          ),
-          padding: HtmlPaddings.only(left: 16, top: 8, bottom: 8, right: 8),
-          margin: Margins.only(left: 8, bottom: 12),
-          fontStyle: FontStyle.italic,
-          color: Colors.grey[700],
-          backgroundColor: Colors.grey[50],
-        ),
-        'table': Style(
-          border: Border.all(color: Colors.grey[400]!),
-          margin: Margins.only(bottom: 12),
-          width: Width(100, Unit.percent),
-        ),
-        'th': Style(
-          backgroundColor: Colors.grey[200],
-          padding: HtmlPaddings.all(12),
-          fontWeight: FontWeight.bold,
-          border: Border.all(color: Colors.grey[400]!),
-          textAlign: TextAlign.center,
-        ),
-        'td': Style(
-          padding: HtmlPaddings.all(12),
-          border: Border.all(color: Colors.grey[300]!),
-        ),
-        'img': Style(
-          width: Width(100, Unit.percent),
-          margin: Margins.only(bottom: 12),
-        ),
-        'hr': Style(
-          border: Border(
-            top: BorderSide(color: Colors.grey[300]!, width: 1),
-          ),
-          margin: Margins.symmetric(vertical: 16),
-        ),
-      },
-      extensions: [
-        // Add any custom extensions if needed
-      ],
+      child: CmsHtmlContentWidget(html: _content!.content),
     );
   }
 

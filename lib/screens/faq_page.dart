@@ -3,9 +3,10 @@ import 'package:ecommerce_int2/widgets/app_pull_to_refresh.dart';
 import 'package:ecommerce_int2/services/page_content_service.dart';
 import 'package:ecommerce_int2/models/page_content.dart';
 import 'package:ecommerce_int2/utils/logger.dart' as app_logger;
+import 'package:ecommerce_int2/utils/cms_html_sanitizer.dart';
+import 'package:ecommerce_int2/widgets/cms_html_content_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_html/flutter_html.dart';
 
 class FaqPage extends StatefulWidget {
   const FaqPage({super.key});
@@ -53,15 +54,6 @@ class _FaqPageState extends State<FaqPage> {
         });
       }
     }
-  }
-
-  /// Strip HTML tags to get plain text (for question title)
-  String _stripHtmlTags(String html) {
-    if (html.isEmpty) return '';
-    return html
-        .replaceAll(RegExp(r'<[^>]*>'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
   }
 
   @override
@@ -223,7 +215,7 @@ class _FaqPageState extends State<FaqPage> {
   Widget _buildFaqItem(FaqItem item) {
     return ExpansionTile(
       title: Text(
-        _stripHtmlTags(item.question),
+        CmsHtmlSanitizer.toPlainText(item.question),
         style: TextStyle(
           fontSize: 14,
           fontWeight: FontWeight.bold,
@@ -235,123 +227,8 @@ class _FaqPageState extends State<FaqPage> {
           padding: const EdgeInsets.all(16.0),
           color: const Color(0xffFAF1E2),
           width: double.infinity,
-          child: _buildHtmlContent(item.answer),
+          child: CmsHtmlContentWidget(html: item.answer),
         ),
-      ],
-    );
-  }
-
-  /// Build HTML content using flutter_html package for professional rendering
-  Widget _buildHtmlContent(String htmlContent) {
-    if (htmlContent.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Html(
-      data: htmlContent,
-      style: {
-        'body': Style(
-          margin: Margins.zero,
-          padding: HtmlPaddings.zero,
-          fontSize: FontSize(12.0),
-          color: Colors.grey[700],
-          lineHeight: LineHeight(1.6),
-        ),
-        'p': Style(
-          margin: Margins.only(bottom: 8),
-          fontSize: FontSize(12.0),
-          color: Colors.grey[700],
-          lineHeight: LineHeight(1.6),
-        ),
-        'h1': Style(
-          fontSize: FontSize(18.0),
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-          margin: Margins.only(bottom: 12, top: 8),
-        ),
-        'h2': Style(
-          fontSize: FontSize(16.0),
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-          margin: Margins.only(bottom: 10, top: 8),
-        ),
-        'h3': Style(
-          fontSize: FontSize(14.0),
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-          margin: Margins.only(bottom: 8, top: 6),
-        ),
-        'strong': Style(
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-        ),
-        'b': Style(
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-        ),
-        'em': Style(
-          fontStyle: FontStyle.italic,
-        ),
-        'i': Style(
-          fontStyle: FontStyle.italic,
-        ),
-        'ul': Style(
-          margin: Margins.only(bottom: 8, left: 16),
-          padding: HtmlPaddings.zero,
-        ),
-        'ol': Style(
-          margin: Margins.only(bottom: 8, left: 16),
-          padding: HtmlPaddings.zero,
-        ),
-        'li': Style(
-          margin: Margins.only(bottom: 4),
-          fontSize: FontSize(12.0),
-          color: Colors.grey[700],
-          lineHeight: LineHeight(1.6),
-        ),
-        'a': Style(
-          color: Colors.blue[700],
-          textDecoration: TextDecoration.underline,
-        ),
-        'code': Style(
-          backgroundColor: Colors.grey[200],
-          padding: HtmlPaddings.all(4),
-          fontFamily: 'monospace',
-          fontSize: FontSize(11.0),
-        ),
-        'pre': Style(
-          backgroundColor: Colors.grey[200],
-          padding: HtmlPaddings.all(8),
-          margin: Margins.only(bottom: 8),
-        ),
-        'blockquote': Style(
-          border: Border(
-            left: BorderSide(
-              color: Colors.grey[400]!,
-              width: 4,
-            ),
-          ),
-          padding: HtmlPaddings.only(left: 12),
-          margin: Margins.only(left: 8, bottom: 8),
-          fontStyle: FontStyle.italic,
-          color: Colors.grey[600],
-        ),
-        'table': Style(
-          border: Border.all(color: Colors.grey[400]!),
-          margin: Margins.only(bottom: 8),
-        ),
-        'th': Style(
-          backgroundColor: Colors.grey[200],
-          padding: HtmlPaddings.all(8),
-          fontWeight: FontWeight.bold,
-        ),
-        'td': Style(
-          padding: HtmlPaddings.all(8),
-          border: Border.all(color: Colors.grey[300]!),
-        ),
-      },
-      extensions: [
-        // Add any custom extensions if needed
       ],
     );
   }

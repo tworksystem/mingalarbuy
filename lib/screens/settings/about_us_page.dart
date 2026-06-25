@@ -4,6 +4,7 @@ import 'package:ecommerce_int2/services/page_content_service.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
 import 'package:ecommerce_int2/utils/logger.dart' as app_logger;
 import 'package:ecommerce_int2/widgets/app_pull_to_refresh.dart';
+import 'package:ecommerce_int2/widgets/cms_html_content_widget.dart';
 import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -54,15 +55,6 @@ class _AboutUsPageState extends State<AboutUsPage> {
         });
       }
     }
-  }
-
-  /// Strip HTML tags from text for clean display
-  String _stripHtmlTags(String html) {
-    if (html.isEmpty) return '';
-    return html
-        .replaceAll(RegExp(r'<[^>]*>'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
   }
 
   @override
@@ -212,23 +204,9 @@ class _AboutUsPageState extends State<AboutUsPage> {
                       title: 'About Us',
                       icon: Icons.info_outline,
                       children: [
-                        Text(
-                          _stripHtmlTags(aboutBody1),
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: darkGrey,
-                            height: 1.6,
-                          ),
-                        ),
+                        CmsHtmlContentWidget(html: aboutBody1),
                         const SizedBox(height: 16),
-                        Text(
-                          _stripHtmlTags(aboutBody2),
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: darkGrey,
-                            height: 1.6,
-                          ),
-                        ),
+                        CmsHtmlContentWidget(html: aboutBody2),
                       ],
                     ),
 
@@ -239,14 +217,7 @@ class _AboutUsPageState extends State<AboutUsPage> {
                       title: 'Our Mission',
                       icon: Icons.flag_outlined,
                       children: [
-                        Text(
-                          _stripHtmlTags(mission),
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: darkGrey,
-                            height: 1.6,
-                          ),
-                        ),
+                        CmsHtmlContentWidget(html: mission),
                       ],
                     ),
 
@@ -257,14 +228,7 @@ class _AboutUsPageState extends State<AboutUsPage> {
                       title: 'Our Vision',
                       icon: Icons.visibility_outlined,
                       children: [
-                        Text(
-                          _stripHtmlTags(vision),
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: darkGrey,
-                            height: 1.6,
-                          ),
-                        ),
+                        CmsHtmlContentWidget(html: vision),
                       ],
                     ),
 

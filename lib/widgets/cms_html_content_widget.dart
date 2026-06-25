@@ -4,6 +4,7 @@ import 'package:flutter_html/flutter_html.dart';
 import '../app_properties.dart';
 import '../theme/app_theme.dart';
 import '../utils/cms_html_sanitizer.dart';
+import '../utils/html_link_launcher.dart';
 
 /// Light (CMS pages) or dark-on-overlay (engagement quick view) HTML rendering.
 enum CmsHtmlColorScheme { light, darkOnOverlay }
@@ -37,6 +38,7 @@ class CmsHtmlContentWidget extends StatelessWidget {
 
     return Html(
       data: sanitized,
+      onLinkTap: (url, _, __) => HtmlLinkLauncher.launch(context, url),
       style: {
         'body': Style(
           margin: Margins.zero,

@@ -23,6 +23,8 @@ class CmsHtmlSanitizer {
     caseSensitive: false,
   );
 
+  static final RegExp _htmlTags = RegExp(r'<[^>]*>');
+
   /// Returns sanitized HTML safe for in-app CMS display.
   static String sanitize(String raw) {
     if (raw.isEmpty) return raw;
@@ -32,6 +34,22 @@ class CmsHtmlSanitizer {
     out = out.replaceAll(_javascriptHref, r'$1="#"');
     out = out.replaceAll(_dataUriScript, 'src=""');
     return injectImgReferrerPolicy(out.trim());
+  }
+
+  /// Plain text for search, previews, and accordion titles.
+  static String toPlainText(String html) {
+    if (html.isEmpty) return '';
+
+    return html
+        .replaceAll(_htmlTags, ' ')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
   }
 
   /// Adds hotlink-safe referrer policy to CMS `<img>` tags (web browser native load).
