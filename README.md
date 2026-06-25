@@ -96,6 +96,9 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 📄 **CMS HTML Widget** - Shared `flutter_html` renderer with XSS sanitizer for About/Legal and engagement overlays
 - 🔐 **Rewards Admin Access Control** - Per-role and per-user WordPress admin page permissions (app REST routes untouched)
 - 👤 **Username-First Sign-Up** - Register with username + password; WooCommerce email auto-derived when omitted
+- 🎨 **PlanetMM Auth Shell** - Shared space-themed background across login, register, and forgot-password screens
+- 🔑 **Remote Forgot-Password Copy** - Admin-configurable hint text, email domain, and customer-service button via REST API
+- 📝 **Rich Product HTML** - WooCommerce descriptions rendered with sanitized `flutter_html` and tappable links
 
 ---
 
@@ -735,6 +738,7 @@ mingalarbuy/
 ├── scripts/                         # Build & dev helpers
 │   ├── build-web-subdomain.sh      # app.mingalarbuy.com Plesk build
 │   ├── build-web-plesk.sh          # Shared Plesk web build pipeline
+│   ├── build-android-release.sh    # Android APK/AAB release pipeline
 │   ├── run-web-dev.sh              # Chrome hot-reload dev server
 │   └── run-web-docker.sh           # Docker static server for subdomain build
 │
@@ -798,6 +802,7 @@ The application uses WooCommerce REST API v3 for e-commerce operations.
 - `GET /wp-json/twork/v1/rewards/exchange-settings` - Get exchange settings
 - `POST /wp-json/twork/v1/rewards/exchange-request` - Create exchange request
 - `GET /wp-json/twork/v1/app/update-settings` - Get app update settings
+- `GET /wp-json/twork/v1/app/forgot-password-settings` - Forgot-password hint, email domain, and customer-service button (public, no auth)
 
 #### FCM Notification Endpoints
 
@@ -931,11 +936,11 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) with a dated
 
 ```bash
 git add .
-git commit -m "feat: 30052026 - add your feature description"
+git commit -m "feat: 25062026 - add your feature description"
 # or
-git commit -m "fix: 30052026 - resolve bug description"
+git commit -m "fix: 25062026 - resolve bug description"
 # or
-git commit -m "docs: 30052026 - update README for new API field"
+git commit -m "docs: 25062026 - update README for new API field"
 ```
 
 #### 6. Push and Create Pull Request
@@ -967,15 +972,15 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/) with a **
 
 | Type | When to use | Example |
 | --- | --- | --- |
-| `feat:` | New capability or user-facing enhancement | `feat: 18062026 - add app subdomain Flutter web deployment` |
-| `fix:` | Bug fix or regression | `fix: 18062026 - render WooCommerce images via web-native img tags` |
-| `docs:` | README, comments, or API docs only | `docs: 18062026 - document app.mingalarbuy.com deploy pipeline` |
-| `refactor:` | Internal restructure, no behavior change | `refactor: 18062026 - strip forbidden XHR headers on Flutter web` |
-| `perf:` | Measurable performance improvement | `perf: 18062026 - skip carousel rebuild when poll totals unchanged` |
-| `test:` | Tests added or updated | `test: 18062026 - cover WebImageUrlUtils edge cases` |
-| `chore:` | Tooling, deps, or maintenance | `chore: 18062026 - add Docker nginx config for web smoke tests` |
-| `ci:` | CI/CD pipeline changes | `ci: 18062026 - add analyze step to GitHub Actions` |
-| `style:` | Formatting only (no logic change) | `style: 18062026 - run dart format on engagement widgets` |
+| `feat:` | New capability or user-facing enhancement | `feat: 25062026 - add remote forgot-password settings API` |
+| `fix:` | Bug fix or regression | `fix: 25062026 - show selected shipping address on checkout` |
+| `docs:` | README, comments, or API docs only | `docs: 25062026 - document PlanetMM auth shell redesign` |
+| `refactor:` | Internal restructure, no behavior change | `refactor: 25062026 - centralize CMS plain-text extraction` |
+| `perf:` | Measurable performance improvement | `perf: 25062026 - cache forgot-password settings for five minutes` |
+| `test:` | Tests added or updated | `test: 25062026 - cover HtmlLinkLauncher scheme guard` |
+| `chore:` | Tooling, deps, or maintenance | `chore: 25062026 - add Android release build script` |
+| `ci:` | CI/CD pipeline changes | `ci: 25062026 - add analyze step to GitHub Actions` |
+| `style:` | Formatting only (no logic change) | `style: 25062026 - format settings page layout indentation` |
 
 ### Hot Reload & Hot Restart
 
@@ -1413,13 +1418,38 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Status**: ✅ Production Ready
 
-**Last Updated**: 18 June 2026
+**Last Updated**: 25 June 2026
 
 **Author**: Maw Kunn Myat
 
 **Maintained by**: T-Work System
 
 **Contributors**: Mapoee Phyu (mapoeeiphyu2017.miitinternship@gmail.com)
+
+### Recent Updates (25 June 2026 — Auth, CMS HTML & Checkout)
+
+#### 🎨 PlanetMM Authentication UX
+- ✅ **`PlanetMMAuthBackground`** — Shared space artwork + gradient overlay for login, register, and forgot-password flows
+- ✅ **Redesigned welcome & register screens** — Consistent white input cards, Myanmar validation copy, and streamlined username-only legacy register form
+- ✅ **Registration defaults** — `resolvedFirstName` from username, `resolvedLastName` defaults to **Level 1** tier label for WooCommerce
+- ✅ **Flexible phone validation** — Optional 1–15 digit phone numbers without strict country-format rules
+
+#### 🔑 Forgot Password (Remote Settings)
+- ✅ **`GET /twork/v1/app/forgot-password-settings`** — Public REST endpoint for hint text, auto-email domain, and customer-service button
+- ✅ **WordPress admin settings** — Configure copy and CS link under Rewards → Settings → Forgot Password Screen
+- ✅ **`ForgotPasswordSettingsService`** — 5-minute client cache with offline fallbacks aligned to `RegisterRequest.autoEmailDomain`
+- ✅ **Username-to-email helper** — Resolves `username@domain` for WooCommerce password-reset when users omit `@`
+
+#### 📝 CMS & Product HTML
+- ✅ **`CmsHtmlSanitizer.toPlainText`** — Shared plain-text extraction for search, wishlist, cart payloads, and accordion titles
+- ✅ **`HtmlLinkLauncher`** — Debounced, scheme-safe `<a href>` handler for CMS and product description links
+- ✅ **Rich product descriptions** — `WooCommerceProduct.htmlDescription` passed through `CmsHtmlContentWidget` on detail screens
+- ✅ **FAQ & dynamic pages** — Migrated to shared HTML renderer; removed duplicate inline HTML stripping
+
+#### 🛒 Checkout & Build
+- ✅ **Selected address card** — Checkout flow shows the chosen shipping address with default badge instead of empty-state placeholder
+- ✅ **`build-android-release.sh`** — Reproducible APK/AAB pipeline with JDK auto-detection and Gradle proxy unset
+- ✅ **Version bump** — `pubspec.yaml` aligned to `1.0.1+4` (build 4)
 
 ### Recent Updates (18 June 2026 — Flutter Web Subdomain & Media)
 
