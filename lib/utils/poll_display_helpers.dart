@@ -667,6 +667,70 @@ int resolvePollSecondsRemaining({
   return 0;
 }
 
+/// Default final-countdown overlay length when admin has not configured a poll.
+const int kDefaultPollCountdownOverlaySeconds = 20;
+
+/// Admin-managed seconds shown in the final countdown overlay before poll close.
+int resolvePollCountdownOverlaySeconds(Map<String, dynamic>? schedule) {
+  final raw = schedule?['countdown_overlay_seconds'] ?? schedule?['countdown_seconds'];
+  if (raw is int && raw > 0) {
+    return raw.clamp(1, 120);
+  }
+  if (raw is num) {
+    final v = raw.toInt();
+    if (v > 0) return v.clamp(1, 120);
+  }
+  return kDefaultPollCountdownOverlaySeconds;
+}
+
+/// True when the poll is in the final countdown window (overlay + vote lock).
+bool isPollInCountdownOverlayPhase({
+  required Map<String, dynamic>? schedule,
+  required DateTime? endsAtUtc,
+  int? countdownOverlaySeconds,
+}) {
+  final threshold =
+      countdownOverlaySeconds ?? resolvePollCountdownOverlaySeconds(schedule);
+  final seconds = resolvePollSecondsRemaining(
+    schedule: schedule,
+    endsAtUtc: endsAtUtc,
+  );
+  return seconds > 0 && seconds <= threshold;
+}
+
+/// Voting must be blocked in UI and on submit during the final countdown.
+bool isPollVotingBlockedByCountdown({
+  required Map<String, dynamic>? schedule,
+  required DateTime? endsAtUtc,
+}) {
+  final status = (schedule?['voting_status'] ?? '').toString().toLowerCase();
+  if (status == 'countdown') return true;
+  return isPollInCountdownOverlayPhase(
+    schedule: schedule,
+    endsAtUtc: endsAtUtc,
+  );
+}
+
+/// Live wall-clock countdown check for open poll dialogs — ignores stale
+/// API `seconds_until_close` so the play popup can auto-close on time.
+bool isPollLiveCountdownBlocked({
+  required Map<String, dynamic>? schedule,
+  required DateTime? endsAtUtc,
+}) {
+  final status = (schedule?['voting_status'] ?? '').toString().toLowerCase();
+  if (status == 'countdown') return true;
+  if (endsAtUtc != null) {
+    final seconds = endsAtUtc.difference(DateTime.now().toUtc()).inSeconds;
+    if (seconds <= 0) return false;
+    final threshold = resolvePollCountdownOverlaySeconds(schedule);
+    return seconds <= threshold;
+  }
+  return isPollVotingBlockedByCountdown(
+    schedule: schedule,
+    endsAtUtc: endsAtUtc,
+  );
+}
+
 /// Participation count for poll badge: [EngagementItem.interactionCount], then
 /// `poll_result.total_votes`, then sum of `vote_counts` values.
 int? resolvePollParticipationCount(EngagementItem item) {

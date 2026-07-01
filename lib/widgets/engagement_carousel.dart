@@ -155,7 +155,8 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
         schedule: schedule,
         endsAtUtc: serverEndsAtUtc,
       );
-      if (seconds > 0 && seconds <= 10) {
+      final threshold = resolvePollCountdownOverlaySeconds(schedule);
+      if (seconds > 0 && seconds <= threshold) {
         validKeys.add(_pollSessionKey(item));
       }
     }
@@ -1402,14 +1403,22 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
     final hasInteracted = item.hasInteracted;
     final hasImage = item.mediaUrl != null && item.mediaUrl!.isNotEmpty;
     final bool isPollActive = item.quizData?.isActive ?? true;
-    if (secondsUntilClose > 11 && !_isInHandoverBuffer(sessionKey)) {
+    final countdownOverlaySec = resolvePollCountdownOverlaySeconds(schedule);
+    final isCountdownBlocked = isPollLiveCountdownBlocked(
+      schedule: schedule,
+      endsAtUtc: serverEndsAtUtc,
+    );
+    final canVotePoll = isPollActive && !isCountdownBlocked;
+    if (secondsUntilClose > countdownOverlaySec + 1 &&
+        !_isInHandoverBuffer(sessionKey)) {
       _forcedOverlaySessionKeys.remove(sessionKey);
       _handoverTriggeredAt.remove(sessionKey);
     }
     final isForcedOverlay = _forcedOverlaySessionKeys.contains(sessionKey);
-    final showOverlay =
-        isForcedOverlay || (secondsUntilClose >= 1 && secondsUntilClose <= 10);
-    final showPermanentTimer = !showOverlay && secondsUntilClose > 10;
+    final showOverlay = isForcedOverlay ||
+        (secondsUntilClose >= 1 && secondsUntilClose <= countdownOverlaySec);
+    final showPermanentTimer =
+        !showOverlay && secondsUntilClose > countdownOverlaySec;
 
     // Timer hit zero before feed flips to showing_result — only when server end time is known.
     final bool serverEndTimeKnown = serverEndsAtUtc != null;
@@ -1629,7 +1638,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                     ] else
                       ElevatedButton(
                         onPressed:
-                            isPollActive ? () => _showPollDialog(item) : null,
+                            canVotePoll ? () => _showPollDialog(item) : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           foregroundColor: Colors.white,
@@ -1650,7 +1659,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                           ),
                         ),
                         child: Text(
-                          isPollActive ? 'ကစားမည်' : 'ပိတ်ထားသည်',
+                          isCountdownBlocked
+                              ? 'ပိတ်နေသည်'
+                              : isPollActive
+                                  ? 'ကစားမည်'
+                                  : 'ပိတ်ထားသည်',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),
@@ -1795,7 +1808,9 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                 ),
                               ] else
                                 ElevatedButton(
-                                  onPressed: () => _showPollDialog(item),
+                                  onPressed: canVotePoll
+                                      ? () => _showPollDialog(item)
+                                      : null,
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: Colors.white,
                                     foregroundColor: Colors.deepOrange,
@@ -1807,9 +1822,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                       borderRadius: BorderRadius.circular(25),
                                     ),
                                   ),
-                                  child: const Text(
-                                    'ကစားမည်',
-                                    style: TextStyle(
+                                  child: Text(
+                                    isCountdownBlocked
+                                        ? 'ပိတ်နေသည်'
+                                        : 'ကစားမည်',
+                                    style: const TextStyle(
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
@@ -1873,7 +1890,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                 ),
                               ] else
                                 ElevatedButton(
-                                  onPressed: isPollActive
+                                  onPressed: canVotePoll
                                       ? () => _showPollDialog(item)
                                       : null,
                                   style: ElevatedButton.styleFrom(
@@ -1892,7 +1909,11 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                                     ),
                                   ),
                                   child: Text(
-                                    isPollActive ? 'ကစားမည်' : 'ပိတ်ထားသည်',
+                                    isCountdownBlocked
+                                        ? 'ပိတ်နေသည်'
+                                        : isPollActive
+                                            ? 'ကစားမည်'
+                                            : 'ပိတ်ထားသည်',
                                     style: const TextStyle(
                                       fontWeight: FontWeight.bold,
                                     ),
@@ -2072,6 +2093,7 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
                 pollId: item.id,
                 initialSeconds: secondsUntilClose,
                 serverEndsAtUtc: serverEndsAtUtc,
+                countdownOverlaySeconds: countdownOverlaySec,
                 debugLabel: 'poll_${item.id}_$sessionKey',
                 onPollFinished: () => _onPollCountdownZero(item),
               ),
@@ -2577,6 +2599,22 @@ class _EngagementCarouselState extends State<EngagementCarousel> {
   /// Allow opening dialog even if already voted (view-only, one-time vote)
   void _showPollDialog(EngagementItem item) {
     if (item.quizData == null) return;
+    final schedule = item.pollVotingSchedule;
+    if (isPollLiveCountdownBlocked(
+      schedule: schedule,
+      endsAtUtc: resolvePollEndsAtUtc(schedule),
+    )) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Countdown စတာနဲ့ ကစား၍ မရတော့ပါ။ နောက်အကြိမ် စောစောလေး ကစားကြည့်ပါ။',
+          ),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
 
     // Allow opening dialog even if already voted (view-only, one-time vote)
     showDialog(
@@ -2805,6 +2843,9 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
 
   int _clampSeconds(int value) => value < 0 ? 0 : value;
 
+  int get _countdownOverlaySec =>
+      resolvePollCountdownOverlaySeconds(widget.item.pollVotingSchedule);
+
   int _serverAnchoredSeconds() {
     final fromInitial = _clampSeconds(widget.initialSeconds);
     if (fromInitial > 0) return fromInitial;
@@ -2820,7 +2861,8 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
     _timer?.cancel();
     _didNotifyHandover = false;
     if (_secondsLeft <= 0) return;
-    if (_secondsLeft <= 10) {
+    final threshold = _countdownOverlaySec;
+    if (_secondsLeft <= threshold) {
       if (!_didNotifyHandover) {
         _didNotifyHandover = true;
         widget.onReachedHandover?.call();
@@ -2832,7 +2874,7 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
       setState(() {
         _secondsLeft = _clampSeconds(_secondsLeft - 1);
       });
-      if (_secondsLeft <= 10) {
+      if (_secondsLeft <= threshold) {
         if (!_didNotifyHandover) {
           _didNotifyHandover = true;
           widget.onReachedHandover?.call();
@@ -3244,10 +3286,11 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
     }
     final next = _clampSeconds(widget.initialSeconds);
     final prev = _clampSeconds(oldWidget.initialSeconds);
-    if (next <= 10) {
+    final threshold = _countdownOverlaySec;
+    if (next <= threshold) {
       _secondsLeft = next;
       _timer?.cancel();
-      if (next >= 1 && next <= 10 && !_didNotifyHandover) {
+      if (next >= 1 && next <= threshold && !_didNotifyHandover) {
         _didNotifyHandover = true;
         widget.onReachedHandover?.call();
       }
@@ -3256,7 +3299,7 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
     final nextChanged = next != prev;
     if (nextChanged) {
       final looksLikeInvalidSpike =
-          next > _secondsLeft + 90 && _secondsLeft > 12;
+          next > _secondsLeft + 90 && _secondsLeft > threshold + 2;
       if (looksLikeInvalidSpike) return;
       _secondsLeft = next;
       app_logger.Logger.info(
@@ -3317,7 +3360,7 @@ class _PermanentPollTimerState extends State<_PermanentPollTimer> {
       ),
     );
     */
-    if (_secondsLeft <= 10) {
+    if (_secondsLeft <= _countdownOverlaySec) {
       return const SizedBox.shrink();
     }
     /*
@@ -3496,11 +3539,12 @@ class _PollResultTransitionShell extends StatelessWidget {
   }
 }
 
-/// Countdown overlay for Auto Run poll (last 10 seconds before close)
+/// Countdown overlay for Auto Run poll (final seconds before close)
 class _PollCountdownOverlay extends StatefulWidget {
   final int pollId;
   final int initialSeconds;
   final DateTime? serverEndsAtUtc;
+  final int countdownOverlaySeconds;
   final String? debugLabel;
 
   /// Invoked once when countdown hits zero (burst feed + optional balance ping).
@@ -3511,6 +3555,7 @@ class _PollCountdownOverlay extends StatefulWidget {
     required this.pollId,
     required this.initialSeconds,
     this.serverEndsAtUtc,
+    required this.countdownOverlaySeconds,
     this.debugLabel,
     this.onPollFinished,
   });
@@ -3525,9 +3570,10 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
   bool _hasTriggeredForceRefreshBurst = false;
   bool _didPrefetchResultTransition = false;
 
-  static const int _overlayDisplayCap = 10;
-
   int _clampOverlaySeconds(int value) => value < 0 ? 0 : value;
+
+  int get _overlayDisplayCap =>
+      widget.countdownOverlaySeconds.clamp(1, 120);
 
   int _serverAnchoredSeconds() {
     // လိုအပ်ပါက အဟောင်းပြန်ကြည့်ရန် — return _clampOverlaySeconds(widget.initialSeconds);
@@ -3541,7 +3587,7 @@ class _PollCountdownOverlayState extends State<_PollCountdownOverlay> {
     return 0;
   }
 
-  /// Display-only: never show 120/88 in the last-10s overlay (defense in depth).
+  /// Display-only: cap overlay digits to admin-configured final countdown length.
   int get _overlayDisplaySeconds => math.min(_secondsLeft, _overlayDisplayCap);
 
   void _cancelOverlayTimer() {
@@ -5264,6 +5310,26 @@ class _PollDialogState extends State<_PollDialog> {
   final Map<String, int> _isolatedUnitsByOption = <String, int>{};
   bool _isSubmitting = false;
   int? _confirmedBalanceForSubmit;
+  Timer? _countdownWatchTimer;
+  bool _closedForCountdown = false;
+
+  static const String _countdownCloseSnackMessage =
+      'Countdown စတာနဲ့ ကစား၍ မရတော့ပါ။ နောက်အကြိမ် စောစောလေး ကစားကြည့်ပါ။';
+
+  EngagementItem _livePollItem(EngagementProvider provider) {
+    for (final item in provider.items) {
+      if (item.id == widget.item.id) return item;
+    }
+    return widget.item;
+  }
+
+  bool _isLiveCountdownBlockedFor(EngagementItem item) {
+    final schedule = item.pollVotingSchedule;
+    return isPollLiveCountdownBlocked(
+      schedule: schedule,
+      endsAtUtc: resolvePollEndsAtUtc(schedule),
+    );
+  }
 
   String _optionKeyForIndex(int index) {
     final opts = widget.item.quizData?.options ?? const <dynamic>[];
@@ -5274,6 +5340,64 @@ class _PollDialogState extends State<_PollDialog> {
   void initState() {
     super.initState();
     _updateSelectedFromItem();
+    _startCountdownWatch();
+  }
+
+  @override
+  void dispose() {
+    _countdownWatchTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startCountdownWatch() {
+    _countdownWatchTimer?.cancel();
+    _countdownWatchTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _checkLiveCountdownAndAutoClose();
+    });
+  }
+
+  void _checkLiveCountdownAndAutoClose() {
+    if (!mounted || _isSubmitting || _closedForCountdown) return;
+    final provider = Provider.of<EngagementProvider>(context, listen: false);
+    if (!_isLiveCountdownBlockedFor(_livePollItem(provider))) return;
+
+    final navigator = Navigator.of(context);
+    if (!navigator.canPop()) return;
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    navigator.pop();
+    if (!mounted) {
+      _closedForCountdown = true;
+      _countdownWatchTimer?.cancel();
+      messenger?.showSnackBar(
+        const SnackBar(
+          content: Text(_countdownCloseSnackMessage),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  void _closeDialogForCountdown() {
+    if (!mounted || _closedForCountdown) return;
+
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+    }
+    if (!mounted) {
+      _closedForCountdown = true;
+      _countdownWatchTimer?.cancel();
+      messenger?.showSnackBar(
+        const SnackBar(
+          content: Text(_countdownCloseSnackMessage),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   @override
@@ -5449,6 +5573,12 @@ class _PollDialogState extends State<_PollDialog> {
   }
 
   Future<void> _onPlayPressed() async {
+    final provider = Provider.of<EngagementProvider>(context, listen: false);
+    if (_isLiveCountdownBlockedFor(_livePollItem(provider))) {
+      _closeDialogForCountdown();
+      return;
+    }
+
     if (_selectedIndices.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -5881,13 +6011,23 @@ class _PollDialogState extends State<_PollDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final pollData = widget.item.quizData!;
+    return Consumer<EngagementProvider>(
+      builder: (context, provider, _) {
+        final liveItem = _livePollItem(provider);
+        return _buildPollDialogContent(liveItem);
+      },
+    );
+  }
+
+  Widget _buildPollDialogContent(EngagementItem item) {
+    final pollData = item.quizData!;
     final pollColor = Colors.deepOrange;
+    final countdownBlocked = _isLiveCountdownBlockedFor(item);
 
     // Parsed previous vote indices for "already voted" display (read-only from item).
     final Set<int> userSelectedIndices = {};
-    if (widget.item.hasInteracted && widget.item.userAnswer != null) {
-      for (final part in widget.item.userAnswer!.trim().split(',')) {
+    if (item.hasInteracted && item.userAnswer != null) {
+      for (final part in item.userAnswer!.trim().split(',')) {
         final idx = int.tryParse(part.trim());
         if (idx != null && idx >= 0) userSelectedIndices.add(idx);
       }
@@ -5918,7 +6058,7 @@ class _PollDialogState extends State<_PollDialog> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    widget.item.title,
+                    item.title,
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -5948,13 +6088,13 @@ class _PollDialogState extends State<_PollDialog> {
             ),
             const SizedBox(height: 20),
             // Show message when user has already voted (read-only display).
-            if (widget.item.hasInteracted &&
+            if (item.hasInteracted &&
                 userSelectedIndices.isNotEmpty) ...[
               Builder(
                 builder: (context) {
                   // User Amount mode: show bet amount when available
-                  final betAmt = widget.item.userBetAmount;
-                  final q = widget.item.quizData;
+                  final betAmt = item.userBetAmount;
+                  final q = item.quizData;
                   final isUserAmountMode = q?.allowUserAmount ?? false;
                   String voteMsg =
                       'ဤ Poll ကို ကစားပြီးပါပြီ။\nအောက်တွင် သင်ရွေးချယ်ထားသည့် အဖြေများကို ပြထားပါသည်။\n(တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။)';
@@ -5998,13 +6138,15 @@ class _PollDialogState extends State<_PollDialog> {
             // Options: Checkbox-style (multiple selection) instead of Radio.
             ...List.generate(pollData.options.length, (index) {
               final isSelected = _selectedIndices.contains(index);
-              final isUserPreviousSelection = widget.item.hasInteracted &&
+              final isUserPreviousSelection = item.hasInteracted &&
                   userSelectedIndices.contains(index) &&
                   !isSelected;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: InkWell(
-                  onTap: (_isSubmitting || widget.item.hasInteracted)
+                  onTap: (_isSubmitting ||
+                          item.hasInteracted ||
+                          countdownBlocked)
                       ? null
                       : () {
                           _toggleOption(index);
@@ -6039,10 +6181,11 @@ class _PollDialogState extends State<_PollDialog> {
                           height: 24,
                           child: Checkbox(
                             value: isSelected,
-                            onChanged:
-                                (_isSubmitting || widget.item.hasInteracted)
-                                    ? null
-                                    : (_) => _toggleOption(index),
+                            onChanged: (_isSubmitting ||
+                                    item.hasInteracted ||
+                                    countdownBlocked)
+                                ? null
+                                : (_) => _toggleOption(index),
                             activeColor: pollColor,
                             checkColor: Colors.white,
                             shape: RoundedRectangleBorder(
@@ -6123,7 +6266,8 @@ class _PollDialogState extends State<_PollDialog> {
               child: ElevatedButton(
                 onPressed: _selectedIndices.isEmpty ||
                         _isSubmitting ||
-                        widget.item.hasInteracted
+                        item.hasInteracted ||
+                        countdownBlocked
                     ? null
                     : _onPlayPressed,
                 style: ElevatedButton.styleFrom(
@@ -6147,7 +6291,11 @@ class _PollDialogState extends State<_PollDialog> {
                         ),
                       )
                     : Text(
-                        widget.item.hasInteracted ? 'ကစားပြီးပါပြီ' : 'ကစားမည်',
+                        item.hasInteracted
+                            ? 'ကစားပြီးပါပြီ'
+                            : countdownBlocked
+                                ? 'ပိတ်နေသည်'
+                                : 'ကစားမည်',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -6527,6 +6675,18 @@ class _PollDialogState extends State<_PollDialog> {
         }
       }
 
+      if (_isLiveCountdownBlockedFor(
+        _livePollItem(engagementProvider),
+      )) {
+        if (mounted) {
+          setState(() {
+            _isSubmitting = false;
+          });
+          _closeDialogForCountdown();
+        }
+        return;
+      }
+
       app_logger.Logger.info(
         'Submitting poll vote: userId=$currentUserId, itemId=${widget.item.id}, answer=$answerStr, sessionId=$sessionId, balanceBefore(optimistic)=$balanceBefore, amountPerOption=$amountPerOption',
         tag: 'EngagementCarousel',
@@ -6566,20 +6726,16 @@ class _PollDialogState extends State<_PollDialog> {
         // Capture messenger before pop - context may be invalid after Navigator.pop
         final messenger = ScaffoldMessenger.of(context);
 
-        // PROFESSIONAL FIX: Reset submitting state BEFORE popping dialog
-        // This ensures state is reset even if widget gets disposed after pop
         if (mounted) {
           setState(() {
             _isSubmitting = false;
           });
         }
 
-        // Pop poll dialog before showing result
-        if (mounted) {
-          Navigator.pop(context);
-        }
-
         if (result['success'] == true) {
+          if (mounted) {
+            Navigator.pop(context);
+          }
           final String uidStr = currentUserId.toString();
           int? authoritativeBal = _serverBalanceFromPollSubmitResult(result);
           final int pointsEarned = _pointsEarnedFromPollSubmitResult(result);
@@ -6736,11 +6892,12 @@ class _PollDialogState extends State<_PollDialog> {
           final message =
               result['message']?.toString() ?? 'ကစားမှု မအောင်မြင်ပါ။';
           final isDuplicate = result['is_duplicate'] == true;
-          final isInsufficient = result['code']?.toString().toLowerCase() ==
-              'insufficient_balance';
+          final resultCode = result['code']?.toString().toLowerCase() ?? '';
+          final isInsufficient = resultCode == 'insufficient_balance';
+          final isCountdownBlocked = resultCode == 'poll_countdown_active';
 
           app_logger.Logger.warning(
-            'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient',
+            'Poll submission failed: $message, isDuplicate: $isDuplicate, isInsufficient: $isInsufficient, isCountdownBlocked: $isCountdownBlocked',
             tag: 'EngagementCarousel',
           );
 
@@ -6771,7 +6928,10 @@ class _PollDialogState extends State<_PollDialog> {
           // Old Code:        }
 
           final String displayMessage;
-          if (isInsufficient) {
+          if (isCountdownBlocked) {
+            displayMessage =
+                'Countdown စတာနဲ့ ကစား၍ မရတော့ပါ။ နောက်အကြိမ် စောစောလေး ကစားကြည့်ပါ။';
+          } else if (isInsufficient) {
             final m = message.trim();
             displayMessage =
                 m.isNotEmpty ? m : 'Point မလောက်ပါ။ သင့်လက်ကျန် မလောက်ပါ။';
@@ -6802,6 +6962,14 @@ class _PollDialogState extends State<_PollDialog> {
             }
           }
 
+          if (isCountdownBlocked) {
+            _closedForCountdown = true;
+            _countdownWatchTimer?.cancel();
+            if (mounted && Navigator.of(context).canPop()) {
+              Navigator.pop(context);
+            }
+          }
+
           messenger.showSnackBar(
             SnackBar(
               content: Text(
@@ -6809,9 +6977,15 @@ class _PollDialogState extends State<_PollDialog> {
                     ? 'ဤ Poll ကို ကစားပြီးပါပြီ။ တစ်ကြိမ်သာ ကစားနိုင်ပါသည်။'
                     : displayMessage,
               ),
-              backgroundColor: isDuplicate ? Colors.orange : Colors.red,
+              backgroundColor: isDuplicate || isCountdownBlocked
+                  ? Colors.orange
+                  : Colors.red,
               duration: Duration(
-                seconds: isDuplicate ? 3 : (isInsufficient ? 5 : 2),
+                seconds: isDuplicate
+                    ? 3
+                    : (isInsufficient
+                        ? 5
+                        : (isCountdownBlocked ? 4 : 2)),
               ),
             ),
           );

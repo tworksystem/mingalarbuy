@@ -1011,11 +1011,20 @@ class EngagementProvider with ChangeNotifier {
       return 'Network အခက်အခဲရှိနေပါသည်။ ကျေးဇူးပြု၍ ပြန်လည်ကြိုးစားပါ။';
     }
     final lower = msg.toLowerCase();
+    if (lower.contains('poll_countdown') ||
+        lower.contains('final countdown') ||
+        lower.contains('voting is closed during')) {
+      return 'Countdown စတာနဲ့ ကစား၍ မရတော့ပါ။ နောက်အကြိမ် စောစောလေး ကစားကြည့်ပါ။';
+    }
+    if (lower.contains('vote_disabled') ||
+        lower.contains('voting is currently disabled')) {
+      return msg;
+    }
     if (lower.contains('401') ||
-        lower.contains('403') ||
         lower.contains('unauthorized') ||
-        lower.contains('forbidden') ||
-        lower.contains('session')) {
+        lower.contains('session expired') ||
+        lower.contains('not logged in') ||
+        lower.contains('authenticated user mismatch')) {
       return 'Session ကုန်သွားပါသည်၊ ပြန်လည် Login ဝင်ပါ။';
     }
     if (lower.contains('timeout') ||

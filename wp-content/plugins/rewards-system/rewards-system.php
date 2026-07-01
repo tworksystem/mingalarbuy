@@ -141,6 +141,33 @@ class TWork_Rewards_System
     }
 
     /**
+     * Final countdown overlay length before poll close (quiz_data.countdown_overlay_seconds).
+     * Legacy polls without the key default to 20 seconds.
+     *
+     * @param array|null $quiz_data Decoded quiz_data JSON from twork_engagement_items.
+     * @return int Seconds (1–120). Defaults to 20.
+     */
+    public static function resolve_countdown_overlay_seconds($quiz_data)
+    {
+        if (!is_array($quiz_data)) {
+            return 20;
+        }
+        if (array_key_exists('countdown_overlay_seconds', $quiz_data)) {
+            $v = (int) $quiz_data['countdown_overlay_seconds'];
+            if ($v < 1) {
+                return 1;
+            }
+            if ($v > 120) {
+                return 120;
+            }
+
+            return $v;
+        }
+
+        return 20;
+    }
+
+    /**
      * Normalize minimum exchange points from raw option/POST values.
      *
      * Accepts formatted numeric strings (for example: "5,000,000"), clamps to
@@ -7318,6 +7345,7 @@ class TWork_Rewards_System
                 $poll_mode = $quiz_data['poll_mode'] ?? 'schedule';
                 $poll_period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
                 $result_display_seconds = self::resolve_result_display_duration_seconds($quiz_data);
+                $countdown_overlay_sec = self::resolve_countdown_overlay_seconds($quiz_data);
 
                 if (!empty($quiz_data['poll_voting_start_time'])) {
                     if ($current_timestamp < strtotime($quiz_data['poll_voting_start_time'])) {
@@ -7333,8 +7361,9 @@ class TWork_Rewards_System
                     if ($current_timestamp > $end_timestamp) {
                         $voting_allowed = false;
                         $voting_status = ($current_timestamp <= $end_timestamp + $result_display_seconds) ? 'showing_result' : 'ended';
-                    } elseif ($seconds_until_close <= 10 && $seconds_until_close > 0) {
+                    } elseif ($seconds_until_close <= $countdown_overlay_sec && $seconds_until_close > 0) {
                         $voting_status = 'countdown';
+                        $voting_allowed = false;
                     }
                 }
 
@@ -7347,6 +7376,7 @@ class TWork_Rewards_System
                     'poll_period_minutes' => $poll_period_minutes,
                     'poll_duration' => $poll_period_minutes,
                     'seconds_until_close' => $seconds_until_close,
+                    'countdown_overlay_seconds' => $countdown_overlay_sec,
                     'result_display_ends_at' => $result_display_ends_at,
                     'result_display_seconds' => $result_display_seconds,
                     'result_display_duration_seconds' => $result_display_seconds,
@@ -7559,6 +7589,7 @@ class TWork_Rewards_System
                     $end_ts = !empty($end_time) ? strtotime($end_time) : 0;
                     $period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
                     $result_display_sec = self::resolve_result_display_duration_seconds($quiz_data);
+                    $countdown_overlay_sec = self::resolve_countdown_overlay_seconds($quiz_data);
                     $voting_allowed = true;
                     $voting_status = 'open';
                     $seconds_until_close = 0;
@@ -7573,8 +7604,9 @@ class TWork_Rewards_System
                         if ($current_ts > $end_ts) {
                             $voting_allowed = false;
                             $voting_status = ($current_ts <= $end_ts + $result_display_sec) ? 'showing_result' : 'ended';
-                        } elseif ($seconds_until_close <= 10 && $seconds_until_close > 0) {
+                        } elseif ($seconds_until_close <= $countdown_overlay_sec && $seconds_until_close > 0) {
                             $voting_status = 'countdown';
+                            $voting_allowed = false;
                         }
                     }
                     $entry['poll_voting_schedule'] = array(
@@ -7585,6 +7617,7 @@ class TWork_Rewards_System
                         'poll_period_minutes' => $period_minutes,
                         'poll_duration' => $period_minutes,
                         'seconds_until_close' => $seconds_until_close,
+                        'countdown_overlay_seconds' => $countdown_overlay_sec,
                         'result_display_ends_at' => $result_display_ends_at,
                         'result_display_seconds' => $result_display_sec,
                         'result_display_duration_seconds' => $result_display_sec,
@@ -7849,6 +7882,7 @@ class TWork_Rewards_System
                             $poll_mode = $quiz_data['poll_mode'] ?? 'schedule';
                             $poll_period_minutes = isset($quiz_data['poll_duration']) ? (int) $quiz_data['poll_duration'] : (isset($quiz_data['poll_period_minutes']) ? (int) $quiz_data['poll_period_minutes'] : 15);
                             $result_display_sec = self::resolve_result_display_duration_seconds($quiz_data);
+                            $countdown_overlay_sec = self::resolve_countdown_overlay_seconds($quiz_data);
 
                             if (!empty($quiz_data['poll_voting_start_time'])) {
                                 $start_timestamp = strtotime($quiz_data['poll_voting_start_time']);
@@ -7866,8 +7900,9 @@ class TWork_Rewards_System
                                 if ($current_timestamp > $end_timestamp) {
                                     $voting_allowed = false;
                                     $voting_status = ($current_timestamp <= $end_timestamp + $result_display_sec) ? 'showing_result' : 'ended';
-                                } elseif ($seconds_until_close <= 10 && $seconds_until_close > 0) {
+                                } elseif ($seconds_until_close <= $countdown_overlay_sec && $seconds_until_close > 0) {
                                     $voting_status = 'countdown';
+                                    $voting_allowed = false;
                                 }
                             }
 
@@ -7881,6 +7916,7 @@ class TWork_Rewards_System
                                 'poll_period_minutes' => $poll_period_minutes,
                                 'poll_duration' => $poll_period_minutes,
                                 'seconds_until_close' => $seconds_until_close,
+                                'countdown_overlay_seconds' => $countdown_overlay_sec,
                                 'result_display_ends_at' => $result_display_ends_at,
                                 'result_display_seconds' => $result_display_sec,
                                 'result_display_duration_seconds' => $result_display_sec,
@@ -8266,7 +8302,7 @@ class TWork_Rewards_System
                     'success' => false,
                     'message' => 'Voting is currently disabled. Please contact support if you believe this is an error.',
                     'code' => 'vote_disabled'
-                ), 403);
+                ), 400);
             }
 
             $table_items = $wpdb->prefix . 'twork_engagement_items';
@@ -8335,6 +8371,16 @@ class TWork_Rewards_System
                     // Check end time
                     if (!empty($quiz_data['poll_voting_end_time'])) {
                         $end_timestamp = strtotime($quiz_data['poll_voting_end_time']);
+                        $countdown_overlay_sec = self::resolve_countdown_overlay_seconds($quiz_data);
+                        $seconds_until_close = max(0, $end_timestamp - $current_timestamp);
+                        if ($seconds_until_close <= $countdown_overlay_sec && $seconds_until_close > 0) {
+                            return new WP_REST_Response(array(
+                                'success' => false,
+                                'message' => __('Voting is closed during the final countdown.', 'twork-rewards'),
+                                'code' => 'poll_countdown_active',
+                                'seconds_until_close' => $seconds_until_close,
+                            ), 400);
+                        }
                         if ($current_timestamp > $end_timestamp) {
                             $end_datetime = date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $end_timestamp);
                             return new WP_REST_Response(array(
@@ -19015,6 +19061,13 @@ class TWork_Rewards_System
         $activity = $this->get_formatted_user_activity($user_id);
         $activity_status = $this->get_user_activity_status($user_id);
 
+        /*
+         * TEMP DISABLED — Poll Win/Loss admin dashboard (User Detail).
+         * $user_poll_stats = $this->get_poll_win_loss_overall_totals('', '', $user_id);
+         * $user_poll_rounds = (int) $user_poll_stats['win_count'] + (int) $user_poll_stats['lost_count'];
+         * $user_poll_display = $this->resolve_poll_win_loss_display_status($user_poll_stats);
+         */
+
         // Add custom CSS for professional design
         ?>
         <style>
@@ -19285,6 +19338,11 @@ class TWork_Rewards_System
                                     (<?php echo esc_html($activity['days_inactive_formatted']); ?>)
                                 </span>
                             <?php endif; ?>
+                            <?php /* TEMP DISABLED — poll profit badge in user header
+                            <div style="margin-top: 12px;">
+                                <?php $this->render_poll_profit_status_badge($user_poll_stats); ?>
+                            </div>
+                            */ ?>
                         </div>
                     </div>
                     <div>
@@ -19297,6 +19355,10 @@ class TWork_Rewards_System
                     </div>
                 </div>
             </div>
+
+            <?php /* TEMP DISABLED — poll profit banner on User Detail
+            <?php $this->render_poll_profit_status_banner($user_poll_stats); ?>
+            */ ?>
 
             <!-- Activity Status Section - Prominent Display -->
             <div class="twork-form-card" style="background: <?php echo $activity['is_active'] ? '#f0fdf4' : '#fef2f2'; ?>; border-left: 4px solid <?php echo $activity['is_active'] ? '#46b450' : '#dc3232'; ?>; margin-bottom: 30px;">
@@ -19555,6 +19617,53 @@ class TWork_Rewards_System
                     <div class="stat-value"><?php echo esc_html($approved_count); ?></div>
                 </div>
             </div>
+
+            <?php /* TEMP DISABLED — Poll Win / Loss detail cards on User Detail
+            <!-- Poll Win / Loss (this user, all-time resolved rounds) -->
+            <div class="twork-form-card" style="border-left: 4px solid <?php echo esc_attr($user_poll_display['border_color']); ?>;">
+                <h2 style="margin-top: 0;"><?php esc_html_e('Poll Win / Loss — အသေးစိတ်', 'twork-rewards'); ?></h2>
+                <p style="margin: 0 0 16px; color: #666; font-size: 13px;">
+                    <?php esc_html_e('All-time totals for resolved poll rounds (count + PNP). Pending rounds are excluded.', 'twork-rewards'); ?>
+                </p>
+                <div class="twork-stats-grid">
+                    <div class="twork-stat-card" style="border-left: 4px solid #10b981;">
+                        <div class="stat-label"><?php esc_html_e('Wins', 'twork-rewards'); ?></div>
+                        <div class="stat-value" style="color: #10b981;"><?php echo esc_html(number_format_i18n((int) $user_poll_stats['win_count'])); ?></div>
+                        <div style="font-size: 12px; color: #666; margin-top: 6px;">
+                            <?php echo esc_html(sprintf(__('%s PNP won', 'twork-rewards'), number_format_i18n((int) $user_poll_stats['win_pnp']))); ?>
+                        </div>
+                    </div>
+                    <div class="twork-stat-card" style="border-left: 4px solid #dc3232;">
+                        <div class="stat-label"><?php esc_html_e('Losses', 'twork-rewards'); ?></div>
+                        <div class="stat-value" style="color: #dc3232;"><?php echo esc_html(number_format_i18n((int) $user_poll_stats['lost_count'])); ?></div>
+                        <div style="font-size: 12px; color: #666; margin-top: 6px;">
+                            <?php echo esc_html(sprintf(__('%s PNP lost', 'twork-rewards'), number_format_i18n((int) $user_poll_stats['lost_pnp']))); ?>
+                        </div>
+                    </div>
+                    <div class="twork-stat-card" style="border-left: 4px solid #3b82f6;">
+                        <div class="stat-label"><?php esc_html_e('Net PNP', 'twork-rewards'); ?></div>
+                        <div class="stat-value" style="color: <?php echo (int) $user_poll_stats['net_pnp'] >= 0 ? '#10b981' : '#dc3232'; ?>;">
+                            <?php echo esc_html(((int) $user_poll_stats['net_pnp'] >= 0 ? '+' : '') . number_format_i18n((int) $user_poll_stats['net_pnp'])); ?>
+                        </div>
+                        <div style="font-size: 12px; color: #666; margin-top: 6px;">
+                            <?php esc_html_e('Win PNP minus lost bet PNP', 'twork-rewards'); ?>
+                        </div>
+                    </div>
+                    <div class="twork-stat-card" style="border-left: 4px solid #8b5cf6;">
+                        <div class="stat-label"><?php esc_html_e('Total Rounds', 'twork-rewards'); ?></div>
+                        <div class="stat-value" style="color: #8b5cf6;"><?php echo esc_html(number_format_i18n($user_poll_rounds)); ?></div>
+                        <div style="font-size: 12px; color: #666; margin-top: 6px;">
+                            <?php esc_html_e('Wins + losses (resolved only)', 'twork-rewards'); ?>
+                        </div>
+                    </div>
+                </div>
+                <p style="margin: 16px 0 0;">
+                    <a class="button button-secondary" href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-point-transactions&user_id=' . $user_id)); ?>">
+                        <?php esc_html_e('View all point transactions', 'twork-rewards'); ?>
+                    </a>
+                </p>
+            </div>
+            */ ?>
 
             <!-- Settings Form -->
             <div class="twork-form-card">
@@ -20912,6 +21021,7 @@ class TWork_Rewards_System
                                     $result_duration_minutes_field = 60;
                                     $result_duration_seconds_field = 59;
                                 }
+                                $countdown_overlay_seconds_field = self::resolve_countdown_overlay_seconds(is_array($quiz_data) ? $quiz_data : array());
                                 ?>
                                 <select name="poll_mode" id="poll_mode" style="min-width: 200px;">
                                     <option value="auto_run" <?php selected($poll_mode, 'auto_run'); ?>><?php esc_html_e('Auto Run – Period-based, auto-close, countdown, result, then reset & re-vote', 'twork-rewards'); ?></option>
@@ -20931,6 +21041,11 @@ class TWork_Rewards_System
                                         <label for="result_duration_seconds" class="screen-reader-text"><?php esc_html_e('Seconds', 'twork-rewards'); ?></label>
                                         <input type="number" name="result_duration_seconds" id="result_duration_seconds" value="<?php echo esc_attr($result_duration_seconds_field); ?>" min="0" max="59" step="1" style="width: 72px; padding: 6px;" aria-label="<?php echo esc_attr(__('Result display seconds', 'twork-rewards')); ?>">
                                         <span class="description" style="margin-left: 6px;"><?php esc_html_e('sec (stored as total seconds)', 'twork-rewards'); ?></span>
+                                    </div>
+                                    <div style="margin-top: 10px;">
+                                        <label for="countdown_overlay_seconds"><?php esc_html_e('Countdown Overlay (seconds):', 'twork-rewards'); ?></label>
+                                        <input type="number" name="countdown_overlay_seconds" id="countdown_overlay_seconds" value="<?php echo esc_attr($countdown_overlay_seconds_field); ?>" min="1" max="120" step="1" style="width: 72px; margin-left: 8px; padding: 6px;">
+                                        <span class="description" style="margin-left: 6px;"><?php esc_html_e('Final countdown shown in app before poll closes (1–120, default 20)', 'twork-rewards'); ?></span>
                                     </div>
                                     <p class="description" style="margin-top: 8px;"><?php esc_html_e('Custom timer: poll auto-closes after poll duration, shows result for the time above, then resets. Minutes 0–60, seconds 0–59.', 'twork-rewards'); ?></p>
                                     <div style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed #ccc;">
@@ -21848,10 +21963,18 @@ class TWork_Rewards_System
                 }
                 // Total seconds = minutes×60 + seconds (matches mobile app and REST contract).
                 $result_display_total_seconds = ($rm * 60) + $rs;
+                $countdown_overlay = isset($_POST['countdown_overlay_seconds']) ? absint($_POST['countdown_overlay_seconds']) : 20;
+                if ($countdown_overlay < 1) {
+                    $countdown_overlay = 1;
+                }
+                if ($countdown_overlay > 120) {
+                    $countdown_overlay = 120;
+                }
                 $quiz_data_array['poll_mode'] = $poll_mode;
                 $quiz_data_array['poll_period_minutes'] = $poll_duration;  // backward compat
                 $quiz_data_array['poll_duration'] = $poll_duration;
                 $quiz_data_array['result_display_duration_seconds'] = $result_display_total_seconds;
+                $quiz_data_array['countdown_overlay_seconds'] = $countdown_overlay;
                 unset($quiz_data_array['result_display_duration']);
 
                 if ($poll_mode === 'auto_run' && $status === 'active') {
@@ -25836,6 +25959,486 @@ class TWork_Rewards_System
     }
 
     /**
+     * TEMP DISABLED — Poll Win/Loss admin dashboard (User Detail, Usage Analytics, CSV).
+     * Re-enable: change return value to true.
+     */
+    private function is_poll_win_loss_admin_dashboard_enabled()
+    {
+        return false;
+    }
+
+    /**
+     * SQL fragment: poll win earn row (resolved winner payout).
+     *
+     * @param string $alias Table alias (e.g. "t").
+     * @return string
+     */
+    private function poll_win_loss_win_case_sql($alias = 't')
+    {
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "({$p}order_id LIKE 'engagement:poll:%'
+            AND {$p}order_id NOT LIKE 'engagement:poll_cost:%'
+            AND {$p}type = 'earn'
+            AND {$p}status = 'approved'
+            AND {$p}points > 0)";
+    }
+
+    /**
+     * SQL fragment: poll bet row marked lost after result resolution.
+     *
+     * @param string $alias Table alias (e.g. "t").
+     * @return string
+     */
+    private function poll_win_loss_lost_case_sql($alias = 't')
+    {
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "({$p}order_id LIKE 'engagement:poll_cost:%'
+            AND {$p}type = 'redeem'
+            AND ({$p}status = 'approved' OR {$p}status = 'pending')
+            AND (
+                {$p}meta_json LIKE '%\"result_status\":\"lost\"%'
+                OR {$p}meta_json LIKE '%\"result_status\": \"lost\"%'
+            ))";
+    }
+
+    /**
+     * Narrow poll ledger scope for indexed-friendly filtering.
+     *
+     * @param string $alias Table alias (e.g. "t").
+     * @return string
+     */
+    private function poll_win_loss_scope_sql($alias = 't')
+    {
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "({$p}order_id LIKE 'engagement:poll:%' OR {$p}order_id LIKE 'engagement:poll_cost:%')";
+    }
+
+    /**
+     * Build date/user WHERE fragments for poll win/loss aggregation queries.
+     *
+     * @param string $date_from Y-m-d
+     * @param string $date_to   Y-m-d
+     * @param int    $user_id_filter 0 = all users
+     * @param string $alias Table alias
+     * @return array{0:string,1:array} [where_sql_without_leading_and, params]
+     */
+    private function poll_win_loss_filter_parts($date_from, $date_to, $user_id_filter = 0, $alias = 't')
+    {
+        $clauses = array($this->poll_win_loss_scope_sql($alias));
+        $params = array();
+
+        if ($user_id_filter > 0) {
+            $prefix = $alias !== '' ? $alias . '.' : '';
+            $clauses[] = $prefix . 'user_id = %d';
+            $params[] = (int) $user_id_filter;
+        }
+
+        if (is_string($date_from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_from)) {
+            $prefix = $alias !== '' ? $alias . '.' : '';
+            $clauses[] = $prefix . 'created_at >= %s';
+            $params[] = $date_from . ' 00:00:00';
+        }
+
+        if (is_string($date_to) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_to)) {
+            $prefix = $alias !== '' ? $alias . '.' : '';
+            $clauses[] = $prefix . 'created_at <= %s';
+            $params[] = $date_to . ' 23:59:59';
+        }
+
+        $visible_sql = $this->point_transactions_visible_sql($alias);
+        if ($visible_sql !== '') {
+            $clauses[] = ltrim($visible_sql, ' AND ');
+        }
+
+        return array(implode(' AND ', $clauses), $params);
+    }
+
+    /**
+     * Platform-wide poll win/loss totals for Usage Analytics summary cards.
+     *
+     * @param string $date_from Y-m-d
+     * @param string $date_to   Y-m-d
+     * @param int    $user_id_filter
+     * @return array{win_count:int,win_pnp:int,lost_count:int,lost_pnp:int,net_pnp:int,poll_users:int}
+     */
+    public function get_poll_win_loss_overall_totals($date_from = '', $date_to = '', $user_id_filter = 0)
+    {
+        global $wpdb;
+
+        $defaults = array(
+            'win_count' => 0,
+            'win_pnp' => 0,
+            'lost_count' => 0,
+            'lost_pnp' => 0,
+            'net_pnp' => 0,
+            'poll_users' => 0,
+        );
+
+        $table = $this->point_transactions_table_name();
+        $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+        if ($table_exists !== $table) {
+            return $defaults;
+        }
+
+        list($where_sql, $params) = $this->poll_win_loss_filter_parts($date_from, $date_to, $user_id_filter, 't');
+        $win_case = $this->poll_win_loss_win_case_sql('t');
+        $lost_case = $this->poll_win_loss_lost_case_sql('t');
+
+        $sql = "SELECT
+            COALESCE(SUM(CASE WHEN $win_case THEN 1 ELSE 0 END), 0) AS win_count,
+            COALESCE(SUM(CASE WHEN $win_case THEN t.points ELSE 0 END), 0) AS win_pnp,
+            COALESCE(SUM(CASE WHEN $lost_case THEN 1 ELSE 0 END), 0) AS lost_count,
+            COALESCE(SUM(CASE WHEN $lost_case THEN t.points ELSE 0 END), 0) AS lost_pnp,
+            COUNT(DISTINCT CASE WHEN $win_case OR $lost_case THEN t.user_id END) AS poll_users
+            FROM $table t
+            WHERE $where_sql";
+
+        $row = !empty($params)
+            ? $wpdb->get_row($wpdb->prepare($sql, ...$params), ARRAY_A)
+            : $wpdb->get_row($sql, ARRAY_A);
+
+        if (!is_array($row)) {
+            return $defaults;
+        }
+
+        $win_pnp = (int) $row['win_pnp'];
+        $lost_pnp = (int) $row['lost_pnp'];
+
+        return array(
+            'win_count' => (int) $row['win_count'],
+            'win_pnp' => $win_pnp,
+            'lost_count' => (int) $row['lost_count'],
+            'lost_pnp' => $lost_pnp,
+            'net_pnp' => $win_pnp - $lost_pnp,
+            'poll_users' => (int) $row['poll_users'],
+        );
+    }
+
+    /**
+     * Human-readable profit/loss status for poll win/loss stats (UI badges & banners).
+     *
+     * @param array $stats win_count, lost_count, net_pnp keys
+     * @return array{
+     *   key:string,
+     *   label_primary:string,
+     *   label_secondary:string,
+     *   admin_label:string,
+     *   user_label:string,
+     *   admin_color:string,
+     *   user_color:string,
+     *   icon:string,
+     *   text_color:string,
+     *   bg_color:string,
+     *   border_color:string,
+     *   row_bg:string
+     * }
+     */
+    public function resolve_poll_win_loss_display_status($stats)
+    {
+        $win_count = isset($stats['win_count']) ? (int) $stats['win_count'] : 0;
+        $lost_count = isset($stats['lost_count']) ? (int) $stats['lost_count'] : 0;
+        $net_pnp = isset($stats['net_pnp']) ? (int) $stats['net_pnp'] : 0;
+        $rounds = $win_count + $lost_count;
+
+        if ($rounds <= 0) {
+            return array(
+                'key' => 'none',
+                'label_primary' => __('Poll ဒေတာမရှိ', 'twork-rewards'),
+                'label_secondary' => __('No resolved poll rounds yet', 'twork-rewards'),
+                'admin_label' => '',
+                'user_label' => '',
+                'admin_color' => '#6b7280',
+                'user_color' => '#6b7280',
+                'icon' => '—',
+                'text_color' => '#6b7280',
+                'bg_color' => '#f9fafb',
+                'border_color' => '#d1d5db',
+                'row_bg' => '',
+            );
+        }
+
+        // User net win => platform pays out more (Admin ရှုံး · User မြတ်).
+        if ($net_pnp > 0) {
+            return array(
+                'key' => 'admin_lose_user_win',
+                'label_primary' => __('Admin ရှုံးနေသည် · User မြတ်နေသည်', 'twork-rewards'),
+                'label_secondary' => __('User net PNP is positive — platform paid out more than bets collected', 'twork-rewards'),
+                'admin_label' => __('Admin ရှုံးနေသည်', 'twork-rewards'),
+                'user_label' => __('User မြတ်နေသည်', 'twork-rewards'),
+                'admin_color' => '#991b1b',
+                'user_color' => '#166534',
+                'icon' => '⇅',
+                'text_color' => '#166534',
+                'bg_color' => '#fff7ed',
+                'border_color' => '#f59e0b',
+                'row_bg' => '#fef2f2',
+            );
+        }
+
+        // User net loss => platform keeps more bets (Admin မြတ် · User ရှုံး).
+        if ($net_pnp < 0) {
+            return array(
+                'key' => 'admin_win_user_lose',
+                'label_primary' => __('Admin မြတ်နေသည် · User ရှုံးနေသည်', 'twork-rewards'),
+                'label_secondary' => __('User net PNP is negative — platform collected more bets than payouts', 'twork-rewards'),
+                'admin_label' => __('Admin မြတ်နေသည်', 'twork-rewards'),
+                'user_label' => __('User ရှုံးနေသည်', 'twork-rewards'),
+                'admin_color' => '#166534',
+                'user_color' => '#991b1b',
+                'icon' => '⇅',
+                'text_color' => '#166534',
+                'bg_color' => '#ecfdf5',
+                'border_color' => '#10b981',
+                'row_bg' => '#f0fdf4',
+            );
+        }
+
+        return array(
+            'key' => 'even',
+            'label_primary' => __('Admin ညီမျှ · User ညီမျှ', 'twork-rewards'),
+            'label_secondary' => __('Break even — payouts equal collected bets for this user', 'twork-rewards'),
+            'admin_label' => __('Admin ညီမျှ', 'twork-rewards'),
+            'user_label' => __('User ညီမျှ', 'twork-rewards'),
+            'admin_color' => '#92400e',
+            'user_color' => '#92400e',
+            'icon' => '=',
+            'text_color' => '#92400e',
+            'bg_color' => '#fffbeb',
+            'border_color' => '#f59e0b',
+            'row_bg' => '#fffbeb',
+        );
+    }
+
+    /**
+     * Render Admin vs User side-by-side status chips.
+     *
+     * @param array $status resolve_poll_win_loss_display_status() output
+     * @return void
+     */
+    private function render_poll_admin_user_status_chips($status)
+    {
+        if ($status['key'] === 'none' || $status['admin_label'] === '' || $status['user_label'] === '') {
+            echo '<span style="font-weight: 700; color: #6b7280;">' . esc_html($status['label_primary']) . '</span>';
+            return;
+        }
+        ?>
+        <span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; border: 2px solid <?php echo esc_attr($status['admin_color']); ?>; background: #fff; color: <?php echo esc_attr($status['admin_color']); ?>;">
+                <?php esc_html_e('Admin', 'twork-rewards'); ?> · <?php echo esc_html($status['admin_label']); ?>
+            </span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; border: 2px solid <?php echo esc_attr($status['user_color']); ?>; background: #fff; color: <?php echo esc_attr($status['user_color']); ?>;">
+                <?php esc_html_e('User', 'twork-rewards'); ?> · <?php echo esc_html($status['user_label']); ?>
+            </span>
+        </span>
+        <?php
+    }
+
+    /**
+     * Render compact poll profit/loss badge HTML.
+     *
+     * @param array $stats
+     * @return void
+     */
+    public function render_poll_profit_status_badge($stats)
+    {
+        $status = $this->resolve_poll_win_loss_display_status($stats);
+        $net_pnp = isset($stats['net_pnp']) ? (int) $stats['net_pnp'] : 0;
+        $net_label = $status['key'] === 'none'
+            ? ''
+            : (($net_pnp >= 0 ? '+' : '') . number_format_i18n($net_pnp) . ' PNP');
+        ?>
+        <span class="twork-poll-profit-badge twork-poll-profit-badge--<?php echo esc_attr($status['key']); ?>"
+              style="display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 12px; border-radius: 10px; font-size: 12px; font-weight: 700; border: 2px solid <?php echo esc_attr($status['border_color']); ?>; background: <?php echo esc_attr($status['bg_color']); ?>; color: <?php echo esc_attr($status['text_color']); ?>;">
+            <?php $this->render_poll_admin_user_status_chips($status); ?>
+            <?php if ($net_label !== ''): ?>
+                <span style="font-size: 11px; font-weight: 600; color: #374151;"><?php esc_html_e('User Net', 'twork-rewards'); ?>: <?php echo esc_html($net_label); ?></span>
+            <?php endif; ?>
+        </span>
+        <?php
+    }
+
+    /**
+     * Render large poll profit/loss hero banner for User Detail.
+     *
+     * @param array $stats
+     * @return void
+     */
+    public function render_poll_profit_status_banner($stats)
+    {
+        $status = $this->resolve_poll_win_loss_display_status($stats);
+        $win_count = isset($stats['win_count']) ? (int) $stats['win_count'] : 0;
+        $lost_count = isset($stats['lost_count']) ? (int) $stats['lost_count'] : 0;
+        $win_pnp = isset($stats['win_pnp']) ? (int) $stats['win_pnp'] : 0;
+        $lost_pnp = isset($stats['lost_pnp']) ? (int) $stats['lost_pnp'] : 0;
+        $net_pnp = isset($stats['net_pnp']) ? (int) $stats['net_pnp'] : 0;
+        $rounds = $win_count + $lost_count;
+        ?>
+        <div class="twork-poll-profit-banner twork-poll-profit-banner--<?php echo esc_attr($status['key']); ?>"
+             style="margin-bottom: 24px; padding: 28px 24px; border-radius: 12px; border: 3px solid <?php echo esc_attr($status['border_color']); ?>; background: linear-gradient(135deg, <?php echo esc_attr($status['bg_color']); ?> 0%, #ffffff 100%); box-shadow: 0 4px 14px rgba(0,0,0,0.06);">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px;">
+                <div style="flex: 1; min-width: 220px;">
+                    <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7280; margin-bottom: 8px;">
+                        <?php esc_html_e('Poll အခြေအနေ (Admin vs User)', 'twork-rewards'); ?>
+                    </div>
+                    <div style="display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap;">
+                        <span style="display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; background: <?php echo esc_attr($status['border_color']); ?>; color: #fff; font-size: 20px; font-weight: 800; flex-shrink: 0;">
+                            <?php echo esc_html($status['icon']); ?>
+                        </span>
+                        <div style="flex: 1; min-width: 240px;">
+                            <div style="font-size: 24px; font-weight: 800; line-height: 1.25; color: <?php echo esc_attr($status['text_color']); ?>; margin-bottom: 10px;">
+                                <?php echo esc_html($status['label_primary']); ?>
+                            </div>
+                            <?php $this->render_poll_admin_user_status_chips($status); ?>
+                            <div style="font-size: 14px; color: #4b5563; margin-top: 10px;">
+                                <?php echo esc_html($status['label_secondary']); ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <?php if ($rounds > 0): ?>
+                    <div style="text-align: right; min-width: 180px;">
+                        <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;"><?php esc_html_e('User Net PNP', 'twork-rewards'); ?></div>
+                        <div style="font-size: 36px; font-weight: 800; line-height: 1; color: <?php echo esc_attr($status['text_color']); ?>;">
+                            <?php echo esc_html(($net_pnp >= 0 ? '+' : '') . number_format_i18n($net_pnp)); ?>
+                        </div>
+                        <div style="font-size: 13px; color: #6b7280; margin-top: 8px;">
+                            <?php
+                            echo esc_html(sprintf(
+                                __('%1$s W / %2$s L · %3$s won · %4$s lost', 'twork-rewards'),
+                                number_format_i18n($win_count),
+                                number_format_i18n($lost_count),
+                                number_format_i18n($win_pnp),
+                                number_format_i18n($lost_pnp)
+                            ));
+                            ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php
+    }
+
+    /**
+     * Batch poll win/loss stats for a set of user IDs (single query; no N+1).
+     *
+     * @param int[]  $user_ids
+     * @param string $date_from Y-m-d
+     * @param string $date_to   Y-m-d
+     * @return array<int, array{win_count:int,win_pnp:int,lost_count:int,lost_pnp:int,net_pnp:int}>
+     */
+    public function get_user_poll_win_loss_stats_batch($user_ids, $date_from = '', $date_to = '')
+    {
+        global $wpdb;
+
+        $user_ids = array_values(array_unique(array_filter(array_map('absint', (array) $user_ids))));
+        if (empty($user_ids)) {
+            return array();
+        }
+
+        $table = $this->point_transactions_table_name();
+        $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+        if ($table_exists !== $table) {
+            return array();
+        }
+
+        $placeholders = implode(',', array_fill(0, count($user_ids), '%d'));
+        list($filter_sql, $filter_params) = $this->poll_win_loss_filter_parts($date_from, $date_to, 0, 't');
+        $win_case = $this->poll_win_loss_win_case_sql('t');
+        $lost_case = $this->poll_win_loss_lost_case_sql('t');
+
+        $sql = "SELECT
+            t.user_id,
+            COALESCE(SUM(CASE WHEN $win_case THEN 1 ELSE 0 END), 0) AS win_count,
+            COALESCE(SUM(CASE WHEN $win_case THEN t.points ELSE 0 END), 0) AS win_pnp,
+            COALESCE(SUM(CASE WHEN $lost_case THEN 1 ELSE 0 END), 0) AS lost_count,
+            COALESCE(SUM(CASE WHEN $lost_case THEN t.points ELSE 0 END), 0) AS lost_pnp
+            FROM $table t
+            WHERE t.user_id IN ($placeholders)
+            AND $filter_sql
+            GROUP BY t.user_id";
+
+        $params = array_merge($user_ids, $filter_params);
+        $rows = $wpdb->get_results($wpdb->prepare($sql, ...$params), ARRAY_A);
+        if (!is_array($rows)) {
+            return array();
+        }
+
+        $map = array();
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $uid = (int) $row['user_id'];
+            if ($uid <= 0) {
+                continue;
+            }
+            $win_pnp = (int) $row['win_pnp'];
+            $lost_pnp = (int) $row['lost_pnp'];
+            $map[$uid] = array(
+                'win_count' => (int) $row['win_count'],
+                'win_pnp' => $win_pnp,
+                'lost_count' => (int) $row['lost_count'],
+                'lost_pnp' => $lost_pnp,
+                'net_pnp' => $win_pnp - $lost_pnp,
+            );
+        }
+
+        return $map;
+    }
+
+    /**
+     * Per-user poll win/loss leaderboard (independent of usage session data).
+     *
+     * @param string $date_from Y-m-d
+     * @param string $date_to   Y-m-d
+     * @param int    $user_id_filter
+     * @param int    $limit
+     * @return array<object>
+     */
+    public function get_poll_win_loss_user_leaderboard($date_from = '', $date_to = '', $user_id_filter = 0, $limit = 100)
+    {
+        global $wpdb;
+
+        $limit = max(1, min(500, (int) $limit));
+        $table = $this->point_transactions_table_name();
+        $table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+        if ($table_exists !== $table) {
+            return array();
+        }
+
+        list($filter_sql, $filter_params) = $this->poll_win_loss_filter_parts($date_from, $date_to, $user_id_filter, 't');
+        $win_case = $this->poll_win_loss_win_case_sql('t');
+        $lost_case = $this->poll_win_loss_lost_case_sql('t');
+
+        $sql = "SELECT
+            t.user_id,
+            COALESCE(NULLIF(u.display_name, ''), u.user_login) AS display_name,
+            u.user_email,
+            COALESCE(SUM(CASE WHEN $win_case THEN 1 ELSE 0 END), 0) AS win_count,
+            COALESCE(SUM(CASE WHEN $win_case THEN t.points ELSE 0 END), 0) AS win_pnp,
+            COALESCE(SUM(CASE WHEN $lost_case THEN 1 ELSE 0 END), 0) AS lost_count,
+            COALESCE(SUM(CASE WHEN $lost_case THEN t.points ELSE 0 END), 0) AS lost_pnp
+            FROM $table t
+            INNER JOIN {$wpdb->users} u ON u.ID = t.user_id
+            WHERE $filter_sql
+            GROUP BY t.user_id, u.display_name, u.user_login, u.user_email
+            HAVING (
+                COALESCE(SUM(CASE WHEN $win_case THEN 1 ELSE 0 END), 0)
+                + COALESCE(SUM(CASE WHEN $lost_case THEN 1 ELSE 0 END), 0)
+            ) > 0
+            ORDER BY (
+                COALESCE(SUM(CASE WHEN $win_case THEN 1 ELSE 0 END), 0)
+                + COALESCE(SUM(CASE WHEN $lost_case THEN 1 ELSE 0 END), 0)
+            ) DESC, COALESCE(SUM(CASE WHEN $win_case THEN t.points ELSE 0 END), 0) DESC
+            LIMIT %d";
+
+        $params = array_merge($filter_params, array($limit));
+        $rows = $wpdb->get_results($wpdb->prepare($sql, ...$params));
+        return is_array($rows) ? $rows : array();
+    }
+
+    /**
      * Render Usage Analytics admin page
      * Displays app usage statistics for all users
      */
@@ -25868,6 +26471,7 @@ class TWork_Rewards_System
         $user_id_filter = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
         $date_from = isset($_GET['date_from']) ? sanitize_text_field($_GET['date_from']) : date('Y-m-d', strtotime('-30 days'));
         $date_to = isset($_GET['date_to']) ? sanitize_text_field($_GET['date_to']) : date('Y-m-d');
+        $poll_win_loss_dashboard_enabled = $this->is_poll_win_loss_admin_dashboard_enabled();
 
         // Get overall statistics
         $overall_stats = null;
@@ -25965,6 +26569,31 @@ class TWork_Rewards_System
             } else {
                 $user_stats = $wpdb->get_results($user_stats_query);
             }
+        }
+
+        // TEMP DISABLED — Poll win/loss dashboard queries (see is_poll_win_loss_admin_dashboard_enabled).
+        $poll_win_loss_totals = array(
+            'win_count' => 0,
+            'win_pnp' => 0,
+            'lost_count' => 0,
+            'lost_pnp' => 0,
+            'net_pnp' => 0,
+            'poll_users' => 0,
+        );
+        $poll_win_loss_by_user = array();
+        $poll_win_loss_leaderboard = array();
+        if ($poll_win_loss_dashboard_enabled) {
+            $poll_win_loss_totals = $this->get_poll_win_loss_overall_totals($date_from, $date_to, $user_id_filter);
+            if (!empty($user_stats)) {
+                $usage_user_ids = array();
+                foreach ($user_stats as $usage_stat_row) {
+                    if (isset($usage_stat_row->id)) {
+                        $usage_user_ids[] = (int) $usage_stat_row->id;
+                    }
+                }
+                $poll_win_loss_by_user = $this->get_user_poll_win_loss_stats_batch($usage_user_ids, $date_from, $date_to);
+            }
+            $poll_win_loss_leaderboard = $this->get_poll_win_loss_user_leaderboard($date_from, $date_to, $user_id_filter, 100);
         }
 
         // Get total sessions count for conditional display
@@ -26192,16 +26821,59 @@ class TWork_Rewards_System
                                 <button type="submit" class="button button-primary"><?php esc_html_e('Filter', 'twork-rewards'); ?></button>
                                 <a href="<?php echo esc_url(admin_url('admin.php?page=twork-rewards-usage')); ?>" class="button"><?php esc_html_e('Reset', 'twork-rewards'); ?></a>
                                 <?php if ($table_exists && $total_sessions > 0): ?>
-                                    <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-usage', 'export' => 'csv', 'date_from' => $date_from, 'date_to' => $date_to), admin_url('admin.php'))); ?>" 
-                                       class="button" 
-                                       style="background: #10b981; border-color: #10b981; color: white;">
-                                        <?php esc_html_e('Export CSV', 'twork-rewards'); ?>
-                                    </a>
+                                <a href="<?php echo esc_url(add_query_arg(array('page' => 'twork-rewards-usage', 'export' => 'csv', 'date_from' => $date_from, 'date_to' => $date_to, 'user_id' => $user_id_filter ?: null), admin_url('admin.php'))); ?>" 
+                                   class="button" 
+                                   style="background: #10b981; border-color: #10b981; color: white;">
+                                    <?php esc_html_e('Export CSV', 'twork-rewards'); ?>
+                                </a>
                                 <?php endif; ?>
                             </div>
                         </div>
                     </form>
                 </div>
+
+                <?php if ($poll_win_loss_dashboard_enabled): ?>
+                <!-- Poll Win/Loss Summary (point ledger only; does not alter usage queries) -->
+                <div class="twork-usage-card">
+                    <h2><?php esc_html_e('Poll Win / Loss Totals', 'twork-rewards'); ?></h2>
+                    <?php $this->render_poll_profit_status_banner($poll_win_loss_totals); ?>
+                    <p style="margin: 0 0 16px; color: #666; font-size: 13px;">
+                        <?php esc_html_e('Resolved poll rounds only. Count = rounds won/lost; PNP = total payout / total bet lost.', 'twork-rewards'); ?>
+                    </p>
+                    <div class="twork-stats-grid">
+                        <div class="twork-stat-card" style="border-left-color: #10b981; background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);">
+                            <div class="twork-stat-label"><?php esc_html_e('Total Wins', 'twork-rewards'); ?></div>
+                            <div class="twork-stat-value" style="color: #10b981;"><?php echo number_format((int) $poll_win_loss_totals['win_count']); ?></div>
+                            <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                                <?php echo esc_html(sprintf(__('%s PNP won', 'twork-rewards'), number_format((int) $poll_win_loss_totals['win_pnp']))); ?>
+                            </div>
+                        </div>
+                        <div class="twork-stat-card" style="border-left-color: #dc3232; background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%);">
+                            <div class="twork-stat-label"><?php esc_html_e('Total Losses', 'twork-rewards'); ?></div>
+                            <div class="twork-stat-value" style="color: #dc3232;"><?php echo number_format((int) $poll_win_loss_totals['lost_count']); ?></div>
+                            <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                                <?php echo esc_html(sprintf(__('%s PNP lost', 'twork-rewards'), number_format((int) $poll_win_loss_totals['lost_pnp']))); ?>
+                            </div>
+                        </div>
+                        <div class="twork-stat-card" style="border-left-color: #3b82f6; background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);">
+                            <div class="twork-stat-label"><?php esc_html_e('Net PNP', 'twork-rewards'); ?></div>
+                            <div class="twork-stat-value" style="color: <?php echo (int) $poll_win_loss_totals['net_pnp'] >= 0 ? '#10b981' : '#dc3232'; ?>;">
+                                <?php echo ((int) $poll_win_loss_totals['net_pnp'] >= 0 ? '+' : '') . number_format((int) $poll_win_loss_totals['net_pnp']); ?>
+                            </div>
+                            <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                                <?php esc_html_e('Win PNP minus lost bet PNP', 'twork-rewards'); ?>
+                            </div>
+                        </div>
+                        <div class="twork-stat-card" style="border-left-color: #8b5cf6; background: linear-gradient(135deg, #f5f3ff 0%, #ffffff 100%);">
+                            <div class="twork-stat-label"><?php esc_html_e('Poll Players', 'twork-rewards'); ?></div>
+                            <div class="twork-stat-value" style="color: #8b5cf6;"><?php echo number_format((int) $poll_win_loss_totals['poll_users']); ?></div>
+                            <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                                <?php esc_html_e('Users with at least one resolved round', 'twork-rewards'); ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
                 
                 <!-- Automated Insights & Recommendations -->
                 <?php if (!empty($insights)): ?>
@@ -26586,12 +27258,22 @@ class TWork_Rewards_System
                             <thead>
                                 <tr>
                                     <th style="width: 120px;">Activity Status</th>
+                                    <?php if ($poll_win_loss_dashboard_enabled): ?>
+                                    <th style="width: 200px;"><?php esc_html_e('Admin vs User', 'twork-rewards'); ?></th>
+                                    <?php endif; ?>
                                     <th>User ID</th>
                                     <th>Name</th>
                                     <th>Email</th>
                                     <th>Total Sessions</th>
                                     <th>Total Duration</th>
                                     <th>Average Session</th>
+                                    <?php if ($poll_win_loss_dashboard_enabled): ?>
+                                    <th><?php esc_html_e('Wins', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Losses', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Win PNP', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Lost PNP', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Net PNP', 'twork-rewards'); ?></th>
+                                    <?php endif; ?>
                                     <th>First Session</th>
                                     <th>Last Session</th>
                                 </tr>
@@ -26608,23 +27290,52 @@ class TWork_Rewards_System
                                         $avg_minutes = floor($avg_seconds / 60);
                                         $avg_secs = $avg_seconds % 60;
 
+                                        $poll_row_style = '';
+                                        if ($poll_win_loss_dashboard_enabled) {
+                                            $poll_row = isset($poll_win_loss_by_user[(int) $stat->id])
+                                                ? $poll_win_loss_by_user[(int) $stat->id]
+                                                : array(
+                                                    'win_count' => 0,
+                                                    'win_pnp' => 0,
+                                                    'lost_count' => 0,
+                                                    'lost_pnp' => 0,
+                                                    'net_pnp' => 0,
+                                                );
+                                            $poll_row_display = $this->resolve_poll_win_loss_display_status($poll_row);
+                                            $poll_row_style = $poll_row_display['row_bg'] !== ''
+                                                ? ' style="background: ' . esc_attr($poll_row_display['row_bg']) . ';"'
+                                                : '';
+                                        }
+
                                         // Get activity status for this user
                                         $user_activity_status = $this->get_user_activity_status($stat->id);
                                         $is_active = $user_activity_status['is_active'];
                                         $activity = $this->get_formatted_user_activity($stat->id);
                                         ?>
-                                    <tr>
+                                    <tr<?php echo $poll_row_style; ?>>
                                         <td>
                                             <div class="twork-activity-status-badge <?php echo $is_active ? 'active' : 'inactive'; ?>" style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid; <?php echo $is_active ? 'background: #f0fdf4; color: #166534; border-color: #46b450;' : 'background: #fef2f2; color: #991b1b; border-color: #dc3232;'; ?>">
                                                 <?php echo esc_html($activity['status_label']); ?>
                                             </div>
                                         </td>
+                                        <?php if ($poll_win_loss_dashboard_enabled): ?>
+                                        <td><?php $this->render_poll_profit_status_badge($poll_row); ?></td>
+                                        <?php endif; ?>
                                         <td><strong>#<?php echo $stat->id; ?></strong></td>
                                         <td><strong><?php echo esc_html($stat->display_name); ?></strong></td>
                                         <td><?php echo esc_html($stat->user_email); ?></td>
                                         <td><?php echo number_format((int) $stat->total_sessions); ?></td>
                                         <td><strong><?php echo sprintf('%d:%02d', $total_hours, $total_minutes); ?></strong></td>
                                         <td><?php echo sprintf('%d:%02d', $avg_minutes, $avg_secs); ?></td>
+                                        <?php if ($poll_win_loss_dashboard_enabled): ?>
+                                        <td><strong style="color:#10b981;"><?php echo number_format((int) $poll_row['win_count']); ?></strong></td>
+                                        <td><strong style="color:#dc3232;"><?php echo number_format((int) $poll_row['lost_count']); ?></strong></td>
+                                        <td style="color:#10b981;"><?php echo number_format((int) $poll_row['win_pnp']); ?></td>
+                                        <td style="color:#dc3232;"><?php echo number_format((int) $poll_row['lost_pnp']); ?></td>
+                                        <td style="color:<?php echo (int) $poll_row['net_pnp'] >= 0 ? '#10b981' : '#dc3232'; ?>; font-weight:600;">
+                                            <?php echo ((int) $poll_row['net_pnp'] >= 0 ? '+' : '') . number_format((int) $poll_row['net_pnp']); ?>
+                                        </td>
+                                        <?php endif; ?>
                                         <td><?php
                                         // Professional: Display first session date in Myanmar timezone
                                         if ($stat->first_session) {
@@ -26646,12 +27357,90 @@ class TWork_Rewards_System
                                     </tr>
                                 <?php endforeach;
                                 else: ?>
-                                    <tr><td colspan="9" style="text-align: center; padding: 40px; color: #999; font-style: italic;"><?php esc_html_e('No usage data found.', 'twork-rewards'); ?></td></tr>
+                                    <tr><td colspan="<?php echo $poll_win_loss_dashboard_enabled ? 15 : 9; ?>" style="text-align: center; padding: 40px; color: #999; font-style: italic;"><?php esc_html_e('No usage data found.', 'twork-rewards'); ?></td></tr>
                                 <?php endif; ?>
                             </tbody>
                         </table>
                     </div>
                 </div>
+
+                <?php if ($poll_win_loss_dashboard_enabled): ?>
+                <!-- Poll Win/Loss per user (all poll players; independent of app usage sessions) -->
+                <div class="twork-usage-card">
+                    <h2><?php esc_html_e('Poll Win / Loss by User', 'twork-rewards'); ?></h2>
+                    <p style="margin: 0 0 16px; color: #666; font-size: 13px;">
+                        <?php esc_html_e('Includes users who placed poll bets even if they have no app usage sessions in this period.', 'twork-rewards'); ?>
+                    </p>
+                    <div class="twork-usage-table">
+                        <table class="wp-list-table widefat fixed striped">
+                            <thead>
+                                <tr>
+                                    <th style="width: 220px;"><?php esc_html_e('Admin vs User', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('User ID', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Name', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Email', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Wins', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Losses', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Win PNP', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Lost PNP', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Net PNP', 'twork-rewards'); ?></th>
+                                    <th><?php esc_html_e('Rounds', 'twork-rewards'); ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (!empty($poll_win_loss_leaderboard)): ?>
+                                    <?php foreach ($poll_win_loss_leaderboard as $poll_user_row):
+                                        $poll_uid = (int) $poll_user_row->user_id;
+                                        $poll_win_count = (int) $poll_user_row->win_count;
+                                        $poll_lost_count = (int) $poll_user_row->lost_count;
+                                        $poll_win_pnp = (int) $poll_user_row->win_pnp;
+                                        $poll_lost_pnp = (int) $poll_user_row->lost_pnp;
+                                        $poll_net_pnp = $poll_win_pnp - $poll_lost_pnp;
+                                        $poll_rounds = $poll_win_count + $poll_lost_count;
+                                        $poll_user_detail_url = admin_url('admin.php?page=twork-rewards-user-detail&user_id=' . $poll_uid);
+                                        $poll_leader_row = array(
+                                            'win_count' => $poll_win_count,
+                                            'lost_count' => $poll_lost_count,
+                                            'win_pnp' => $poll_win_pnp,
+                                            'lost_pnp' => $poll_lost_pnp,
+                                            'net_pnp' => $poll_net_pnp,
+                                        );
+                                        $poll_leader_display = $this->resolve_poll_win_loss_display_status($poll_leader_row);
+                                        $poll_leader_row_style = $poll_leader_display['row_bg'] !== ''
+                                            ? ' style="background: ' . esc_attr($poll_leader_display['row_bg']) . ';"'
+                                            : '';
+                                        ?>
+                                        <tr<?php echo $poll_leader_row_style; ?>>
+                                            <td><?php $this->render_poll_profit_status_badge($poll_leader_row); ?></td>
+                                            <td><strong>#<?php echo esc_html($poll_uid); ?></strong></td>
+                                            <td>
+                                                <a href="<?php echo esc_url($poll_user_detail_url); ?>">
+                                                    <strong><?php echo esc_html($poll_user_row->display_name); ?></strong>
+                                                </a>
+                                            </td>
+                                            <td><?php echo esc_html($poll_user_row->user_email); ?></td>
+                                            <td><strong style="color:#10b981;"><?php echo number_format($poll_win_count); ?></strong></td>
+                                            <td><strong style="color:#dc3232;"><?php echo number_format($poll_lost_count); ?></strong></td>
+                                            <td style="color:#10b981;"><?php echo number_format($poll_win_pnp); ?></td>
+                                            <td style="color:#dc3232;"><?php echo number_format($poll_lost_pnp); ?></td>
+                                            <td style="color:<?php echo $poll_net_pnp >= 0 ? '#10b981' : '#dc3232'; ?>; font-weight:600;">
+                                                <?php echo ($poll_net_pnp >= 0 ? '+' : '') . number_format($poll_net_pnp); ?>
+                                            </td>
+                                            <td><?php echo number_format($poll_rounds); ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <tr>
+                                        <td colspan="10" style="text-align: center; padding: 40px; color: #999; font-style: italic;">
+                                            <?php esc_html_e('No resolved poll win/loss data for this filter.', 'twork-rewards'); ?>
+                                        </td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <?php endif; ?>
                 
             <?php endif; ?>
         </div>
@@ -27058,10 +27847,25 @@ class TWork_Rewards_System
 
         $date_from = isset($_GET['date_from']) ? sanitize_text_field($_GET['date_from']) : date('Y-m-d', strtotime('-30 days'));
         $date_to = isset($_GET['date_to']) ? sanitize_text_field($_GET['date_to']) : date('Y-m-d');
+        $user_id_filter = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
 
         // Get advanced analytics
         $analytics = $this->get_advanced_analytics($date_from, $date_to);
         $activity_stats = $this->get_activity_statistics();
+        $poll_win_loss_dashboard_enabled = $this->is_poll_win_loss_admin_dashboard_enabled();
+        $poll_win_loss_totals = array(
+            'win_count' => 0,
+            'win_pnp' => 0,
+            'lost_count' => 0,
+            'lost_pnp' => 0,
+            'net_pnp' => 0,
+            'poll_users' => 0,
+        );
+        $poll_win_loss_leaderboard = array();
+        if ($poll_win_loss_dashboard_enabled) {
+            $poll_win_loss_totals = $this->get_poll_win_loss_overall_totals($date_from, $date_to, $user_id_filter);
+            $poll_win_loss_leaderboard = $this->get_poll_win_loss_user_leaderboard($date_from, $date_to, $user_id_filter, 500);
+        }
 
         // Set headers for CSV download
         header('Content-Type: text/csv; charset=utf-8');
@@ -27098,6 +27902,63 @@ class TWork_Rewards_System
         fputcsv($output, array('New Users', $analytics['new_users']));
         fputcsv($output, array('Returning Users', $analytics['returning_users']));
         fputcsv($output, array(''));
+
+        // TEMP DISABLED — Poll win/loss CSV sections (see is_poll_win_loss_admin_dashboard_enabled).
+        if ($poll_win_loss_dashboard_enabled) {
+        // Poll win/loss totals
+        fputcsv($output, array('POLL WIN / LOSS TOTALS'));
+        fputcsv($output, array('Metric', 'Value'));
+        fputcsv($output, array('Total Wins (rounds)', $poll_win_loss_totals['win_count']));
+        fputcsv($output, array('Total Win PNP', $poll_win_loss_totals['win_pnp']));
+        fputcsv($output, array('Total Losses (rounds)', $poll_win_loss_totals['lost_count']));
+        fputcsv($output, array('Total Lost PNP', $poll_win_loss_totals['lost_pnp']));
+        fputcsv($output, array('Net PNP', $poll_win_loss_totals['net_pnp']));
+        fputcsv($output, array('Poll Players', $poll_win_loss_totals['poll_users']));
+        fputcsv($output, array(''));
+
+        if (!empty($poll_win_loss_leaderboard)) {
+            fputcsv($output, array('POLL WIN / LOSS BY USER'));
+            fputcsv($output, array(
+                'User ID',
+                'Name',
+                'Email',
+                'Admin Status',
+                'User Status',
+                'Combined Status',
+                'Wins',
+                'Losses',
+                'Win PNP',
+                'Lost PNP',
+                'Net PNP',
+                'Total Rounds',
+            ));
+            foreach ($poll_win_loss_leaderboard as $poll_user_row) {
+                $win_pnp = (int) $poll_user_row->win_pnp;
+                $lost_pnp = (int) $poll_user_row->lost_pnp;
+                $leader_stats = array(
+                    'win_count' => (int) $poll_user_row->win_count,
+                    'lost_count' => (int) $poll_user_row->lost_count,
+                    'net_pnp' => $win_pnp - $lost_pnp,
+                );
+                $leader_status = $this->resolve_poll_win_loss_display_status($leader_stats);
+                fputcsv($output, array(
+                    (int) $poll_user_row->user_id,
+                    $poll_user_row->display_name,
+                    $poll_user_row->user_email,
+                    $leader_status['admin_label'],
+                    $leader_status['user_label'],
+                    $leader_status['label_primary'],
+                    (int) $poll_user_row->win_count,
+                    (int) $poll_user_row->lost_count,
+                    $win_pnp,
+                    $lost_pnp,
+                    $win_pnp - $lost_pnp,
+                    (int) $poll_user_row->win_count + (int) $poll_user_row->lost_count,
+                ));
+            }
+            fputcsv($output, array(''));
+        }
+        }
 
         // User Segmentation
         fputcsv($output, array('USER SEGMENTATION'));
