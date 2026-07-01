@@ -96,6 +96,8 @@ Auto-run poll lifecycle and engagement components are maintained within this rep
 - 📄 **CMS HTML Widget** - Shared `flutter_html` renderer with XSS sanitizer for About/Legal and engagement overlays
 - 🔐 **Rewards Admin Access Control** - Per-role and per-user WordPress admin page permissions (app REST routes untouched)
 - 👤 **Username-First Sign-Up** - Register with username + password; WooCommerce email auto-derived when omitted
+- ⏱️ **Configurable Poll Countdown** - Admin-set final overlay seconds (1–120) with vote lock before poll close
+- 🌐 **Flutter Web Shell** - SelectionArea, scrollbars, boot splash, and centered form frames on wide viewports
 - 🎨 **PlanetMM Auth Shell** - Shared space-themed background across login, register, and forgot-password screens
 - 🔑 **Remote Forgot-Password Copy** - Admin-configurable hint text, email domain, and customer-service button via REST API
 - 📝 **Rich Product HTML** - WooCommerce descriptions rendered with sanitized `flutter_html` and tappable links
@@ -936,11 +938,11 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) with a dated
 
 ```bash
 git add .
-git commit -m "feat: 25062026 - add your feature description"
+git commit -m "feat: 01072026 - add your feature description"
 # or
-git commit -m "fix: 25062026 - resolve bug description"
+git commit -m "fix: 01072026 - resolve bug description"
 # or
-git commit -m "docs: 25062026 - update README for new API field"
+git commit -m "docs: 01072026 - update README for new API field"
 ```
 
 #### 6. Push and Create Pull Request
@@ -972,15 +974,15 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/) with a **
 
 | Type | When to use | Example |
 | --- | --- | --- |
-| `feat:` | New capability or user-facing enhancement | `feat: 25062026 - add remote forgot-password settings API` |
-| `fix:` | Bug fix or regression | `fix: 25062026 - show selected shipping address on checkout` |
-| `docs:` | README, comments, or API docs only | `docs: 25062026 - document PlanetMM auth shell redesign` |
-| `refactor:` | Internal restructure, no behavior change | `refactor: 25062026 - centralize CMS plain-text extraction` |
-| `perf:` | Measurable performance improvement | `perf: 25062026 - cache forgot-password settings for five minutes` |
-| `test:` | Tests added or updated | `test: 25062026 - cover HtmlLinkLauncher scheme guard` |
-| `chore:` | Tooling, deps, or maintenance | `chore: 25062026 - add Android release build script` |
-| `ci:` | CI/CD pipeline changes | `ci: 25062026 - add analyze step to GitHub Actions` |
-| `style:` | Formatting only (no logic change) | `style: 25062026 - format settings page layout indentation` |
+| `feat:` | New capability or user-facing enhancement | `feat: 01072026 - add configurable poll countdown overlay` |
+| `fix:` | Bug fix or regression | `fix: 01072026 - skip session logout on poll_countdown_active 403` |
+| `docs:` | README, comments, or API docs only | `docs: 01072026 - document July 2026 web shell and prune` |
+| `refactor:` | Internal restructure, no behavior change | `refactor: 01072026 - remove legacy unused screens and providers` |
+| `perf:` | Measurable performance improvement | `perf: 01072026 - shrink bundle by retiring dead modules` |
+| `test:` | Tests added or updated | `test: 01072026 - cover isSessionAuthHttpFailure edge cases` |
+| `chore:` | Tooling, deps, or maintenance | `chore: 01072026 - guard empty dart-defines in web build script` |
+| `ci:` | CI/CD pipeline changes | `ci: 01072026 - add analyze step to GitHub Actions` |
+| `style:` | Formatting only (no logic change) | `style: 01072026 - trim web notification implementation comments` |
 
 ### Hot Reload & Hot Restart
 
@@ -1418,13 +1420,33 @@ We would like to express our gratitude to the following technologies, platforms,
 
 **Status**: ✅ Production Ready
 
-**Last Updated**: 25 June 2026
+**Last Updated**: 01 July 2026
 
 **Author**: Maw Kunn Myat
 
 **Maintained by**: T-Work System
 
 **Contributors**: Mapoee Phyu (mapoeeiphyu2017.miitinternship@gmail.com)
+
+### Recent Updates (01 July 2026 — Poll Countdown, Web Shell & Codebase Prune)
+
+#### ⏱️ Configurable Poll Final Countdown
+- ✅ **`countdown_overlay_seconds`** — Admin-configurable 1–120s final overlay (default 20s) in `quiz_data`
+- ✅ **Vote lock** — Backend returns `poll_countdown_active` (400); voting disabled during countdown phase
+- ✅ **Carousel UX** — Dynamic threshold replaces hard-coded 10s; **ပိတ်နေသည်** label when countdown blocks play
+- ✅ **No false logout** — `ApiService` ignores business-rule 403 codes (`poll_countdown_active`, `already_voted`, etc.)
+
+#### 🌐 Flutter Web Production Polish
+- ✅ **`WebAppShell`** — Global `SelectionArea`, purple scrollbar theme, and `WebFormFrame` for auth/checkout
+- ✅ **`WebScrollBehavior`** — Consistent scroll physics on Flutter web
+- ✅ **Boot splash** — Myanmar loading message in `index.html` until `flutter-first-frame`
+- ✅ **Responsive checkout/orders** — `ResponsiveShell` on checkout flow and order detail/history pages
+
+#### 🧹 Codebase Prune (July 2026)
+- ✅ **Removed legacy modules** — Unused wallet/send-money/rating/search screens, duplicate WooCommerce services, and debug test harnesses
+- ✅ **Retired providers** — `WishlistProvider`, `ReviewProvider`, `ProductFilterProvider` (features not in active app path)
+- ✅ **Poll widget consolidation** — Standalone `auto_run_poll_widget` removed; poll UX lives in `engagement_carousel.dart`
+- ✅ **Dependency trim** — Removed unused `pin_code_text_field` (OTP confirm page retired)
 
 ### Recent Updates (25 June 2026 — Auth, CMS HTML & Checkout)
 
