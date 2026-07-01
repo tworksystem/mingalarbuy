@@ -23,9 +23,16 @@ class ResponsiveShell extends StatelessWidget {
     return w >= 600 && w < 1024;
   }
 
+  static bool applies(BuildContext context) {
+    if (!kIsWeb) {
+      return MediaQuery.sizeOf(context).width >= 600;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (!kIsWeb && MediaQuery.sizeOf(context).width < maxWidth) {
+    if (!applies(context)) {
       return child;
     }
 

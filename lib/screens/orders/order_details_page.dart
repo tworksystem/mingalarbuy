@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:ecommerce_int2/widgets/network_image_widget.dart';
 import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/widgets/app_pull_to_refresh.dart';
+import 'package:ecommerce_int2/widgets/responsive_shell.dart';
 
 class OrderDetailsPage extends StatefulWidget {
   final Order order;
@@ -45,7 +46,8 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             ),
         ],
       ),
-      body: AppPullToRefresh(
+      body: ResponsiveShell(
+        child: AppPullToRefresh(
         onRefresh: () async {
           final authProvider = Provider.of<AuthProvider>(context, listen: false);
           if (authProvider.isAuthenticated && authProvider.user != null) {
@@ -78,6 +80,7 @@ class _OrderDetailsPageState extends State<OrderDetailsPage> {
             ],
           ),
         ),
+      ),
       ),
     );
   }

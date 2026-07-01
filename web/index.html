@@ -68,9 +68,35 @@
   <link rel="dns-prefetch" href="https://mingalarbuy.com">
 </head>
 <body>
+  <style>
+    #planetmm-boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #1A237E 0%, #4A148C 100%);
+      color: #fff;
+      font-family: system-ui, -apple-system, sans-serif;
+      z-index: 9999;
+      transition: opacity 0.3s ease;
+    }
+    #planetmm-boot.hide { opacity: 0; pointer-events: none; }
+    #planetmm-boot img { width: 96px; height: 96px; border-radius: 20px; margin-bottom: 16px; }
+    #planetmm-boot p { margin: 0; font-size: 14px; opacity: 0.85; }
+  </style>
+  <div id="planetmm-boot" aria-live="polite" aria-busy="true">
+    <img src="icons/Icon-192.png" alt="PlanetMM" width="96" height="96">
+    <p>PlanetMM ကို ဖွင့်နေပါသည်…</p>
+  </div>
   <script src="flutter_bootstrap.js" async></script>
 
   <script>
+    window.addEventListener('flutter-first-frame', function() {
+      var el = document.getElementById('planetmm-boot');
+      if (el) { el.classList.add('hide'); setTimeout(function() { el.remove(); }, 400); }
+    });
     window.addEventListener('online', function() {
       console.log('Network: Online');
     });

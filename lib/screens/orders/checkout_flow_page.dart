@@ -7,6 +7,7 @@ import 'package:ecommerce_int2/models/address.dart';
 import 'package:ecommerce_int2/models/order.dart';
 import 'package:ecommerce_int2/app_properties.dart';
 import 'package:ecommerce_int2/screens/orders/order_confirmation_page.dart';
+import 'package:ecommerce_int2/widgets/responsive_shell.dart';
 
 class CheckoutFlowPage extends StatefulWidget {
   const CheckoutFlowPage({super.key});
@@ -136,7 +137,8 @@ class _CheckoutFlowPageState extends State<CheckoutFlowPage> {
           ),
         ),
       ),
-      body: Consumer<CartProvider>(
+      body: ResponsiveShell(
+        child: Consumer<CartProvider>(
         builder: (context, cartProvider, child) {
           final bool shouldShowEmptyState =
               cartProvider.isEmpty && _currentStep != 3;
@@ -154,6 +156,7 @@ class _CheckoutFlowPageState extends State<CheckoutFlowPage> {
             ],
           );
         },
+      ),
       ),
     );
   }

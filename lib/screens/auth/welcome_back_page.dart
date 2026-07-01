@@ -5,6 +5,7 @@ import 'package:ecommerce_int2/utils/validation_utils.dart';
 import 'package:ecommerce_int2/screens/main/main_page.dart';
 import 'package:ecommerce_int2/widgets/modern_loading_indicator.dart';
 import 'package:ecommerce_int2/widgets/planetmm_auth_background.dart';
+import 'package:ecommerce_int2/widgets/web_app_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -384,8 +385,8 @@ class _WelcomeBackPageState extends State<WelcomeBackPage> {
             SizedBox(
               height: MediaQuery.of(context).size.height,
               child: PlanetMMAuthBackground(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                child: WebFormFrame(
+                  maxWidth: 440,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[

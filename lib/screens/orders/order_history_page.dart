@@ -9,6 +9,7 @@ import 'package:ecommerce_int2/services/connectivity_service.dart';
 import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:ecommerce_int2/screens/product/all_products_page.dart';
 import 'order_details_page.dart';
+import 'package:ecommerce_int2/widgets/responsive_shell.dart';
 import 'package:intl/intl.dart';
 
 class OrderHistoryPage extends StatefulWidget {
@@ -162,7 +163,8 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
             ],
           ),
         ),
-        body: Consumer<OrderProvider>(
+        body: ResponsiveShell(
+          child: Consumer<OrderProvider>(
           builder: (context, orderProvider, child) {
             if (orderProvider.isLoading) {
               return Center(
@@ -194,6 +196,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
               ],
             );
           },
+        ),
         ),
       ),
     );

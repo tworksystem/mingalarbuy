@@ -7,9 +7,6 @@ import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/providers/cart_provider.dart';
 import 'package:ecommerce_int2/providers/order_provider.dart';
 import 'package:ecommerce_int2/providers/address_provider.dart';
-import 'package:ecommerce_int2/providers/review_provider.dart';
-import 'package:ecommerce_int2/providers/wishlist_provider.dart';
-import 'package:ecommerce_int2/providers/product_filter_provider.dart';
 import 'package:ecommerce_int2/providers/point_provider.dart';
 import 'package:ecommerce_int2/providers/wallet_provider.dart';
 import 'package:ecommerce_int2/providers/category_provider.dart';
@@ -42,6 +39,8 @@ import 'package:ecommerce_int2/utils/logger.dart';
 import 'package:ecommerce_int2/utils/image_cache_config.dart';
 import 'package:ecommerce_int2/services/sync_coordinator.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
+import 'package:ecommerce_int2/widgets/web_app_shell.dart';
+import 'package:ecommerce_int2/utils/web_scroll_behavior.dart';
 import 'package:ecommerce_int2/firebase_options.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -1196,9 +1195,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ChangeNotifierProvider(create: (_) => CartProvider()),
         ChangeNotifierProvider(create: (_) => OrderProvider()),
         ChangeNotifierProvider(create: (_) => AddressProvider()),
-        ChangeNotifierProvider(create: (_) => ReviewProvider()),
-        ChangeNotifierProvider(create: (_) => WishlistProvider()),
-        ChangeNotifierProvider(create: (_) => ProductFilterProvider()),
         ChangeNotifierProvider.value(value: PointProvider.instance),
         ChangeNotifierProvider.value(value: WalletProvider.instance),
         ChangeNotifierProvider(create: (_) => CategoryProvider()),
@@ -1222,6 +1218,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                     title: 'PlanetMM',
                     debugShowCheckedModeBanner: false,
                     theme: AppTheme.lightTheme,
+                    scrollBehavior: kIsWeb
+                        ? const WebScrollBehavior()
+                        : null,
+                    builder: (context, child) {
+                      return WebAppShell(
+                        child: child ?? const SizedBox.shrink(),
+                      );
+                    },
                     home: SplashScreen(),
                   ),
                 ),

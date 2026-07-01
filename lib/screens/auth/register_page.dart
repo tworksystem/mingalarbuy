@@ -3,6 +3,7 @@ import 'package:ecommerce_int2/providers/auth_provider.dart';
 import 'package:ecommerce_int2/utils/validation_utils.dart';
 import 'package:ecommerce_int2/widgets/modern_loading_indicator.dart';
 import 'package:ecommerce_int2/theme/app_theme.dart';
+import 'package:ecommerce_int2/widgets/web_app_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -119,8 +120,8 @@ class RegisterPageState extends State<RegisterPage> {
                   _buildBackground(),
 
                   // Main content
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  WebFormFrame(
+                    maxWidth: 520,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
