@@ -8,7 +8,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-import 'models/user.dart';
 import 'providers/auth_provider.dart';
 import 'screens/auth/welcome_back_page.dart';
 import 'services/auth_header_provider.dart';
@@ -22,8 +21,9 @@ import 'utils/waf_response_utils.dart';
 /// - Injects [Authorization] from [AuthService] via Dio interceptors.
 /// - Use [skipAuth: true] for public routes (FAQ, About, page-content) so
 ///   missing tokens never break requests.
-/// - On **401** or **403** when auth was sent, clears the session and sends
-///   the user to [WelcomeBackPage].
+/// - On **401**, or **403** that indicates a real auth/session failure when
+///   auth was sent, clears the session and sends the user to [WelcomeBackPage].
+/// - Business-rule **403** responses (e.g. `poll_countdown_active`) do not logout.
 class ApiService {
   ApiService._();
 
@@ -136,14 +136,18 @@ class ApiService {
               }
               final int? code = response.statusCode;
               if (code == 401 || code == 403) {
-                await _onUnauthorized(response.requestOptions, code!);
+                if (_shouldTreatAsSessionAuthFailure(code!, response)) {
+                  await _onUnauthorized(response.requestOptions, code);
+                }
               }
               handler.next(response);
             },
         onError: (DioException err, ErrorInterceptorHandler handler) async {
           final int? code = err.response?.statusCode;
           if (code == 401 || code == 403) {
-            await _onUnauthorized(err.requestOptions, code!);
+            if (_shouldTreatAsSessionAuthFailure(code!, err.response)) {
+              await _onUnauthorized(err.requestOptions, code);
+            }
           }
           handler.next(err);
         },
@@ -575,6 +579,76 @@ class ApiService {
     }
   }
 
+  /// Public alias for tests and non-Dio callers (e.g. engagement error mapping).
+  static bool isSessionAuthHttpFailure(
+    int statusCode,
+    Response<dynamic>? response,
+  ) =>
+      _shouldTreatAsSessionAuthFailure(statusCode, response);
+
+  /// REST error codes that reject an action but must not clear the user session.
+  static const Set<String> businessErrorCodesNoLogout = <String>{
+    'poll_countdown_active',
+    'vote_disabled',
+    'already_voted',
+    'poll_ended',
+    'poll_not_started',
+    'insufficient_balance',
+    'deduction_failed',
+  };
+
+  /// REST error codes that always indicate an auth/session problem on 403.
+  static const Set<String> _authErrorCodesLogout = <String>{
+    'forbidden_user',
+    'invalid_token',
+    'unauthorized',
+    'session_expired',
+    'not_authenticated',
+    'rest_forbidden',
+    'rest_not_logged_in',
+  };
+
+  /// True when [statusCode] should trigger global logout (401 always; 403 only for auth).
+  static bool _shouldTreatAsSessionAuthFailure(
+    int statusCode,
+    Response<dynamic>? response,
+  ) {
+    if (statusCode == 401) return true;
+    if (statusCode != 403) return false;
+
+    final Map<String, dynamic>? body = responseAsJsonMap(response);
+    if (body == null) return true;
+
+    final String code = (body['code'] ?? body['error'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+    if (code.isNotEmpty) {
+      if (businessErrorCodesNoLogout.contains(code)) return false;
+      if (_authErrorCodesLogout.contains(code)) return true;
+    }
+
+    final String message =
+        (body['message'] ?? body['error'] ?? '').toString().toLowerCase();
+    if (message.contains('final countdown') ||
+        message.contains('voting is closed during') ||
+        message.contains('poll_countdown')) {
+      return false;
+    }
+    if (message.contains('unauthorized') ||
+        message.contains('invalid token') ||
+        message.contains('session expired') ||
+        message.contains('not logged in') ||
+        message.contains('authenticated user mismatch') ||
+        message.contains('insufficient permissions')) {
+      return true;
+    }
+
+    if (body['success'] == false) return false;
+
+    return true;
+  }
+
   static Future<void> _onUnauthorized(
     RequestOptions options,
     int statusCode,
@@ -820,70 +894,5 @@ class ApiService {
       sendTimeout: merge?.sendTimeout,
       receiveTimeout: merge?.receiveTimeout,
     );
-  }
-
-  // ——— Legacy demo helper (unchanged consumers in wallet / send-money flows) ———
-
-  static String url(int nrResults) {
-    return 'https://randomuser.me/api/?results=$nrResults';
-  }
-
-  static Future<List<User>> getUsers({int nrUsers = 1}) async {
-    try {
-      final Uri uri = Uri.parse(url(nrUsers));
-      final Response<dynamic> response = await dio.getUri<dynamic>(
-        uri,
-        options: Options(
-          extra: const <String, Object?>{'skipAuth': true},
-          // Old Code:
-          // headers: const <String, dynamic>{
-          //   Headers.contentTypeHeader: Headers.jsonContentType,
-          // },
-          //
-          // OLD CODE:
-          // headers: <String, dynamic>{
-          //   Headers.contentTypeHeader: Headers.jsonContentType,
-          //   'Accept': 'application/json',
-          //   'User-Agent':
-          //       'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
-          // },
-          // OLD CODE:
-          // headers: <String, dynamic>{
-          //   Headers.contentTypeHeader: Headers.jsonContentType,
-          //   'Accept': 'application/json',
-          //   'User-Agent': AppConfig.defaultUserAgent,
-          // },
-          /*
-          // OLD CODE: GET carried Content-Type: application/json.
-          // headers: <String, dynamic>{
-          //   ...AppConfig.defaultBrowserHeaders,
-          //   Headers.contentTypeHeader: Headers.jsonContentType,
-          // },
-          */
-          headers: <String, dynamic>{...AppConfig.defaultBrowserHeaders},
-        ),
-      );
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic>? data = responseAsJsonMap(response);
-        if (data == null) {
-          debugPrint('getUsers: response is not JSON object');
-          return <User>[];
-        }
-        final Object? results = data['results'];
-        if (results is! Iterable<dynamic>) {
-          return <User>[];
-        }
-        return results
-            .map((dynamic l) => User.fromJson(l as Map<String, dynamic>))
-            .toList();
-      } else {
-        debugPrint(responseBodyString(response));
-        return <User>[];
-      }
-    } catch (e) {
-      debugPrint('$e');
-      return <User>[];
-    }
   }
 }
