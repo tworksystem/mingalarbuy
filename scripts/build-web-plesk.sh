@@ -71,11 +71,11 @@ echo "==> flutter pub get"
 flutter pub get
 
 echo "==> flutter build web --release --base-href $BASE_HREF"
-flutter build web \
-  --release \
-  --base-href "$BASE_HREF" \
-  --no-tree-shake-icons \
-  "${DART_DEFINES[@]}"
+BUILD_CMD=(flutter build web --release --base-href "$BASE_HREF" --no-tree-shake-icons)
+if ((${#DART_DEFINES[@]} > 0)); then
+  BUILD_CMD+=("${DART_DEFINES[@]}")
+fi
+"${BUILD_CMD[@]}"
 
 echo "==> Copy .htaccess into build output"
 cp "$HTACCESS_SRC" "$OUTPUT_DIR/.htaccess"
